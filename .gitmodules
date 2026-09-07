@@ -1,0 +1,6 @@
+[submodule "server-moderation-session-service"]
+	path = server-moderation-session-service
+	url = https://github.com/DdimaPos/server-moderation-session-service
+[submodule "player-service"]
+	path = player-service
+	url = https://github.com/DdimaPos/player-service

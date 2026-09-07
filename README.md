@@ -57,3 +57,111 @@ The system is decomposed following a data ownership principle: for every piece o
 The diagram below visualizes the communication paths described above: the Session Layer (Player, Server Moderation Session, Discord DMs) coordinates around an active shift; the Applicant Data group (Applicant, Credential, University Record) stays loosely coupled through a shared `ApplicantInitialized` event instead of direct service-to-service calls; and Moderation Service sits at the center as the only consumer that reads from every data-owning service to produce a decision, which then flows back into the session.
 
 ![Architecture Diagram](img/architecture_diagram.png)
+
+---
+
+## Technologies
+
+The course requires at least two languages per team; we use three, **TypeScript**, **Python** and **C#**, each placed where its ecosystem fits the service and where its owner already has experience. Every service is a Docker container with the same external shape (REST + JSON, AMQP events), so the polyglot setup never leaks into the contract. The cost is three toolchains to maintain; the gain is the right tool per problem and services that evolve independently.
+
+| Service | Owner | Stack | Database | Why |
+| --- | --- | --- | --- | --- |
+| Player Service | Postoronca Dumitru | TypeScript, NestJS | PostgreSQL | Accounts, auth, XP, shift history and disciplinary log are relational and must be updated consistently. NestJS ships JWT guards and validation out of the box. |
+| Server Moderation Session Service | Postoronca Dumitru | TypeScript, NestJS | PostgreSQL + Redis | Orchestrates a shift with many short calls and events. Redis holds hot state of the active shift (`current_applicant_id`, counters); PostgreSQL keeps shift history. Same language as Player keeps the Session Layer uniform. |
+| Applicant Service | Iacovlev Maxim | Python, FastAPI | PostgreSQL | Generating believable applicants and impostors is a data-generation task; Python (Faker, quick iteration on rules) is the fastest way to build and tune it. |
+| Credential Service | Iacovlev Maxim | Python, FastAPI | MongoDB | Documents differ in shape (ID card, email, enrollment, course registration) and each carries a validation status; a document store fits better than a fixed schema. |
+| Server Rules Service | Titerez Vladislav | C#, ASP.NET Core | PostgreSQL | A versioned ruleset that grows more complex between shifts benefits from a strongly typed rule model and C# pattern matching. |
+| University Record Service | Titerez Vladislav | C#, ASP.NET Core | PostgreSQL | Per-category access control per player maps directly onto ASP.NET Core policy-based authorization. |
+| Moderation Service | Racovita Dumitru | Python, FastAPI | PostgreSQL | Fans out to four services in parallel (`asyncio` + `httpx`), computes the correct verdict and compares it with the moderator's choice. Decisions are audit records queried by session, moderator and applicant. |
+| Discord DMs Service | Racovita Dumitru | TypeScript, Node.js (Fastify + `ws`) | MongoDB + Redis Pub/Sub | Real-time chat over WebSockets; Node's event loop keeps many idle connections cheap. Messages are append-only documents. Redis Pub/Sub fans messages out across instances so the service can scale horizontally later. |
+
+Shared by all services: Docker (one container per service), RabbitMQ as message broker, PostgreSQL as the default store, MongoDB and Redis only where the data shape or access pattern justifies them.
+
+---
+
+## Communication Patterns
+
+Three patterns, each with a rule for when it applies. Every arrow in the architecture diagram maps onto one of them.
+
+**1. Synchronous request/response: REST over HTTP, JSON.** Used when the caller needs the answer to continue (next applicant, current session, rule check). Service-to-service calls use the same API the client would. We chose REST over gRPC because a single JSON contract across three languages is cheaper to build, debug and review than three Protobuf toolchains, and Lab 0 has no latency requirement that justifies binary serialization. gRPC remains a candidate for Moderation Service's internal fan-out in a later laboratory.
+
+**2. Asynchronous domain events: RabbitMQ, topic exchange.** Used when the producer needs no reply and there are several consumers, or a consumer may be down (applicant initialized, shift started or ended, decision recorded). Delivery is at-least-once; every consumer is idempotent and deduplicates by `event_id`, so a redelivered event never double-applies XP, penalties or record creation. A broker fits the `ApplicantInitialized` flow from Service Boundaries exactly: one producer, two consumers, no cross-service writes. RabbitMQ over Kafka because we need routing and fan-out, not log replay, and it has first-class clients in all three languages.
+
+**3. Real-time push: WebSocket, only in Discord DMs Service.** Players wait for messages in session channels, so the client must be pushed to. Discord DMs is the only service holding long-lived client connections; history and channel lists are also available over REST so a reconnecting client can catch up.
+
+| Interaction (from the diagram) | Pattern | Direction | Why |
+| --- | --- | --- | --- |
+| Player creates or joins a session | REST | client → Session; Session → Player `GET /players/{id}` | Immediate answer required |
+| Session reports shift results | Event `session.ended` | Session → Player | Progression must not block closing the shift; safe to retry |
+| Session requests the next applicant | REST | Session → Applicant | `applicant_id` is needed immediately to store as `current_applicant_id` |
+| Applicant initialization | Event `applicant.initialized` (`ApplicantInitialized`) | first-contacted service → the other two | Fan-out without cross-service writes, as in Service Boundaries |
+| Session assigns record scopes to Junior Moderators | Event `session.started` | Session → University Record | Membership and `record_scopes` travel in one event; single source of truth for the shift |
+| Session supplies channel membership | Events `session.started`, `session.ended` | Session → Discord DMs | Discord DMs creates and archives channels itself; no reply needed |
+| Moderator submits a decision | REST `POST /decisions` | client → Moderation | The verdict (correct or not, violated rules, penalty) must return immediately |
+| Session supplies the current applicant | REST `GET /sessions/{id}` | Moderation → Session | Moderation reads `current_applicant_id` and validates the decision against it |
+| Moderation gathers data for the verdict | REST, four parallel calls | Moderation → Applicant, Credential, University Record, Server Rules | All four answers are needed to compute the correct verdict |
+| Moderation reports the outcome | Event `decision.recorded` | Moderation → Session | Session updates counters, score and penalties |
+| Players chat during a shift | WebSocket (+ REST for history) | client ↔ Discord DMs | Real-time push |
+
+Note on University Record Service: player requests are scoped by `player_id` + `session_id`. Moderation Service needs every category to compute the reference verdict, so it calls University Record Service with an internal service token that bypasses player scoping. This path is never exposed to clients.
+
+---
+
+## Communication Contract
+
+### Data Management
+
+**One database per service.** No two services share a database or table, and no service reads another's tables. Data crosses a boundary only through the owner's REST API or the events it publishes.
+
+Why: the Service Boundaries rest on "exactly one writer per piece of state", which a shared database can only promise, not enforce; services must deploy and scale independently in later laboratories; and the data shapes differ (relational decisions and rules, document-shaped credentials and messages, cached shift state).
+
+Cost: eventual consistency where data is replicated through events (Credential Service learns about a new applicant milliseconds after Applicant Service does), handled by idempotent consumers keyed on the shared identifier; no distributed transactions in Lab 0, multi-service flows are event chains; and no cross-service joins, a service needing a composite view asks each owner and composes it (Moderation Service does exactly this).
+
+| Service | Store | Holds |
+| --- | --- | --- |
+| Player Service | PostgreSQL | players, hashed credentials, profiles, friends, XP/levels, shift history, disciplinary log |
+| Server Moderation Session Service | PostgreSQL, Redis | shifts, members, roles, scores, penalties; active-shift state (cache) |
+| Applicant Service | PostgreSQL | applicant identity profiles |
+| Credential Service | MongoDB | per-applicant document bundles with validation status |
+| Server Rules Service | PostgreSQL | versioned rulesets |
+| University Record Service | PostgreSQL | institutional records by category, per-session scope assignments |
+| Moderation Service | PostgreSQL | decisions, violated rules, penalties, outcome, snapshot of the data used for the verdict |
+| Discord DMs Service | MongoDB, Redis | channels, messages, channel access mapping; cross-instance message fan-out |
+
+**Permitted duplication.** A service may keep a read-only copy of another service's data for auditability or performance, as long as the owner stays the source of truth. Moderation Service snapshots the applicant profile, credentials and rule version behind each verdict so the decision can be explained even after the applicant or rules change.
+
+**Shared identifiers.** `player_id`, `session_id`, `applicant_id`, `decision_id`, `channel_id`, `message_id` are UUID v4 strings. `applicant_id` is generated by the initializing service and is identical across Applicant, Credential and University Record Services.
+
+#### Event catalog
+
+Exchange `student-id.events`, type `topic`. Every event shares the envelope below; `payload` differs per event.
+
+```json
+{
+  "event_id": "4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23",
+  "event_type": "session.started",
+  "occurred_at": "2026-09-09T14:32:10Z",
+  "producer": "server-moderation-session-service",
+  "version": 1,
+  "payload": {}
+}
+```
+
+| Routing key | Producer | Consumers | Payload (key fields) |
+| --- | --- | --- | --- |
+| `applicant.initialized` | first-contacted of Applicant, Credential, University Record | the other two | `applicant_id`, `initialized_by`, profile fields known at that moment |
+| `session.started` | Server Moderation Session | University Record, Discord DMs | `session_id`, `moderator_id`, `junior_moderators[] { player_id, record_scopes[] }`, `started_at` |
+| `session.ended` | Server Moderation Session | Player, Discord DMs | `session_id`, `score`, `penalties`, `applications_processed`, `players[] { player_id, xp_delta, disciplinary_actions[] }`, `ended_at` |
+| `decision.recorded` | Moderation | Server Moderation Session | `decision_id`, `session_id`, `applicant_id`, `moderator_id`, `action`, `is_correct`, `expected_action`, `violated_rules[]`, `penalty` |
+
+#### API conventions
+
+- Base path `/api/v1`, plural resource names, `snake_case` JSON fields, ISO 8601 UTC timestamps, UUID strings for identifiers.
+- Errors use one envelope with a matching HTTP status (400, 401, 403, 404, 409, 422, 500): `{ "error": { "code": "APPLICANT_NOT_FOUND", "message": "...", "details": {} } }`.
+- Collections are paginated with `?limit=&offset=` and return `{ "items": [], "total": 0 }`.
+- Player requests carry the player's JWT; internal calls carry a service token, so a callee can tell a scoped player request from an unscoped internal one.
+- Every service exposes `GET /health`.
+
+### Endpoints
+
+_To be completed in issue #5: all endpoints per service with request and response formats, following the conventions above._

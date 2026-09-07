@@ -4,3 +4,9 @@
 [submodule "player-service"]
 	path = player-service
 	url = https://github.com/DdimaPos/player-service
+[submodule "server-rules-service"]
+	path = server-rules-service
+	url = https://github.com/vvtttvv/server-rules-service
+[submodule "university-record-service"]
+	path = university-record-service
+	url = https://github.com/vvtttvv/university-record-service

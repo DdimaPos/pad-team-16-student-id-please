@@ -10,3 +10,9 @@
 [submodule "university-record-service"]
 	path = university-record-service
 	url = https://github.com/vvtttvv/university-record-service
+[submodule "moderation-service"]
+	path = moderation-service
+	url = https://github.com/dmracovit/moderation-service
+[submodule "discord-DMs-service"]
+	path = discord-DMs-service
+	url = https://github.com/dmracovit/discord-DMs-service

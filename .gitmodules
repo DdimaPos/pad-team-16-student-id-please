@@ -16,3 +16,9 @@
 [submodule "discord-DMs-service"]
 	path = discord-DMs-service
 	url = https://github.com/dmracovit/discord-DMs-service
+[submodule "applicant-service"]
+	path = applicant-service
+	url = https://github.com/IacovlevMaxim/applicant-service
+[submodule "credential-service"]
+	path = credential-service
+	url = https://github.com/IacovlevMaxim/credential-service

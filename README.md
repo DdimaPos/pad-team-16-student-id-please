@@ -88,7 +88,7 @@ The system is decomposed following a data ownership principle: for every piece o
 
 The diagram below visualizes the communication paths described above: the Session Layer (Player, Server Moderation Session, Discord DMs) coordinates around an active shift; the Applicant Data group (Applicant, Credential, University Record) stays loosely coupled through a shared `ApplicantInitialized` event instead of direct service-to-service calls; and Moderation Service sits at the center as the only consumer that reads from every data-owning service to produce a decision, which then flows back into the session.
 
-![Architecture Diagram](img/architecture_diagram.png)
+![Architecture Diagram](img/Architecture_2.drawio.png)
 
 ---
 

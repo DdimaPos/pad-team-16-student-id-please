@@ -1,5 +1,29 @@
-# pad-team-16-student-id-please
-Common Public Repository that includes the work related to the "Student ID, please" topic of the PAD course. Implemented by Team 16
+# TEAM 16's COURSE PROJECT - Student ID, please
+
+This Common Public Repository (CPR) serves as a centralized documentation hub for the
+FAF Discord Moderation game called **"Student ID, please"**
+
+In accordance with course guidelines, each microservice source code is hosted in its
+own isolated private repository accessible only to its assigned author and course professors.
+This CPR contains submodules linking to those repositories and provides the global
+service boundaries and communication architecture for the distributed system.
+
+## Repo structure and Submodule Access
+
+Due to repository permissions, cloing the CPR with submodules will only pull code for the services you personally own (or have professor-level permissions to read).
+
+```
+git clone https://github.com/your-org/faf-moderation-cpr.git
+
+git submodule update --init --recursive
+```
+
+## Module ownership list
+
+- Postoronca Dumitru: `player service` and `server moderation session service`;
+- Iacovlev Maxim: `applicant service` and `credential service`;
+- Racovita Dumitru: `moderation service` and `discord dm service`;
+- Titerez Vladislav: `server rule service` and `university-record-service`;
 
 ## Service Boundaries
 
@@ -12,42 +36,50 @@ The system is decomposed following a data ownership principle: for every piece o
 **Note on scoped access assignment:** the topic specifies that access to University Record Service categories (enrollment, email-groups, courses, fcim-logs) is distributed among Junior Moderators within a session, but does not say who assigns it. We resolve this as: Server Moderation Session Service, which already assigns player roles when a session is formed, also assigns each Junior Moderator a subset of record categories at that same point, and passes this mapping to University Record Service so it can enforce access per `player_id` + `session_id`.
 
 ### 1. Player Service
+
 - **Owns:** moderator player accounts - `player_id`, username, hashed credentials, email, profile, friends list, XP, level, moderation experience stats, shift history, disciplinary action log
 - **Does NOT own:** any data about the people attempting to join the university server (that belongs entirely to the applicant-side services)
 - **Interacts with:** Server Moderation Session Service, which reports shift results back so this service can update XP/level/disciplinary history
 
 ### 2. Server Moderation Session Service
+
 - **Owns:** the moderation session/shift itself - `session_id`, assigned Moderator, assigned Junior Moderators, session status, `current_applicant_id`, number of applications processed, session score, penalties, start/end timestamps
 - **Does NOT own:** applicant data, and does NOT make the admission decision - it only tracks that a decision is in progress and records the eventual outcome
 - **Interacts with:** Player Service (reports shift results), Moderation Service (supplies the current applicant to trigger a decision, receives the outcome back), Discord DMs Service (supplies session membership so it can scope its own channels), Applicant Service (requests a new applicant profile per the assignment logic above), University Record Service (assigns each Junior Moderator's record-category scope when the session is formed)
 
 ### 3. Applicant Service
+
 - **Owns:** the applicant's core identity - `applicant_id`, name, student ID, major, year, university status (FAF student / other-major student / TA / staff / alumni / outsider), enrolled courses, role
 - **Does NOT own:** credential documents (Credential Service), hidden institutional records (University Record Service), or the admission decision (Moderation Service)
 - **Interacts with:** Credential Service and University Record Service via the `ApplicantInitialized` event described above; Server Moderation Session Service (supplies a new applicant profile when requested); Moderation Service (supplies the base profile for a decision)
 
 ### 4. Credential Service
+
 - **Owns:** the documents an applicant presents - student ID card, university email, enrollment confirmation, course registration proof - along with each document's validation status (valid / expired / forged / inconsistent / incomplete)
 - **Does NOT own:** the applicant's identity profile, and does NOT decide whether the applicant is admitted - it only certifies whether the documents are structurally and logically sound
 - **Interacts with:** Applicant Service and University Record Service (initialization event), Moderation Service (supplies validation results, not a verdict)
 
 ### 5. Server Rules Service
+
 - **Owns:** the current, versioned ruleset for server access, which can be edited between shifts (e.g. "first-years cannot access #dark-memes", "must be enrolled 2+ years", "banned users are rejected regardless of credentials")
 - **Does NOT own:** any applicant data, and does NOT issue the final admission decision - it only answers "does this applicant satisfy the current rules?" when asked
 - **Interacts with:** Moderation Service, which queries it per applicant during a decision
 
 ### 6. University Record Service
+
 - **Owns:** hidden institutional data - enrollment list, Outlook group email lists, existing course list, current academic year, semester schedule, FCIM server message records
 - **Access control:** each record type is tagged by category (e.g. `enrollment`, `email-groups`, `courses`, `fcim-logs`). Within a session, each Junior Moderator is assigned a subset of categories they're permitted to query, per the scope assigned by Server Moderation Session Service; the service enforces this at the API level using `player_id` + `session_id`, and requests for a category outside a player's assignment are rejected
 - **Does NOT own:** credential documents, and does NOT decide on admission, and does NOT assign the scope itself (Server Moderation Session Service does)
 - **Interacts with:** Applicant Service and Credential Service (initialization event), Server Moderation Session Service (receives the per-player scope assignment), Moderation Service (supplies verification data, respecting the requesting player's scope)
 
 ### 7. Moderation Service
+
 - **Owns:** the admission decision itself - `applicant_id`, decision (accept / reject / flag / ban), violated rules (if any), penalty, outcome, deciding moderator, timestamp
 - **Does NOT own:** applicant identity, documents, or institutional records - it only consumes them, read-only, to reach and record a verdict
 - **Interacts with:** Applicant, Credential, and University Record Services (gathers data for the decision), Server Rules Service (checks compliance), Server Moderation Session Service (receives the current applicant to evaluate, reports the outcome back)
 
 ### 8. Discord DMs Service
+
 - **Owns:** real-time communication for a session - channels (e.g. `#enrollment-check`, `#faculty-check`, `#course-registration`, `#general-mod-chat`), messages (author, timestamp, channel, content), and per-player channel access mapping
 - **Does NOT own:** the correctness of any information exchanged - it is a pure transport layer and never validates message content
 - **Interacts with:** Server Moderation Session Service, which supplies session membership (who is in the session and their assigned roles); Discord DMs Service uses that membership data to scope its own channels and access mapping, but ownership of the channels and access mapping stays with Discord DMs Service

@@ -205,3 +205,151 @@ Exchange `student-id.events`, type `topic`. Every event shares the envelope belo
 ### Endpoints
 
 _To be completed in issue #5: all endpoints per service with request and response formats, following the conventions above._
+
+---
+
+## Branch management
+
+### Main branches
+
+- `main` - production code, deployed on each release
+- `dev` - branch that serves as a target for features, bug resolves, staging
+
+### Branch protection rules
+
+Branches are protected by following rules:
+
+1. Protect main and dev - No direct push in `main` and `dev`. PR required. Branches cannot be deleted,
+   updated or force pushed without the user being in bypass list
+2. Enforce branch naming - We follow a standardized naming pattern for all feature branches:
+
+```
+type/issueID-short-description
+```
+
+### Branch Types
+
+| Prefix      | Purpose                   | Example                           |
+| ----------- | ------------------------- | --------------------------------- |
+| `features/` | New functionality         | `features/23-user-authentication` |
+| `bugs/`     | Bug fixes                 | `bugs/15-header-alignment`        |
+| `hotfix/`   | Critical production fixes | `hotfix/18-server-crash`          |
+| `chore/`    | Maintenance tasks         | `chore/9-dependency-updates`      |
+
+### Naming Guidelines
+
+- Use lowercase letters and hyphens
+- Keep descriptions concise but descriptive
+- Always include the related issue number
+
+## Merge requirements
+
+## Merging Strategy
+
+**Strategy**: Squash and Merge
+
+Benefits:
+
+- Clean, linear commit history
+- Combines all commits from a feature branch into a single commit
+- Easier to track features and revert if necessary
+- Reduces noise in the main branch history
+
+Process:
+
+1. Create feature branch from `dev`
+2. Make commits with your work
+3. Open Pull Request to `dev`
+4. After approval, squash and merge
+5. Delete feature branch after merge
+
+## Pull Request Requirements
+
+Every Pull Request must include:
+
+### Required Information
+
+- **Clear description** of what changed and why
+- **Issue reference** (e.g., "Closes #42", "Fixes #18")
+- **List of specific changes** made
+- **Testing instructions** or results
+- **Screenshots** for UI changes
+- **Breaking changes** (if any)
+
+### PR Template
+
+We use the following template (located at `.github/PULL_REQUEST_TEMPLATE.md`):
+
+```markdown
+Closes #(issue)
+
+# Changes
+
+1.
+2.
+3.
+
+## Additional Notes
+```
+
+## Testing Standards
+
+- All new functions should have corresponding tests
+- Existings tests will run as a githook
+- Manual testing steps must be documented in PR
+- GitHub Actions to be configured for automatic testing
+- All PRs must pass automated tests before merging
+
+## Versioning Strategy
+
+We follow **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`
+
+### Version Types
+
+- **MAJOR** (e.g., 1.0.0 → 2.0.0): Breaking changes that require user action
+- **MINOR** (e.g., 1.0.0 → 1.1.0): New features that are backward compatible
+- **PATCH** (e.g., 1.0.0 → 1.0.1): Bug fixes and small improvements
+
+### Release Process
+
+1. Update version in `package.json`
+2. Create release notes documenting changes
+3. Tag release in GitHub: `git tag v1.0.0`
+4. Create GitHub Release with changelog
+5. Deploy to production
+
+### Release Notes Format
+
+```markdown
+## [1.2.0] - 2026-09-09
+
+### Added
+
+- User authentication system
+- Dashboard analytics
+
+### Changed
+
+- Improved login flow UX
+- Updated API endpoints
+
+### Fixed
+
+- Header alignment on mobile devices
+- Memory leak in data processing
+
+### Security
+
+- Updated dependencies with security patches
+```
+
+## Workflow Summary
+
+1. **Create Issue**: Document the feature/bug with clear requirements
+2. **Create Branch**: Use proper naming convention from `dev` branch
+3. **Develop**: Make commits with clear, descriptive messages
+4. **Test**: Verify functionality and pass the tests
+5. **Create PR**: Follow template and provide complete information
+6. **Review**: Address feedback and get required approvals
+7. **Merge**: Squash and merge to `dev`
+8. **Deploy**: Regular releases from `dev` to `main`

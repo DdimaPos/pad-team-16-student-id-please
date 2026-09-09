@@ -109,6 +109,29 @@ The course requires the team to work in two different languages; we use exactly 
 
 Shared by all services: Docker (one container per service), RabbitMQ as message broker, PostgreSQL as the default store, MongoDB and Redis only where the data shape or access pattern justifies them.
 
+### Databases
+
+Every service owns exactly one database instance that no other service connects to (see Data Management below). The engine is chosen per data shape and access pattern; instances are named `<service>_db` so they are easy to recognise in Docker Compose and in later replication and monitoring setups.
+
+#### PostgreSQL
+
+- Player Service `player_db`: a classic accounts store. Players, hashed credentials, friends, XP/levels, shift history and the disciplinary log are relational, and a level-up must be written in the same transaction as the shift that caused it.
+- Server Moderation Session Service `session_db`: durable history of shifts, members, roles, scores and penalties. Sessions reference players and applicants by ID and are queried per player for progression, which is relational territory.
+- Applicant Service `applicant_db`: applicant profiles share one strict structure (name, student ID, major, year, status, courses, role) and are queried by ID and by status, so a relational schema with constraints keeps generated data consistent.
+- Server Rules Service `rules_db`: versioned rulesets; each shift references the version it was played under, and rules are queried by version and by channel. JSONB columns hold the rule conditions so new rule types do not require migrations.
+- University Record Service `university_record_db`: enrollment, email groups, courses, academic year, schedule and FCIM logs are tabular institutional data, each tagged by category and joined with the per-session scope table to enforce access per `player_id` + `session_id`.
+- Moderation Service `moderation_db`: decisions are audit records queried by session, moderator and applicant, and must be immutable once written. The snapshot of data behind a verdict is stored in a JSONB column next to the relational decision row.
+
+#### MongoDB
+
+- Credential Service `credential_db`: one document bundle per applicant, where each document type (student ID card, university email, enrollment confirmation, course registration) has different fields and its own validation status. A document store handles the heterogeneous shape without a sparse relational schema.
+- Discord DMs Service `dms_db`: channels and append-only messages with author, timestamp and channel. Message history is fetched per channel in time order, which maps directly onto an indexed collection, and new message types need no schema change.
+
+#### Redis
+
+- Server Moderation Session Service `session_cache`: hot state of an active shift (`current_applicant_id`, applications processed, running score) that every decision touches. Sub-millisecond reads keep the shift loop fast; the durable copy lives in `session_db`.
+- Discord DMs Service `dms_pubsub`: Pub/Sub only, no persisted data. Fans a message out to every service instance so clients connected to different instances see it, which is what makes the service horizontally scalable later.
+
 ---
 
 ## Communication Patterns

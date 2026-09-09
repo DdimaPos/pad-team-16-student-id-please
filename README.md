@@ -94,18 +94,18 @@ The diagram below visualizes the communication paths described above: the Sessio
 
 ## Technologies
 
-The course requires at least two languages per team; we use three, **Go**, **TypeScript** and **C#**, each placed where its ecosystem fits the service and where its owner already has experience. Every service is a Docker container with the same external shape (REST + JSON, AMQP events), so the polyglot setup never leaks into the contract. The cost is three toolchains to maintain; the gain is the right tool per problem and services that evolve independently.
+The course requires the team to work in two different languages; we use exactly two, **Go** and **C#**, split along the architecture: the Session Layer and Moderation Service (orchestration, fan-out, real-time transport) are Go, the Applicant Data group and Server Rules Service (domain models, validation, access policies) are C#. Every service is a Docker container with the same external shape (REST + JSON, AMQP events), so the language boundary never leaks into the contract. The cost is two toolchains to maintain; the gain is the right tool per problem and a stack that each owner already knows or can pick up from a teammate.
 
 | Service | Owner | Stack | Database | Why |
 | --- | --- | --- | --- | --- |
 | Player Service | Postoronca Dumitru | Go, Gin | PostgreSQL | Accounts, auth, XP, shift history and disciplinary log are relational and must be updated consistently. Go compiles to a small static binary with a fast startup, ideal for a service that every other flow authenticates against. |
 | Server Moderation Session Service | Postoronca Dumitru | Go, Gin | PostgreSQL + Redis | Orchestrates a shift with many short calls and events; goroutines make concurrent calls and event publishing cheap and explicit. Redis holds hot state of the active shift (`current_applicant_id`, counters); PostgreSQL keeps shift history. Same language as Player keeps the Session Layer uniform. |
-| Applicant Service | Iacovlev Maxim | TypeScript, NestJS | PostgreSQL | Generating believable applicants and impostors is a data-generation task; `@faker-js/faker` plus quick iteration on generation rules in TypeScript keeps it fast to build and tune. |
-| Credential Service | Iacovlev Maxim | TypeScript, NestJS | MongoDB | Documents differ in shape (ID card, email, enrollment, course registration) and each carries a validation status; a document store fits better than a fixed schema, and Mongoose maps JSON documents to typed models with no impedance mismatch. |
+| Applicant Service | Iacovlev Maxim | C#, ASP.NET Core | PostgreSQL | Generating believable applicants and impostors is a data-generation task over a rich domain model (status, major, year, courses); C# records and the Bogus library give typed generation rules that are easy to tune between shifts. |
+| Credential Service | Iacovlev Maxim | C#, ASP.NET Core | MongoDB | Documents differ in shape (ID card, email, enrollment, course registration) and each carries a validation status; a document store fits better than a fixed schema, and the official MongoDB C# driver maps documents to typed classes. Same language as the other Applicant Data services keeps that group uniform. |
 | Server Rules Service | Titerez Vladislav | C#, ASP.NET Core | PostgreSQL | A versioned ruleset that grows more complex between shifts benefits from a strongly typed rule model and C# pattern matching. |
 | University Record Service | Titerez Vladislav | C#, ASP.NET Core | PostgreSQL | Per-category access control per player maps directly onto ASP.NET Core policy-based authorization. |
 | Moderation Service | Racovita Dumitru | Go, Gin | PostgreSQL | Fans out to four services in parallel (goroutines + `errgroup`), computes the correct verdict and compares it with the moderator's choice. Strong typing keeps the rule-evaluation logic explicit; decisions are audit records queried by session, moderator and applicant. |
-| Discord DMs Service | Racovita Dumitru | TypeScript, Node.js (Fastify + `ws`) | MongoDB + Redis Pub/Sub | Real-time chat over WebSockets; Node's event loop keeps many idle connections cheap. Messages are append-only documents. Redis Pub/Sub fans messages out across instances so the service can scale horizontally later. |
+| Discord DMs Service | Racovita Dumitru | Go, Gin + `gorilla/websocket` | MongoDB + Redis Pub/Sub | Real-time chat over WebSockets; one goroutine per connection keeps many idle connections cheap. Messages are append-only documents. Redis Pub/Sub fans messages out across instances so the service can scale horizontally later. Same language as Moderation Service keeps both services of one owner uniform. |
 
 Shared by all services: Docker (one container per service), RabbitMQ as message broker, PostgreSQL as the default store, MongoDB and Redis only where the data shape or access pattern justifies them.
 
@@ -115,11 +115,19 @@ Shared by all services: Docker (one container per service), RabbitMQ as message 
 
 Three patterns, each with a rule for when it applies. Every arrow in the architecture diagram maps onto one of them.
 
-**1. Synchronous request/response: REST over HTTP, JSON.** Used when the caller needs the answer to continue (next applicant, current session, rule check). Service-to-service calls use the same API the client would. We chose REST over gRPC because a single JSON contract across three languages is cheaper to build, debug and review than three Protobuf toolchains, and Lab 0 has no latency requirement that justifies binary serialization. gRPC remains a candidate for Moderation Service's internal fan-out in a later laboratory.
+**1. Synchronous request/response: REST over HTTP, JSON.** Used when the caller needs the answer to continue (next applicant, current session, rule check). Service-to-service calls use the same API the client would. We chose REST over gRPC because a single JSON contract across two languages is cheaper to build, debug and review than two Protobuf toolchains, and Lab 0 has no latency requirement that justifies binary serialization. gRPC remains a candidate for Moderation Service's internal fan-out in a later laboratory.
 
-**2. Asynchronous domain events: RabbitMQ, topic exchange.** Used when the producer needs no reply and there are several consumers, or a consumer may be down (applicant initialized, shift started or ended, decision recorded). Delivery is at-least-once; every consumer is idempotent and deduplicates by `event_id`, so a redelivered event never double-applies XP, penalties or record creation. A broker fits the `ApplicantInitialized` flow from Service Boundaries exactly: one producer, two consumers, no cross-service writes. RabbitMQ over Kafka because we need routing and fan-out, not log replay, and it has first-class clients in all three languages.
+**2. Asynchronous domain events: RabbitMQ, topic exchange.** Used when the producer needs no reply and there are several consumers, or a consumer may be down (applicant initialized, shift started or ended, decision recorded). Delivery is at-least-once; every consumer is idempotent and deduplicates by `event_id`, so a redelivered event never double-applies XP, penalties or record creation. A broker fits the `ApplicantInitialized` flow from Service Boundaries exactly: one producer, two consumers, no cross-service writes. RabbitMQ over Kafka because we need routing and fan-out, not log replay, and it has first-class clients in both languages.
 
 **3. Real-time push: WebSocket, only in Discord DMs Service.** Players wait for messages in session channels, so the client must be pushed to. Discord DMs is the only service holding long-lived client connections; history and channel lists are also available over REST so a reconnecting client can catch up.
+
+Libraries per language, so that every service implements the same pattern the same way:
+
+| Pattern | Go | C# |
+| --- | --- | --- |
+| REST server / client | Gin, `net/http` | ASP.NET Core Web API, `HttpClient` |
+| RabbitMQ | `rabbitmq/amqp091-go` | `RabbitMQ.Client` |
+| WebSocket | `gorilla/websocket` (Discord DMs only) | not used |
 
 | Interaction (from the diagram) | Pattern | Direction | Why |
 | --- | --- | --- | --- |

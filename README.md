@@ -98,10 +98,16 @@ The diagram below visualizes the communication paths described above: the Sessio
 
 We use two languages: **Go** and **C#**.
 
-| Language | Services | Owners |
-| --- | --- | --- |
-| Go | Player, Server Moderation Session, Applicant, Credential, Moderation, Discord DMs | Postoronca Dumitru, Iacovlev Maxim, Racovita Dumitru |
-| C# | Server Rules, University Record | Titerez Vladislav |
+| # | Service | Owner | Language | Framework |
+| --- | --- | --- | --- | --- |
+| 1 | Player Service | Postoronca Dumitru | Go | Gin |
+| 2 | Server Moderation Session Service | Postoronca Dumitru | Go | Gin |
+| 3 | Applicant Service | Iacovlev Maxim | Go | Gin |
+| 4 | Credential Service | Iacovlev Maxim | Go | Gin |
+| 5 | Server Rules Service | Titerez Vladislav | C# | ASP.NET Core |
+| 6 | University Record Service | Titerez Vladislav | C# | ASP.NET Core |
+| 7 | Moderation Service | Racovita Dumitru | Go | Gin |
+| 8 | Discord DMs Service | Racovita Dumitru | Go | Gin + `gorilla/websocket` |
 
 **Why Go for six services.** Most of our services do the same kind of work: receive an HTTP request, call one or two other services, read or write their own database, and answer. Go is built for exactly this. It compiles to one small binary, starts in milliseconds, and goroutines make it simple to call several services at the same time (Moderation Service calls four at once). Go is also quick to learn, which matters because most of the team is picking it up during this course.
 

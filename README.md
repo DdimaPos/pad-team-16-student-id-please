@@ -172,18 +172,18 @@ Players chat in channels and must see new messages instantly. Discord DMs Servic
 
 | Interaction | Rule | Who calls whom | Why this rule |
 | --- | --- | --- | --- |
-| Player creates or joins a session | REST | client → Session; Session → Player `GET /players/{id}` | Needs an answer now |
-| Session reports shift results | Event `session.ended` | Session → Player | Player updates XP later; closing the shift must not wait for it |
-| Session picks the ruleset for a new shift | REST `GET /rulesets/current` | Session → Server Rules | The shift cannot start without knowing its `ruleset_version` |
-| Session requests the next applicant | REST | Session → Applicant | Needs the `applicant_id` now |
-| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized` | the service contacted first → the other two | Two listeners, no waiting, no cross-service writes |
-| Session assigns record scopes to Junior Moderators | Event `session.started` | Session → University Record | Membership and scopes travel together in one event |
-| Session supplies channel membership | Events `session.started`, `session.ended` | Session → Discord DMs | Discord DMs creates and archives channels on its own |
-| Moderator submits a decision | REST `POST /decisions` | client → Moderation | The verdict must come back now |
-| Session supplies the current applicant | REST `GET /sessions/{id}` | Moderation → Session | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
-| Moderation gathers data for the verdict | REST, three calls in parallel | Moderation → Applicant, Credential, University Record | All three answers are needed to know what is true about the applicant |
-| Moderation checks the rules | REST `POST /rulesets/{version}/evaluations` | Moderation → Server Rules | Needs the verified facts from the three calls above, so it comes after them |
-| Moderation reports the outcome | Event `decision.recorded` | Moderation → Session | Session updates score and counters; no reply needed |
+| Player creates or joins a session | REST | client => Session; Session => Player `GET /players/{id}` | Needs an answer now |
+| Session reports shift results | Event `session.ended` | Session => Player | Player updates XP later; closing the shift must not wait for it |
+| Session picks the ruleset for a new shift | REST `GET /rulesets/current` | Session => Server Rules | The shift cannot start without knowing its `ruleset_version` |
+| Session requests the next applicant | REST | Session => Applicant | Needs the `applicant_id` now |
+| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized` | the service contacted first => the other two | Two listeners, no waiting, no cross-service writes |
+| Session assigns record scopes to Junior Moderators | Event `session.started` | Session => University Record | Membership and scopes travel together in one event |
+| Session supplies channel membership | Events `session.started`, `session.ended` | Session => Discord DMs | Discord DMs creates and archives channels on its own |
+| Moderator submits a decision | REST `POST /decisions` | client => Moderation | The verdict must come back now |
+| Session supplies the current applicant | REST `GET /sessions/{id}` | Moderation => Session | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
+| Moderation gathers data for the verdict | REST, three calls in parallel | Moderation => Applicant, Credential, University Record | All three answers are needed to know what is true about the applicant |
+| Moderation checks the rules | REST `POST /rulesets/{version}/evaluations` | Moderation => Server Rules | Needs the verified facts from the three calls above, so it comes after them |
+| Moderation reports the outcome | Event `decision.recorded` | Moderation => Session | Session updates score and counters; no reply needed |
 | Players chat during a shift | WebSocket (REST for history) | client ↔ Discord DMs | Push in real time |
 
 ### Worked example: one applicant from start to finish
@@ -214,7 +214,7 @@ Why:
 What it costs, and what we do about it:
 
 - **Data that crosses a boundary through events arrives a little later.** Credential Service learns about a new applicant a few milliseconds after Applicant Service creates it. Consumers are idempotent and keyed by the shared identifier, so order and repeats do not matter.
-- **No transaction can span two services.** A flow like "decision → session score → player XP" is a chain of events, not one transaction. Compensation for failures is a topic for the transactions laboratory.
+- **No transaction can span two services.** A flow like "decision => session score => player XP" is a chain of events, not one transaction. Compensation for failures is a topic for the transactions laboratory.
 - **No joins across services.** A service that needs a combined view asks each owner and combines the answers itself. Moderation Service does exactly this.
 
 **Permitted duplication.** A service may keep a read-only copy of another service's data if it needs it for auditing or speed, as long as the owner stays the source of truth. Moderation Service stores a snapshot of the applicant, credentials and rule version behind each verdict, so the decision can still be explained after the applicant or the rules have changed.
@@ -287,17 +287,80 @@ These values are used by more than one service, so they are defined once here.
 ```json
 {
   "name": "Ion Popescu",
-  "student_id": "FAF231017",
+  "student_id": "FAF23117",
   "email": "ion.popescu@isa.utm.md",
   "major": "FAF",
-  "year": 2,
+  "year": 4,
   "university_status": "faf_student",
   "courses": ["PAD", "ELSE-NET"],
   "role": "student"
 }
 ```
 
-`student_id`, `major` and `year` are `null` for people who never studied at the university.
+#### Identity model
+
+Applicant, Credential and University Record all generate or validate the same identity, so
+the rules are defined once here. A service that disagrees with them turns an honest applicant
+into an apparent liar.
+
+**Student ID - `{MAJOR}{yy}{g}{nn}`**
+
+```
+FAF 23 1 17   ->  "FAF23117"
+ |   |  |  `- nn : 2 digits, index within the group
+ |   |  `---- g  : 1 digit,  group number
+ |   `------- yy : 2 digits, admission year mod 100 (23 = admitted 2023)
+ `----------- MAJOR : 2-4 uppercase letters, equal to the profile's major
+```
+
+Regex `^[A-Z]{2,4}[0-9]{5}$`. The academic group is derivable from the identifier alone -
+`FAF23117` => group `FAF-231`, email group `faf-231` - so it never has to travel as a separate
+field. `enrollment` records still carry `group` for display, but it must agree with the
+identifier. Parsers are deliberately tolerant: a service never rejects a peer's identifier for
+its shape, it only declines to interpret it.
+
+**`REFERENCE_YEAR` is `2026`.** It is the calendar year the applicant-data services treat as
+"now", and all three must be configured with the same value, or perfectly honest applicants
+will look like liars. It matches the first component of `academic_year` (`"2026-2027"`).
+
+**Admission year and study year are independent.** Neither is derived from the other: in the
+spring of 2026 someone admitted in 2025 is a first-year, and in the autumn of the same calendar
+year a second-year. The pair is constrained rather than computed:
+
+```
+year ∈ { REFERENCE_YEAR − admissionYear, REFERENCE_YEAR − admissionYear + 1 } ∩ [1, 4]
+```
+
+So someone admitted in 2023 is in year 3 or 4 during `2026-2027` and **never** in year 2, and
+claiming otherwise is a lie provable from the identifier on their own card. The `years_enrolled`
+fact Moderation sends to Server Rules is `REFERENCE_YEAR − admissionYear`.
+
+**University email addresses are numbered only on collision.**
+
+| Status | Address | Suffix |
+| --- | --- | --- |
+| `faf_student`, `other_major_student`, `teaching_assistant` | `first.last@isa.utm.md` | none, unless taken => `first.last2@`, `first.last3@` |
+| `staff` | `first.last@utm.md` | the same rule |
+| `alumni`, `outsider` | `first.last{nn}@gmail.com` | always a two-digit suffix |
+
+`first.last` is lower-cased and folded to ASCII: `Ștefan Băț` => `stefan.bat`, `Ana-Maria Rusu`
+=> `ana-maria.rusu`. Uniqueness is asked across all three applicant-data services, and any one
+of them can answer it locally: each holds the union of the applicants it generated and every
+applicant it ingested from `applicant.initialized`, and registers the addresses of both.
+
+**Which fields each status carries.** `role` is not chosen freely - it follows from
+`university_status`, and is the server role that status entitles the applicant to ask for.
+
+| `university_status` | `student_id` | `major` | `year` | `courses` | `role` |
+| --- | --- | --- | --- | --- | --- |
+| `faf_student`, `other_major_student` | yes | yes | `1`-`4` | may have | `student` |
+| `teaching_assistant` | yes | yes | `1`-`4` | may have | `teacher` |
+| `alumni` | yes | yes | `null` | empty | `alumni` |
+| `staff` | `null` | `null` | `null` | empty | `teacher` |
+| `outsider` | `null` | `null` | `null` | empty | `guest` |
+
+An alumnus is the case the old one-line rule got wrong: they carry a student ID and a major,
+but no current study year and no course registrations.
 
 #### Player Service
 
@@ -560,10 +623,10 @@ None. Applicant Service never calls other services. It shares new applicants thr
   "applicant_id": "5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13",
   "session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
   "name": "Ion Popescu",
-  "student_id": "FAF231017",
+  "student_id": "FAF23117",
   "email": "ion.popescu@isa.utm.md",
   "major": "FAF",
-  "year": 2,
+  "year": 4,
   "university_status": "faf_student",
   "courses": ["PAD", "ELSE-NET"],
   "role": "student",
@@ -587,8 +650,8 @@ None. Applicant Service never calls other services. It shares new applicants thr
     "initialized_by": "applicant-service",
     "difficulty": 3,
     "claimed": {
-      "name": "Ion Popescu", "student_id": "FAF231017", "email": "ion.popescu@isa.utm.md",
-      "major": "FAF", "year": 2, "university_status": "faf_student", "courses": ["PAD", "ELSE-NET"], "role": "student"
+      "name": "Ion Popescu", "student_id": "FAF23117", "email": "ion.popescu@isa.utm.md",
+      "major": "FAF", "year": 4, "university_status": "faf_student", "courses": ["PAD", "ELSE-NET"], "role": "student"
     },
     "actual": {
       "name": "Ion Popescu", "student_id": null, "email": "ion.popescu99@gmail.com",
@@ -637,12 +700,17 @@ None. Credential Service never calls other services. It learns about new applica
     {
       "document_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
       "type": "student_id_card",
-      "fields": { "name": "Ion Popescu", "student_id": "FAF231017", "faculty": "FCIM", "major": "FAF", "valid_until": "2027-06-30" }
+      "fields": { "name": "Ion Popescu", "student_id": "FAF23117", "faculty": "FCIM", "major": "FAF", "valid_until": "2027-06-30" }
     },
     {
       "document_id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
       "type": "enrollment_confirmation",
-      "fields": { "name": "Ion Popescu", "student_id": "FAF231017", "academic_year": "2026-2027", "year": 2, "issued_at": "2026-09-01" }
+      "fields": { "name": "Ion Popescu", "student_id": "FAF23117", "academic_year": "2026-2027", "year": 4, "issued_at": "2026-09-01" }
+    },
+    {
+      "document_id": "f1a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5c",
+      "type": "university_email",
+      "fields": { "name": "Ion Popescu", "email": "ion.popescu@isa.utm.md", "groups": ["faf-students", "faf-231"], "issued_at": "2023-09-01" }
     }
   ]
 }
@@ -665,16 +733,23 @@ None. Credential Service never calls other services. It learns about new applica
     {
       "document_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
       "type": "student_id_card",
-      "fields": { "name": "Ion Popescu", "student_id": "FAF231017", "faculty": "FCIM", "major": "FAF", "valid_until": "2027-06-30" },
+      "fields": { "name": "Ion Popescu", "student_id": "FAF23117", "faculty": "FCIM", "major": "FAF", "valid_until": "2027-06-30" },
       "validation_status": "forged",
-      "problems": ["Student ID FAF231017 was never issued to this person"]
+      "problems": ["Student ID FAF23117 was never issued to this person"]
     },
     {
       "document_id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
       "type": "enrollment_confirmation",
-      "fields": { "name": "Ion Popescu", "student_id": "FAF231017", "academic_year": "2026-2027", "year": 2, "issued_at": "2026-09-01" },
+      "fields": { "name": "Ion Popescu", "student_id": "FAF23117", "academic_year": "2026-2027", "year": 4, "issued_at": "2026-09-01" },
       "validation_status": "forged",
       "problems": ["The confirmation number does not exist"]
+    },
+    {
+      "document_id": "f1a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5c",
+      "type": "university_email",
+      "fields": { "name": "Ion Popescu", "email": "ion.popescu@isa.utm.md", "groups": ["faf-students", "faf-231"], "issued_at": "2023-09-01" },
+      "validation_status": "forged",
+      "problems": ["No mailbox exists for ion.popescu@isa.utm.md"]
     }
   ]
 }
@@ -807,7 +882,7 @@ None. University Record never calls other services. It learns about applicants a
 
 ###### `GET /api/v1/records/{category}` - consumed by Client
 
-**Description.** A Junior Moderator searches one record category, for example "is student ID FAF231017 on the enrollment list?". A player can only search the categories assigned to them in the current session.
+**Description.** A Junior Moderator searches one record category, for example "is student ID FAF23117 on the enrollment list?". A player can only search the categories assigned to them in the current session.
 
 **Query params.**
 
@@ -819,14 +894,14 @@ None. University Record never calls other services. It learns about applicants a
 
 **Payload.** None.
 
-**Response.** `200 OK`. Example for `enrollment` with `q=FAF231004`:
+**Response.** `200 OK`. Example for `enrollment` with `q=FAF23104`:
 
 ```json
 {
   "category": "enrollment",
   "academic_year": "2026-2027",
   "items": [
-    { "student_id": "FAF231004", "name": "Ana Rusu", "major": "FAF", "group": "FAF-231", "year": 2, "enrolled_since": "2025-09-01", "status": "enrolled" }
+    { "student_id": "FAF23104", "name": "Ana Rusu", "major": "FAF", "group": "FAF-231", "year": 3, "enrolled_since": "2023-09-01", "status": "enrolled" }
   ],
   "total": 1
 }
@@ -846,6 +921,8 @@ Fields of one record in each category:
 - The calling player must have `category` in their `record_scopes` for this `session_id` (received with `session.started`). Otherwise the answer is `403 CATEGORY_NOT_ASSIGNED`. The Moderator has no categories.
 - After `session.ended`, every request for that session gets `403 SESSION_ENDED`.
 - An empty `items` list is a valid answer: it means the records know nothing about what was searched, which is often the clue.
+- `group` is derived from `student_id`, and `year` and `enrolled_since` must agree with the
+  admission year encoded in it. See the [identity model](#identity-model).
 - Errors: `403 CATEGORY_NOT_ASSIGNED`, `403 SESSION_ENDED`, `422 UNKNOWN_CATEGORY`.
 
 ###### `GET /api/v1/applicants/{applicant_id}/records` - consumed by Moderation Service
@@ -940,7 +1017,7 @@ The lists hold the same records a junior would find by searching, but for every 
   "violated_rules": [
     { "rule_id": "only-faf-or-teachers", "description": "Only FAF students and FAF teachers may join" }
   ],
-  "reasons": ["The student ID card is forged", "The university has no record of student ID FAF231017"],
+  "reasons": ["The student ID card is forged", "The university has no record of student ID FAF23117"],
   "penalty": 30,
   "ruleset_version": 7,
   "decided_at": "2026-09-10T18:14:00Z"
@@ -1007,7 +1084,7 @@ Further rules:
 {
   "items": [
     {
-      "student_id": "FAF231017",
+      "student_id": "FAF23117",
       "name": "Ion Popescu",
       "banned_at": "2026-09-03T17:20:00Z",
       "decision_id": "e4f5a6b7-c8d9-4e0f-a1b2-c3d4e5f6a7b8",
@@ -1064,11 +1141,11 @@ None. Discord DMs never calls other services. Everything it needs about a sessio
 **Payload.** None for the upgrade request. After the connection is open, the messages look like this:
 
 ```json
-{ "type": "message.send", "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8", "content": "FAF231017 is not on the enrollment list" }
+{ "type": "message.send", "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8", "content": "FAF23117 is not on the enrollment list" }
 ```
 
 ```json
-{ "type": "message.new", "message": { "message_id": "f6a7b8c9-d0e1-4f2a-b3c4-d5e6f7a8b9c0", "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8", "author_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "content": "FAF231017 is not on the enrollment list", "sent_at": "2026-09-10T18:12:30Z" } }
+{ "type": "message.new", "message": { "message_id": "f6a7b8c9-d0e1-4f2a-b3c4-d5e6f7a8b9c0", "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8", "author_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "content": "FAF23117 is not on the enrollment list", "sent_at": "2026-09-10T18:12:30Z" } }
 ```
 
 ```json
@@ -1238,9 +1315,9 @@ We follow **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`
 
 ### Version Types
 
-- **MAJOR** (e.g., 1.0.0 → 2.0.0): Breaking changes that require user action
-- **MINOR** (e.g., 1.0.0 → 1.1.0): New features that are backward compatible
-- **PATCH** (e.g., 1.0.0 → 1.0.1): Bug fixes and small improvements
+- **MAJOR** (e.g., 1.0.0 => 2.0.0): Breaking changes that require user action
+- **MINOR** (e.g., 1.0.0 => 1.1.0): New features that are backward compatible
+- **PATCH** (e.g., 1.0.0 => 1.0.1): Bug fixes and small improvements
 
 ### Release Process
 

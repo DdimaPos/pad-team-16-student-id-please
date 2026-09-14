@@ -1,0 +1,92 @@
+# Team-wide compose - references PUBLISHED Docker Hub images only, never `build:`. Any
+# teammate can run this without cloning anyone's (private) service repository. So far it
+# covers the two services owned by Titerez Vladislav (Server Rules, University Record);
+# other services should add their own blocks here the same way, referencing their own
+# published image and joining the same `student-id-net` network.
+#
+# Usage:
+#   docker network create student-id-net   # once, if it does not already exist
+#   docker compose up -d
+name: student-id-please
+
+x-reference-year: &reference_year "2026"
+
+services:
+  rules-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${RULES_POSTGRES_USER:-rules_user}
+      POSTGRES_PASSWORD: ${RULES_POSTGRES_PASSWORD:?set RULES_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${RULES_POSTGRES_DB:-rules_db}
+    volumes:
+      - rules_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${RULES_POSTGRES_USER:-rules_user} -d ${RULES_POSTGRES_DB:-rules_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - student-id-net
+
+  server-rules-service:
+    image: d1vinexd/server-rules-service:0.1.0
+    restart: unless-stopped
+    depends_on:
+      rules-postgres:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__RulesDb: "Host=rules-postgres;Port=5432;Database=${RULES_POSTGRES_DB:-rules_db};Username=${RULES_POSTGRES_USER:-rules_user};Password=${RULES_POSTGRES_PASSWORD:?set RULES_POSTGRES_PASSWORD}"
+      Auth__ServiceToken: ${RULES_SERVICE_TOKEN:?set RULES_SERVICE_TOKEN}
+    ports:
+      - "8083:8080"
+    networks:
+      - student-id-net
+
+  university-record-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user}
+      POSTGRES_PASSWORD: ${UNIVERSITY_RECORD_POSTGRES_PASSWORD:?set UNIVERSITY_RECORD_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}
+    volumes:
+      - university_record_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user} -d ${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - student-id-net
+
+  university-record-service:
+    image: d1vinexd/university-record-service:0.1.0
+    restart: unless-stopped
+    depends_on:
+      university-record-postgres:
+        condition: service_healthy
+    environment:
+      ConnectionStrings__UniversityRecordDb: "Host=university-record-postgres;Port=5432;Database=${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db};Username=${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user};Password=${UNIVERSITY_RECORD_POSTGRES_PASSWORD:?set UNIVERSITY_RECORD_POSTGRES_PASSWORD}"
+      REFERENCE_YEAR: *reference_year
+      Auth__ServiceToken: ${UNIVERSITY_RECORD_SERVICE_TOKEN:?set UNIVERSITY_RECORD_SERVICE_TOKEN}
+      Auth__ValidateSignature: "false"
+      Dev__EnableTestEndpoints: ${UNIVERSITY_RECORD_ENABLE_DEV_ENDPOINTS:-true}
+      # RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/   # uncomment once the shared broker is added here
+    ports:
+      - "8084:8080"
+    networks:
+      - student-id-net
+
+networks:
+  student-id-net:
+    external: true
+    name: student-id-net
+
+volumes:
+  rules_pgdata:
+  university_record_pgdata:

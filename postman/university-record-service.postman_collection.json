@@ -1,0 +1,312 @@
+{
+  "info": {
+    "name": "University Record Service",
+    "description": "The dev-replay endpoints (/api/v1/dev/*) dispatch into the exact same handler classes the RabbitMQ consumer uses, so this collection demonstrates the full ingest -> search -> Moderation-view loop without a broker running. Run the 'scenario' folder top to bottom.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8084" },
+    { "key": "service_token", "value": "dev-service-token-12345" },
+    { "key": "session_id", "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e" },
+    { "key": "honest_applicant_id", "value": "5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13" },
+    { "key": "thief_applicant_id", "value": "7c1e4a90-1111-4222-8333-444455556666" },
+    { "key": "player_a_id", "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10" },
+    { "key": "player_b_id", "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21" },
+    { "key": "junior_a_jwt", "value": "" },
+    { "key": "junior_b_jwt", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "health",
+      "item": [
+        { "name": "GET /health (liveness)", "request": { "method": "GET", "url": "{{base_url}}/health" } },
+        { "name": "GET /health/ready (readiness)", "request": { "method": "GET", "url": "{{base_url}}/health/ready" } }
+      ]
+    },
+    {
+      "name": "scenario - honest student, identity theft, scopes, session end",
+      "item": [
+        {
+          "name": "1. mint junior A token (enrollment+courses scope)",
+          "event": [
+            { "listen": "test", "script": { "exec": ["pm.collectionVariables.set('junior_a_jwt', pm.response.json().token);"] } }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/dev/tokens?player_id={{player_a_id}}", "host": ["{{base_url}}"], "path": ["api", "v1", "dev", "tokens"], "query": [{ "key": "player_id", "value": "{{player_a_id}}" }] },
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "2. mint junior B token (email-groups+fcim-logs scope)",
+          "event": [
+            { "listen": "test", "script": { "exec": ["pm.collectionVariables.set('junior_b_jwt', pm.response.json().token);"] } }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/dev/tokens?player_id={{player_b_id}}", "host": ["{{base_url}}"], "path": ["api", "v1", "dev", "tokens"], "query": [{ "key": "player_id", "value": "{{player_b_id}}" }] },
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "3. ingest honest FAF student (applicant.initialized)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/applicant-initialized",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T18:10:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{honest_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"applicant-service\",\n    \"difficulty\": 3,\n    \"claimed\": { \"name\": \"Ana Rusu\", \"student_id\": \"FAF23117\", \"email\": \"ana.rusu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" },\n    \"actual\":  { \"name\": \"Ana Rusu\", \"student_id\": \"FAF23117\", \"email\": \"ana.rusu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" }\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "4. session.started - A gets enrollment+courses, B gets email-groups+fcim-logs",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-started",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"junior_moderators\": [\n      { \"player_id\": \"{{player_a_id}}\", \"record_scopes\": [\"enrollment\", \"courses\"] },\n      { \"player_id\": \"{{player_b_id}}\", \"record_scopes\": [\"email-groups\", \"fcim-logs\"] }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "5. A searches enrollment (allowed)",
+          "event": [
+            { "listen": "test", "script": { "exec": ["pm.test('200 OK', () => pm.response.to.have.status(200));", "pm.test('finds the honest student', () => pm.expect(pm.response.json().items).to.have.lengthOf(1));"] } }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/records/enrollment?session_id={{session_id}}&q=FAF23117", "host": ["{{base_url}}"], "path": ["api", "v1", "records", "enrollment"], "query": [{ "key": "session_id", "value": "{{session_id}}" }, { "key": "q", "value": "FAF23117" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{junior_a_jwt}}" }]
+          }
+        },
+        {
+          "name": "6. B searches enrollment (403 CATEGORY_NOT_ASSIGNED - not B's scope)",
+          "event": [
+            { "listen": "test", "script": { "exec": ["pm.test('403 Forbidden', () => pm.response.to.have.status(403));", "pm.test('CATEGORY_NOT_ASSIGNED', () => pm.expect(pm.response.json().error.code).to.eql('CATEGORY_NOT_ASSIGNED'));"] } }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/records/enrollment?session_id={{session_id}}&q=FAF23117", "host": ["{{base_url}}"], "path": ["api", "v1", "records", "enrollment"], "query": [{ "key": "session_id", "value": "{{session_id}}" }, { "key": "q", "value": "FAF23117" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{junior_b_jwt}}" }]
+          }
+        },
+        {
+          "name": "7. B searches email-groups by group (allowed)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/records/email-groups?session_id={{session_id}}&q=faf-231", "host": ["{{base_url}}"], "path": ["api", "v1", "records", "email-groups"], "query": [{ "key": "session_id", "value": "{{session_id}}" }, { "key": "q", "value": "faf-231" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{junior_b_jwt}}" }]
+          }
+        },
+        {
+          "name": "8. ingest an identity thief claiming the victim's student_id",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/applicant-initialized",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T18:20:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{thief_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"applicant-service\",\n    \"difficulty\": 4,\n    \"claimed\": { \"name\": \"Ion Popescu\", \"student_id\": \"FAF23117\", \"email\": \"ion.popescu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [], \"role\": \"student\" },\n    \"actual\":  { \"name\": \"Ion Popescu\", \"student_id\": null, \"email\": \"ion.popescu99@gmail.com\", \"major\": null, \"year\": null, \"university_status\": \"outsider\", \"courses\": [], \"role\": \"guest\" }\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "9. Moderation view of the thief - enrollment shows the VICTIM's name",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('enrollment record belongs to the victim, not the thief', function () {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.enrollment[0].name).to.eql('Ana Rusu');",
+                  "  pm.expect(body.enrollment[0].student_id).to.eql('FAF23117');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/applicants/{{thief_applicant_id}}/records",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "10. session.ended",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": { \"session_id\": \"{{session_id}}\", \"ended_at\": \"2026-09-10T18:45:00Z\" }\n}"
+            }
+          }
+        },
+        {
+          "name": "11. A searches again after session ended (403 SESSION_ENDED)",
+          "event": [
+            { "listen": "test", "script": { "exec": ["pm.test('SESSION_ENDED beats CATEGORY_NOT_ASSIGNED', () => pm.expect(pm.response.json().error.code).to.eql('SESSION_ENDED'));"] } }
+          ],
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/records/enrollment?session_id={{session_id}}&q=FAF23117", "host": ["{{base_url}}"], "path": ["api", "v1", "records", "enrollment"], "query": [{ "key": "session_id", "value": "{{session_id}}" }, { "key": "q", "value": "FAF23117" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{junior_a_jwt}}" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "courses claim view (exists / registered)",
+      "item": [
+        {
+          "name": "ingest applicant claiming a real course and a fabricated one",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/applicant-initialized",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T19:00:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{$guid}}\",\n    \"session_id\": \"{{$guid}}\",\n    \"initialized_by\": \"applicant-service\",\n    \"difficulty\": 2,\n    \"claimed\": { \"name\": \"Vasile Cojocaru\", \"student_id\": \"FAF22201\", \"email\": \"vasile.cojocaru@isa.utm.md\", \"major\": \"FAF\", \"year\": 4, \"university_status\": \"faf_student\", \"courses\": [\"PAD\", \"ELSE-NET\"], \"role\": \"student\" },\n    \"actual\":  { \"name\": \"Vasile Cojocaru\", \"student_id\": \"FAF22201\", \"email\": \"vasile.cojocaru@isa.utm.md\", \"major\": \"FAF\", \"year\": 4, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" }\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "search courses catalog for PAD",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/records/courses?session_id={{session_id}}&q=PAD", "host": ["{{base_url}}"], "path": ["api", "v1", "records", "courses"], "query": [{ "key": "session_id", "value": "{{session_id}}" }, { "key": "q", "value": "PAD" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{junior_a_jwt}}" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "applicants/next (this service as generator)",
+      "item": [
+        {
+          "name": "generate a new applicant",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/applicants/next",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{ \"session_id\": \"{{$guid}}\", \"difficulty\": 3 }" }
+          }
+        },
+        {
+          "name": "bad difficulty (400 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/applicants/next",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{ \"session_id\": \"{{$guid}}\", \"difficulty\": 9 }" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "auth edge cases",
+      "item": [
+        {
+          "name": "no credential at all (401 UNAUTHENTICATED)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/records/enrollment?session_id={{session_id}}&q=x", "host": ["{{base_url}}"], "path": ["api", "v1", "records", "enrollment"], "query": [{ "key": "session_id", "value": "{{session_id}}" }, { "key": "q", "value": "x" }] }
+          }
+        },
+        {
+          "name": "wrong service token (401 INVALID_SERVICE_TOKEN)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/applicants/{{honest_applicant_id}}/records",
+            "header": [{ "key": "X-Service-Token", "value": "wrong-token" }]
+          }
+        },
+        {
+          "name": "player JWT on a service-only route (403 SERVICE_TOKEN_REQUIRED)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/admin/courses",
+            "header": [{ "key": "Authorization", "value": "Bearer {{junior_a_jwt}}" }]
+          }
+        },
+        {
+          "name": "unknown category (422 UNKNOWN_CATEGORY)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/records/not-a-category?session_id={{session_id}}&q=x", "host": ["{{base_url}}"], "path": ["api", "v1", "records", "not-a-category"], "query": [{ "key": "session_id", "value": "{{session_id}}" }, { "key": "q", "value": "x" }] },
+            "header": [{ "key": "Authorization", "value": "Bearer {{junior_a_jwt}}" }]
+          }
+        }
+      ]
+    },
+    {
+      "name": "admin (beyond contract, service-token only)",
+      "item": [
+        {
+          "name": "list catalog courses",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/admin/courses?limit=10",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "create a course",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/admin/courses",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{ \"course_code\": \"TEST101\", \"title\": \"Test Course\", \"semester\": 1, \"major\": \"FAF\", \"year\": 1, \"schedule\": [] }" }
+          }
+        },
+        {
+          "name": "delete a course with no registrations",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/admin/courses/TEST101",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "delete PAD - has registrations (409 COURSE_HAS_REGISTRATIONS)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/admin/courses/PAD",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "list applicants (reveals actual - service-only)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/admin/applicants?limit=10",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "list sessions",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/admin/sessions?limit=10",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "set scopes manually (session-service mock)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/admin/sessions/{{session_id}}/scopes",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{ \"scopes\": [ { \"player_id\": \"{{player_a_id}}\", \"category\": \"enrollment\" } ] }" }
+          }
+        }
+      ]
+    }
+  ]
+}

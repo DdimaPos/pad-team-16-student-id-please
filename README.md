@@ -172,18 +172,18 @@ Players chat in channels and must see new messages instantly. Discord DMs Servic
 
 | Interaction | Rule | Who calls whom | Why this rule |
 | --- | --- | --- | --- |
-| Player creates or joins a session | REST | client → Session; Session → Player `GET /players/{id}` | Needs an answer now |
-| Session reports shift results | Event `session.ended` | Session → Player | Player updates XP later; closing the shift must not wait for it |
-| Session picks the ruleset for a new shift | REST `GET /rulesets/current` | Session → Server Rules | The shift cannot start without knowing its `ruleset_version` |
-| Session requests the next applicant | REST | Session → Applicant | Needs the `applicant_id` now |
-| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized` | the service contacted first → the other two | Two listeners, no waiting, no cross-service writes |
-| Session assigns record scopes to Junior Moderators | Event `session.started` | Session → University Record | Membership and scopes travel together in one event |
-| Session supplies channel membership | Events `session.started`, `session.ended` | Session → Discord DMs | Discord DMs creates and archives channels on its own |
-| Moderator submits a decision | REST `POST /decisions` | client → Moderation | The verdict must come back now |
-| Session supplies the current applicant | REST `GET /sessions/{id}` | Moderation → Session | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
-| Moderation gathers data for the verdict | REST, three calls in parallel | Moderation → Applicant, Credential, University Record | All three answers are needed to know what is true about the applicant |
-| Moderation checks the rules | REST `POST /rulesets/{version}/evaluations` | Moderation → Server Rules | Needs the verified facts from the three calls above, so it comes after them |
-| Moderation reports the outcome | Event `decision.recorded` | Moderation → Session | Session updates score and counters; no reply needed |
+| Player creates or joins a session | REST | client => Session; Session => Player `GET /players/{id}` | Needs an answer now |
+| Session reports shift results | Event `session.ended` | Session => Player | Player updates XP later; closing the shift must not wait for it |
+| Session picks the ruleset for a new shift | REST `GET /rulesets/current` | Session => Server Rules | The shift cannot start without knowing its `ruleset_version` |
+| Session requests the next applicant | REST | Session => Applicant | Needs the `applicant_id` now |
+| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized` | the service contacted first => the other two | Two listeners, no waiting, no cross-service writes |
+| Session assigns record scopes to Junior Moderators | Event `session.started` | Session => University Record | Membership and scopes travel together in one event |
+| Session supplies channel membership | Events `session.started`, `session.ended` | Session => Discord DMs | Discord DMs creates and archives channels on its own |
+| Moderator submits a decision | REST `POST /decisions` | client => Moderation | The verdict must come back now |
+| Session supplies the current applicant | REST `GET /sessions/{id}` | Moderation => Session | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
+| Moderation gathers data for the verdict | REST, three calls in parallel | Moderation => Applicant, Credential, University Record | All three answers are needed to know what is true about the applicant |
+| Moderation checks the rules | REST `POST /rulesets/{version}/evaluations` | Moderation => Server Rules | Needs the verified facts from the three calls above, so it comes after them |
+| Moderation reports the outcome | Event `decision.recorded` | Moderation => Session | Session updates score and counters; no reply needed |
 | Players chat during a shift | WebSocket (REST for history) | client ↔ Discord DMs | Push in real time |
 
 ### Worked example: one applicant from start to finish
@@ -214,7 +214,7 @@ Why:
 What it costs, and what we do about it:
 
 - **Data that crosses a boundary through events arrives a little later.** Credential Service learns about a new applicant a few milliseconds after Applicant Service creates it. Consumers are idempotent and keyed by the shared identifier, so order and repeats do not matter.
-- **No transaction can span two services.** A flow like "decision → session score → player XP" is a chain of events, not one transaction. Compensation for failures is a topic for the transactions laboratory.
+- **No transaction can span two services.** A flow like "decision => session score => player XP" is a chain of events, not one transaction. Compensation for failures is a topic for the transactions laboratory.
 - **No joins across services.** A service that needs a combined view asks each owner and combines the answers itself. Moderation Service does exactly this.
 
 **Permitted duplication.** A service may keep a read-only copy of another service's data if it needs it for auditing or speed, as long as the owner stays the source of truth. Moderation Service stores a snapshot of the applicant, credentials and rule version behind each verdict, so the decision can still be explained after the applicant or the rules have changed.
@@ -314,7 +314,7 @@ FAF 23 1 17   ->  "FAF23117"
 ```
 
 Regex `^[A-Z]{2,4}[0-9]{5}$`. The academic group is derivable from the identifier alone -
-`FAF23117` → group `FAF-231`, email group `faf-231` - so it never has to travel as a separate
+`FAF23117` => group `FAF-231`, email group `faf-231` - so it never has to travel as a separate
 field. `enrollment` records still carry `group` for display, but it must agree with the
 identifier. Parsers are deliberately tolerant: a service never rejects a peer's identifier for
 its shape, it only declines to interpret it.
@@ -339,12 +339,12 @@ fact Moderation sends to Server Rules is `REFERENCE_YEAR − admissionYear`.
 
 | Status | Address | Suffix |
 | --- | --- | --- |
-| `faf_student`, `other_major_student`, `teaching_assistant` | `first.last@isa.utm.md` | none, unless taken → `first.last2@`, `first.last3@` |
+| `faf_student`, `other_major_student`, `teaching_assistant` | `first.last@isa.utm.md` | none, unless taken => `first.last2@`, `first.last3@` |
 | `staff` | `first.last@utm.md` | the same rule |
 | `alumni`, `outsider` | `first.last{nn}@gmail.com` | always a two-digit suffix |
 
-`first.last` is lower-cased and folded to ASCII: `Ștefan Băț` → `stefan.bat`, `Ana-Maria Rusu`
-→ `ana-maria.rusu`. Uniqueness is asked across all three applicant-data services, and any one
+`first.last` is lower-cased and folded to ASCII: `Ștefan Băț` => `stefan.bat`, `Ana-Maria Rusu`
+=> `ana-maria.rusu`. Uniqueness is asked across all three applicant-data services, and any one
 of them can answer it locally: each holds the union of the applicants it generated and every
 applicant it ingested from `applicant.initialized`, and registers the addresses of both.
 
@@ -1315,9 +1315,9 @@ We follow **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`
 
 ### Version Types
 
-- **MAJOR** (e.g., 1.0.0 → 2.0.0): Breaking changes that require user action
-- **MINOR** (e.g., 1.0.0 → 1.1.0): New features that are backward compatible
-- **PATCH** (e.g., 1.0.0 → 1.0.1): Bug fixes and small improvements
+- **MAJOR** (e.g., 1.0.0 => 2.0.0): Breaking changes that require user action
+- **MINOR** (e.g., 1.0.0 => 1.1.0): New features that are backward compatible
+- **PATCH** (e.g., 1.0.0 => 1.0.1): Bug fixes and small improvements
 
 ### Release Process
 

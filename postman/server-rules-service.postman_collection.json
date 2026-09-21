@@ -1,0 +1,214 @@
+{
+  "info": {
+    "name": "Server Rules Service",
+    "description": "Server Rules Service has zero mocked business logic - it calls no service, publishes no event, consumes no event, and stores nothing about applicants. Every input arrives in the request. This collection exercises the real code paths end to end.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8083" },
+    { "key": "service_token", "value": "dev-service-token-12345" }
+  ],
+  "item": [
+    {
+      "name": "health",
+      "item": [
+        {
+          "name": "GET /health (liveness)",
+          "request": { "method": "GET", "url": "{{base_url}}/health" }
+        },
+        {
+          "name": "GET /health/ready (readiness)",
+          "request": { "method": "GET", "url": "{{base_url}}/health/ready" }
+        }
+      ]
+    },
+    {
+      "name": "rulesets (public, contract)",
+      "item": [
+        {
+          "name": "current - difficulty 3 (contract example ruleset)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/rulesets/current?difficulty=3", "host": ["{{base_url}}"], "path": ["api", "v1", "rulesets", "current"], "query": [{ "key": "difficulty", "value": "3" }] }
+          }
+        },
+        {
+          "name": "current - missing difficulty (422 INVALID_DIFFICULTY)",
+          "request": { "method": "GET", "url": "{{base_url}}/api/v1/rulesets/current" }
+        },
+        {
+          "name": "current - difficulty out of range (422 INVALID_DIFFICULTY)",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{base_url}}/api/v1/rulesets/current?difficulty=9", "host": ["{{base_url}}"], "path": ["api", "v1", "rulesets", "current"], "query": [{ "key": "difficulty", "value": "9" }] }
+          }
+        },
+        {
+          "name": "by version - 3",
+          "request": { "method": "GET", "url": "{{base_url}}/api/v1/rulesets/3" }
+        },
+        {
+          "name": "by version - unknown (404 RULESET_NOT_FOUND)",
+          "request": { "method": "GET", "url": "{{base_url}}/api/v1/rulesets/999999" }
+        }
+      ]
+    },
+    {
+      "name": "evaluations (called by Moderation Service)",
+      "item": [
+        {
+          "name": "evaluate - honest first-year FAF student (contract's own example)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('matches the contract example exactly', function () {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body).to.deep.equal({ ruleset_version: 3, admitted: true, violated_rules: [], allowed_channels: ['general'] });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"faf_student\",\n    \"major\": \"FAF\",\n    \"year\": 1,\n    \"years_enrolled\": 1,\n    \"currently_enrolled\": true,\n    \"previously_banned\": false\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "evaluate - previously banned (admission violation, no channels)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"faf_student\",\n    \"major\": \"FAF\",\n    \"year\": 3,\n    \"years_enrolled\": 3,\n    \"currently_enrolled\": true,\n    \"previously_banned\": true\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "evaluate - outsider (violates only-faf-or-teachers)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"outsider\",\n    \"major\": null,\n    \"year\": null,\n    \"years_enrolled\": 0,\n    \"currently_enrolled\": false,\n    \"previously_banned\": false\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "evaluate - staff (null major/year is legal)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"staff\",\n    \"major\": null,\n    \"year\": null,\n    \"years_enrolled\": 5,\n    \"currently_enrolled\": true,\n    \"previously_banned\": false\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "evaluate - unknown version (404, checked before facts)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/rulesets/999999/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": { \"university_status\": \"nonsense\" }\n}"
+            }
+          }
+        },
+        {
+          "name": "evaluate - bad facts (422 INVALID_FACTS)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": { \"university_status\": \"wizard\", \"years_enrolled\": 1, \"currently_enrolled\": true, \"previously_banned\": false }\n}"
+            }
+          }
+        },
+        {
+          "name": "evaluate - malformed body (400 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"applicant_id\": \"not-a-uuid\",\n  \"facts\": {}\n}" }
+          }
+        }
+      ]
+    },
+    {
+      "name": "admin (beyond contract, service-token only)",
+      "item": [
+        {
+          "name": "list rulesets",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/admin/rulesets?limit=10",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "get ruleset detail (with jsonb conditions)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/admin/rulesets/3",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+          }
+        },
+        {
+          "name": "clone version 3 into a new version",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "exec": ["const body = pm.response.json();", "pm.collectionVariables.set('cloned_version', body.version);"] }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/admin/rulesets",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"difficulty\": 3,\n  \"clone_from_version\": 3,\n  \"notes\": \"Postman clone test\",\n  \"rules\": []\n}" }
+          }
+        },
+        {
+          "name": "patch notes on the cloned version",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/api/v1/admin/rulesets/{{cloned_version}}",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{ \"notes\": \"renamed via Postman\" }" }
+          }
+        },
+        {
+          "name": "invalid ruleset - channel rule grants nothing (422 INVALID_RULESET)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/admin/rulesets",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"difficulty\": 2,\n  \"rules\": [{ \"rule_id\": \"noop\", \"kind\": \"channel\", \"description\": \"does nothing\", \"when\": {\"op\":\"always\"}, \"grant\": [], \"deny\": [] }]\n}" }
+          }
+        },
+        {
+          "name": "admin route without a service token (401 UNAUTHENTICATED)",
+          "request": { "method": "GET", "url": "{{base_url}}/api/v1/admin/rulesets" }
+        }
+      ]
+    }
+  ]
+}

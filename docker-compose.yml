@@ -1,8 +1,11 @@
 # Team-wide compose - references PUBLISHED Docker Hub images only, never `build:`. Any
 # teammate can run this without cloning anyone's (private) service repository. So far it
-# covers the two services owned by Titerez Vladislav (Server Rules, University Record);
-# other services should add their own blocks here the same way, referencing their own
-# published image and joining the same `student-id-net` network.
+# covers Server Rules, University Record, Moderation, Discord DMs and Player; other
+# services should add their own blocks here the same way, referencing their own published
+# image and joining the same `student-id-net` network.
+#
+# Host ports are allocated in the Deployments table of README.md - check it and take the
+# next free number before adding a block, so two services never claim the same port.
 #
 # Usage:
 #   docker network create student-id-net   # once, if it does not already exist
@@ -176,6 +179,50 @@ services:
     networks:
       - student-id-net
 
+  player-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${PLAYER_POSTGRES_USER:-player_user}
+      POSTGRES_PASSWORD: ${PLAYER_POSTGRES_PASSWORD:?set PLAYER_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${PLAYER_POSTGRES_DB:-player_db}
+    volumes:
+      - player_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5437:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PLAYER_POSTGRES_USER:-player_user} -d ${PLAYER_POSTGRES_DB:-player_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - student-id-net
+
+  player-service:
+    image: dimapos/player-service:0.1.0
+    restart: unless-stopped
+    depends_on:
+      player-postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: docker
+      POSTGRES_HOST: player-postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${PLAYER_POSTGRES_USER:-player_user}
+      POSTGRES_PASSWORD: ${PLAYER_POSTGRES_PASSWORD:?set PLAYER_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${PLAYER_POSTGRES_DB:-player_db}
+      # Seeds six players on an empty database, including the one the README's
+      # own example response describes (level 4, 1250 xp).
+      SEED_ON_START: ${PLAYER_SEED_ON_START:-true}
+      # Mounts POST /api/v1/dev/events/session-ended, the only way to deliver a
+      # session.ended event while the team's broker does not exist. It grants
+      # XP without a credential, so turn it off outside the demo.
+      ENABLE_DEV_ENDPOINTS: ${PLAYER_ENABLE_DEV_ENDPOINTS:-true}
+    ports:
+      - "8087:8080"
+    networks:
+      - student-id-net
+
 networks:
   student-id-net:
     external: true
@@ -186,3 +233,4 @@ volumes:
   university_record_pgdata:
   moderation_pgdata:
   dms_mongodata:
+  player_pgdata:

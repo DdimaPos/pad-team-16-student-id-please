@@ -392,6 +392,24 @@ None. Player Service never calls other services; it only listens to `session.end
 
 **Usage.** Private data (email, password hash, friends list, disciplinary log) is never returned here.
 
+###### Level and XP
+
+`level` is derived from `xp`, never stored: `level = xp / 400 + 1`, capped at 10. The step and the
+cap are configurable (`XP_PER_LEVEL`, `MAX_LEVEL`) but the defaults are what this document's example
+above assumes - 1250 XP is level 4. Player Service owns this rule; no other service should
+reimplement it. Session Service reads `level` from this endpoint and clamps the *average* to 1-5 to
+pick a `difficulty`, which is a separate calculation on its side.
+
+A total XP is floored at zero, so the minimum level is always 1.
+
+###### Endpoints beyond this contract
+
+Player Service also exposes register, list, profile read/edit, delete, shift history, disciplinary
+log and friends endpoints, plus a development endpoint that applies a `session.ended` event without
+a broker. They are not part of this contract and may change without amending it - see
+[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md). No endpoint of the service requires
+authentication, and none returns a player's email.
+
 ##### Message queue events
 
 **Published:** none.
@@ -400,6 +418,12 @@ None. Player Service never calls other services; it only listens to `session.end
 
 - `session.ended` - published by Server Moderation Session Service  
   For every player in `players[]`, adds `xp_delta` to their XP, recalculates their level, adds the shift to their history and appends any `disciplinary_actions` to their log. The `event_id` is remembered, so the same shift is never counted twice.
+
+  An id in `players[]` with no account here is skipped and logged - Session Service decides who was
+  in a shift, and one unknown id must not cost the other players their XP.
+
+  **Not yet wired:** Player Service has no broker client, so this event currently reaches it only
+  through `POST /api/v1/dev/events/session-ended` - see [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md).
 
 #### Server Moderation Session Service
 
@@ -1234,6 +1258,20 @@ need to clone the (private) service repository to run one.
 | University Record Service | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service) | `8084` | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential Service), `Auth__ServiceToken` |
 | Moderation Service | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service) | `8085` | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (empty = built-in mock) |
 | Discord DMs Service | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service) | `8086` | `MONGODB_URI` (MongoDB 7), `SERVICE_TOKEN`; optional `REDIS_URL` (fan-out between instances), `RABBITMQ_URL` |
+| Player Service | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service) | `8087` | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), no broker and no auth - see below |
+
+**Host ports are allocated in this table.** Check it before adding a service block, and take the next
+free number: `8083`-`8087` are taken above, and the database containers hold `5434`-`5437`, `6380`
+and `27019`. Every service listens on `8080` inside its own container except Moderation and Discord
+DMs, which listen on `8085` and `8086`.
+
+`dimapos/player-service` is published for `linux/amd64` and `linux/arm64`. `POSTGRES_PASSWORD` is
+its only required variable - everything else has a working default, the schema is applied at
+startup, and an empty database is seeded with six players (including
+`8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11` / `dima_mod`, the one this contract uses in its own example
+response). Two optional switches matter in a shared stack: `SEED_ON_START` and
+`ENABLE_DEV_ENDPOINTS` - the latter mounts `POST /api/v1/dev/events/session-ended`, which applies a
+`session.ended` event with no credential and should be off outside the demo.
 
 The root [`docker-compose.yml`](docker-compose.yml) in this repository runs all of the
 above (plus their own database containers) on the shared `student-id-net` network, referencing
@@ -1243,9 +1281,12 @@ to `.env` and fill in real values before running `docker compose up -d`.
 Full integration references (HTTP API, events, configuration, edge cases, divergences from
 this contract) live in [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVICE.md),
 [`docs/UNIVERSITY_RECORD_SERVICE.md`](docs/UNIVERSITY_RECORD_SERVICE.md),
-[`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md) and
-[`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md). Postman collections for these
-services are in [`postman/`](postman/).
+[`docs/APPLICANT_SERVICE.md`](docs/APPLICANT_SERVICE.md),
+[`docs/CREDENTIAL_SERVICE.md`](docs/CREDENTIAL_SERVICE.md),
+[`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md),
+[`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md) and
+[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md). Postman collections are in
+[`postman/`](postman/).
 
 ---
 

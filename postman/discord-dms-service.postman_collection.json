@@ -1,0 +1,1167 @@
+{
+  "info": {
+    "name": "Discord DMs Service",
+    "_postman_id": "1f8c3a2d-7b4e-4c5f-9a6d-2e3f4a5b6c7d",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Team 16, Student ID, please. Replays session.started through the dev endpoint (the same code path as the RabbitMQ consumer), lists channels per player, sends messages over REST, reads history, ends the session and checks that channels are archived. The WebSocket itself is tested with a Postman WebSocket request: ws://localhost:8086/api/v1/ws?session_id={{session_id}}&access_token={{moderator_token}}, then send {\"type\":\"message.send\",\"channel_id\":\"...\",\"content\":\"hi\"}. Requires DEV_ENDPOINTS=true."
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8086"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me"
+    },
+    {
+      "key": "session_id",
+      "value": "{{$guid}}"
+    },
+    {
+      "key": "moderator_token",
+      "value": ""
+    },
+    {
+      "key": "junior_a_token",
+      "value": ""
+    },
+    {
+      "key": "junior_b_token",
+      "value": ""
+    },
+    {
+      "key": "general_channel_id",
+      "value": ""
+    },
+    {
+      "key": "faculty_channel_id",
+      "value": ""
+    },
+    {
+      "key": "last_message_id",
+      "value": ""
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "if (!pm.collectionVariables.get('session_id') || pm.collectionVariables.get('session_id').startsWith('{{')) {",
+          "  const g = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c === 'x' ? r : (r&0x3|0x8)).toString(16); });",
+          "  pm.collectionVariables.set('session_id', g());",
+          "}"
+        ]
+      }
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('service name', () => pm.expect(pm.response.json().service).to.eql('discord-dms-service'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /health/ready",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('mongodb ok', () => pm.expect(pm.response.json().checks.mongodb).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Setup (dev endpoints)",
+      "item": [
+        {
+          "name": "mint Moderator token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/tokens?player_id=8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "tokens"
+              ],
+              "query": [
+                {
+                  "key": "player_id",
+                  "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('moderator_token', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mint Junior A token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/tokens?player_id=b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "tokens"
+              ],
+              "query": [
+                {
+                  "key": "player_id",
+                  "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('junior_a_token', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "mint Junior B token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/tokens?player_id=c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "tokens"
+              ],
+              "query": [
+                {
+                  "key": "player_id",
+                  "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('junior_b_token', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "replay session.started",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/events/session-started",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "events",
+                "session-started"
+              ]
+            },
+            "description": "Same handler as the RabbitMQ consumer. Creates the four channels of {{session_id}} with the access mapping.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 202', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "replay session.started again is idempotent",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/events/session-started",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "events",
+                "session-started"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 202', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Channels",
+      "item": [
+        {
+          "name": "Moderator sees all four channels",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "channels"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('4 channels', () => pm.expect(b.total).to.eql(4));",
+                  "pm.collectionVariables.set('general_channel_id', b.items.find(c => c.name === 'general-mod-chat').channel_id);",
+                  "pm.collectionVariables.set('faculty_channel_id', b.items.find(c => c.name === 'faculty-check').channel_id);",
+                  "pm.test('not archived', () => pm.expect(b.items.every(c => !c.archived)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior A sees general, enrollment-check, course-registration",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_a_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "channels"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const names = pm.response.json().items.map(c => c.name).sort();",
+                  "pm.test('3 channels by scope', () => pm.expect(names).to.eql(['course-registration','enrollment-check','general-mod-chat']));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior B sees general and faculty-check",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_b_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "channels"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('2 channels by scope', () => pm.expect(pm.response.json().total).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a stranger is not in the session",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiI1ZDJjOGU0YS03YjFmLTRjM2QtOWU2YS0wYjhmMmQ0YzZlMTMifQ."
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "channels"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('NOT_IN_SESSION', () => pm.expect(pm.response.json().error.code).to.eql('NOT_IN_SESSION'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "no token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "channels"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Messages over REST",
+      "item": [
+        {
+          "name": "Junior B writes in #faculty-check",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_b_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{faculty_channel_id}}",
+                "messages"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"No mailbox ion.popescu@isa.utm.md in the Outlook groups.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const m = pm.response.json();",
+                  "pm.test('message shape', () => { pm.expect(m.message_id).to.be.a('string'); pm.expect(m.author_id).to.eql('c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21'); pm.expect(m.sent_at).to.be.a('string'); });",
+                  "pm.collectionVariables.set('last_message_id', m.message_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior A cannot write in #faculty-check",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_a_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{faculty_channel_id}}",
+                "messages"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"hi\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('CHANNEL_ACCESS_DENIED', () => pm.expect(pm.response.json().error.code).to.eql('CHANNEL_ACCESS_DENIED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "empty content is refused",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{general_channel_id}}/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{general_channel_id}}",
+                "messages"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"   \"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator writes in #general-mod-chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{general_channel_id}}/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{general_channel_id}}",
+                "messages"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Thanks. Forged card, banning.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "history of #faculty-check, newest first",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages?limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{faculty_channel_id}}",
+                "messages"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('one message', () => pm.expect(pm.response.json().total).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior A cannot read #faculty-check",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_a_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{faculty_channel_id}}",
+                "messages"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Session end",
+      "item": [
+        {
+          "name": "replay session.ended",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/events/session-ended",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "events",
+                "session-ended"
+              ]
+            },
+            "description": "Archives the channels and closes every WebSocket of the session.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 202', () => pm.response.to.have.status(202));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "channels are archived",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "channels"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('archived', () => pm.expect(pm.response.json().items.every(c => c.archived)).to.be.true);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "writing is refused after the shift",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{general_channel_id}}/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{general_channel_id}}",
+                "messages"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"late\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('CHANNEL_ARCHIVED', () => pm.expect(pm.response.json().error.code).to.eql('CHANNEL_ARCHIVED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "history stays readable",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_a_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{general_channel_id}}/messages",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{general_channel_id}}",
+                "messages"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Admin",
+      "item": [
+        {
+          "name": "DELETE /admin/messages/{id}",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/messages/{{last_message_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "messages",
+                "{{last_message_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "admin without token is refused",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/messages/{{last_message_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "messages",
+                "{{last_message_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

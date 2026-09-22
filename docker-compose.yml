@@ -82,6 +82,100 @@ services:
     networks:
       - student-id-net
 
+  moderation-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${MODERATION_POSTGRES_USER:-moderation_user}
+      POSTGRES_PASSWORD: ${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${MODERATION_POSTGRES_DB:-moderation_db}
+    volumes:
+      - moderation_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5436:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${MODERATION_POSTGRES_USER:-moderation_user} -d ${MODERATION_POSTGRES_DB:-moderation_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - student-id-net
+
+  moderation-service:
+    image: dmracovit/moderation-service:0.1.0
+    restart: unless-stopped
+    depends_on:
+      moderation-postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
+      SERVICE_TOKEN: ${MODERATION_SERVICE_TOKEN:?set MODERATION_SERVICE_TOKEN}
+      DEV_ENDPOINTS: ${MODERATION_DEV_ENDPOINTS:-true}
+      SEED_ON_START: "true"
+      REFERENCE_YEAR: *reference_year
+      # Peers inside student-id-net. Empty = the built-in mock of that peer. Session Service is mocked until it ships.
+      APPLICANT_URL: ${MODERATION_APPLICANT_URL:-http://applicant-service:8081}
+      CREDENTIAL_URL: ${MODERATION_CREDENTIAL_URL:-http://credential-service:8082}
+      RULES_URL: ${MODERATION_RULES_URL:-http://server-rules-service:8080}
+      UNIVERSITY_RECORD_URL: ${MODERATION_UNIVERSITY_RECORD_URL:-http://university-record-service:8080}
+      SESSION_URL: ${MODERATION_SESSION_URL:-}
+      # RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/   # uncomment once the shared broker is added here
+    ports:
+      - "8085:8085"
+    networks:
+      - student-id-net
+
+  dms-mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${DMS_MONGO_USER:-dms_user}
+      MONGO_INITDB_ROOT_PASSWORD: ${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}
+    volumes:
+      - dms_mongodata:/data/db
+    ports:
+      - "27019:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - student-id-net
+
+  dms-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - student-id-net
+
+  discord-dms-service:
+    image: dmracovit/discord-dms-service:0.1.0
+    restart: unless-stopped
+    depends_on:
+      dms-mongo:
+        condition: service_healthy
+      dms-redis:
+        condition: service_healthy
+    environment:
+      MONGODB_URI: "mongodb://${DMS_MONGO_USER:-dms_user}:${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}@dms-mongo:27017/dms_db?authSource=admin"
+      REDIS_URL: redis://dms-redis:6379/0
+      SERVICE_TOKEN: ${DMS_SERVICE_TOKEN:?set DMS_SERVICE_TOKEN}
+      DEV_ENDPOINTS: ${DMS_DEV_ENDPOINTS:-true}
+      SEED_ON_START: "true"
+      # RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/   # uncomment once the shared broker is added here
+    ports:
+      - "8086:8086"
+    networks:
+      - student-id-net
+
 networks:
   student-id-net:
     external: true
@@ -90,3 +184,5 @@ networks:
 volumes:
   rules_pgdata:
   university_record_pgdata:
+  moderation_pgdata:
+  dms_mongodata:

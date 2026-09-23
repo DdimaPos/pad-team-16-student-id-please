@@ -1,0 +1,1803 @@
+{
+  "info": {
+    "name": "Moderation Service",
+    "_postman_id": "9d2f7c1e-6a4b-4f3e-8b2d-1c5e7a9f0b34",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Team 16, Student ID, please. Runs the demo end to end against the mock upstreams: mint a Moderator token, point the mock session at each fixture applicant, submit decisions, read them back, search the ban list. Set base_url and service_token; DEV_ENDPOINTS=true is required on the service."
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8085"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me"
+    },
+    {
+      "key": "moderator_token",
+      "value": ""
+    },
+    {
+      "key": "last_decision_id",
+      "value": ""
+    },
+    {
+      "key": "ban_id",
+      "value": ""
+    },
+    {
+      "key": "session_id",
+      "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Health",
+      "item": [
+        {
+          "name": "GET /health",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('service name', () => pm.expect(pm.response.json().service).to.eql('moderation-service'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /health/ready",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('postgres ok', () => pm.expect(pm.response.json().checks.postgres).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "1. Setup (dev endpoints)",
+      "item": [
+        {
+          "name": "mint Moderator token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/tokens?player_id=8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "tokens"
+              ],
+              "query": [
+                {
+                  "key": "player_id",
+                  "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('moderator_token', pm.response.json().token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list mock applicants",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/applicants",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "applicants"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('8 fixtures', () => pm.expect(pm.response.json().total).to.eql(8));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "list mock sessions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "sessions"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('1 session', () => pm.expect(pm.response.json().total).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Decisions, one scenario each",
+      "item": [
+        {
+          "name": "dev: current applicant = honest",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "sessions",
+                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+                "current-applicant"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "honest student accepted correctly",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\",\n    \"dark-memes\",\n    \"groapa\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.test('expected_action is accept', () => pm.expect(d.expected_action).to.eql('accept'));",
+                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
+                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
+                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
+                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "same applicant again is refused",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('error code ALREADY_DECIDED', () => pm.expect(pm.response.json().error.code).to.eql('ALREADY_DECIDED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dev: current applicant = forged",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "sessions",
+                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+                "current-applicant"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"6e3d9f5b-8c2a-4d4e-af7b-1c9a3e5d7f24\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "forged outsider wrongly accepted",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"6e3d9f5b-8c2a-4d4e-af7b-1c9a3e5d7f24\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.test('expected_action is ban', () => pm.expect(d.expected_action).to.eql('ban'));",
+                  "pm.test('is_correct is false', () => pm.expect(d.is_correct).to.eql(false));",
+                  "pm.test('penalty is 30', () => pm.expect(d.penalty).to.eql(30));",
+                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
+                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dev: current applicant = expired",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "sessions",
+                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+                "current-applicant"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"7f4ea06c-9d3b-4e5f-b08c-2daa4f6e8a35\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "expired card rejected correctly",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"7f4ea06c-9d3b-4e5f-b08c-2daa4f6e8a35\",\n  \"action\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.test('expected_action is reject', () => pm.expect(d.expected_action).to.eql('reject'));",
+                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
+                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
+                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
+                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dev: current applicant = incomplete",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "sessions",
+                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+                "current-applicant"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"8a5fb17d-ae4c-4f60-919d-3ebb507f9b46\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "incomplete papers flagged correctly",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"8a5fb17d-ae4c-4f60-919d-3ebb507f9b46\",\n  \"action\": \"flag\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.test('expected_action is flag', () => pm.expect(d.expected_action).to.eql('flag'));",
+                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
+                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
+                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
+                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dev: current applicant = banned",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "sessions",
+                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+                "current-applicant"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"9b60c28e-bf5d-4a71-a2ae-4fcc618a0c57\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "previously banned person accepted by mistake",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"9b60c28e-bf5d-4a71-a2ae-4fcc618a0c57\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.test('expected_action is reject', () => pm.expect(d.expected_action).to.eql('reject'));",
+                  "pm.test('is_correct is false', () => pm.expect(d.is_correct).to.eql(false));",
+                  "pm.test('penalty is 20', () => pm.expect(d.penalty).to.eql(20));",
+                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
+                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dev: current applicant = theft",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "sessions",
+                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+                "current-applicant"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"a071d39f-c06e-4b82-b3bf-50dd729b1d68\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "identity theft banned correctly",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"a071d39f-c06e-4b82-b3bf-50dd729b1d68\",\n  \"action\": \"ban\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.test('expected_action is ban', () => pm.expect(d.expected_action).to.eql('ban'));",
+                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
+                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
+                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
+                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dev: current applicant = staff",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "sessions",
+                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+                "current-applicant"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"b182e4a0-d17f-4c93-84c0-61ee83ac2e79\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "staff accepted with wrong channels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"b182e4a0-d17f-4c93-84c0-61ee83ac2e79\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.test('expected_action is accept', () => pm.expect(d.expected_action).to.eql('accept'));",
+                  "pm.test('is_correct is false', () => pm.expect(d.is_correct).to.eql(false));",
+                  "pm.test('penalty is 5', () => pm.expect(d.penalty).to.eql(5));",
+                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
+                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "dev: current applicant = firstyear",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "mock",
+                "sessions",
+                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+                "current-applicant"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"c293f5b1-e280-4da4-95d1-72ff94bd3f8a\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "first-year accepted with #general only",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"c293f5b1-e280-4da4-95d1-72ff94bd3f8a\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const d = pm.response.json();",
+                  "pm.test('expected_action is accept', () => pm.expect(d.expected_action).to.eql('accept'));",
+                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
+                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
+                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
+                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Validation and errors",
+      "item": [
+        {
+          "name": "accept without granted_channels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"c293f5b1-e280-4da4-95d1-72ff94bd3f8a\",\n  \"action\": \"accept\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('error code GRANTED_CHANNELS_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('GRANTED_CHANNELS_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "reject with granted_channels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"c293f5b1-e280-4da4-95d1-72ff94bd3f8a\",\n  \"action\": \"reject\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('error code GRANTED_CHANNELS_NOT_ALLOWED', () => pm.expect(pm.response.json().error.code).to.eql('GRANTED_CHANNELS_NOT_ALLOWED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "applicant that is not current",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('error code NOT_CURRENT_APPLICANT', () => pm.expect(pm.response.json().error.code).to.eql('NOT_CURRENT_APPLICANT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "no player token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "unknown session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"6f9619ff-8b86-4d11-b42d-00c04fc964ff\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('SESSION_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Read back",
+      "item": [
+        {
+          "name": "GET /decisions?session_id=",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions?session_id=3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e&limit=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ],
+              "query": [
+                {
+                  "key": "session_id",
+                  "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('8 decisions in this session', () => pm.expect(pm.response.json().total).to.eql(8));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /decisions/{id}",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions/{{last_decision_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions",
+                "{{last_decision_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('no snapshot for players', () => pm.expect(pm.response.json()).to.not.have.property('snapshot'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /admin/decisions/{id} (with snapshot)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/decisions/{{last_decision_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "decisions",
+                "{{last_decision_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('snapshot present', () => pm.expect(pm.response.json()).to.have.property('snapshot'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /bans?q=lungu",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bans?q=lungu",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bans"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "lungu"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('seeded ban found', () => pm.expect(pm.response.json().total).to.be.at.least(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /bans?q=FAF23104 (identity thief's claimed ID)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/bans?q=FAF23104",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "bans"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "FAF23104"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ban created by the ban decision', () => pm.expect(pm.response.json().total).to.be.at.least(1));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Admin",
+      "item": [
+        {
+          "name": "POST /admin/bans",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/bans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "bans"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"student_id\": \"FAF20101\",\n  \"name\": \"Manual Ban\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('ban_id', pm.response.json().ban_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /admin/bans/{id}",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/bans/{{ban_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "bans",
+                "{{ban_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "admin without token is refused",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/bans",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "bans"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"x\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /admin/decisions/{id} (reset for a re-run)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/decisions/{{last_decision_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "decisions",
+                "{{last_decision_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

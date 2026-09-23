@@ -1232,16 +1232,20 @@ need to clone the (private) service repository to run one.
 | --- | --- | --- | --- |
 | Server Rules Service | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service) | `8083` | `ConnectionStrings__RulesDb` (PostgreSQL 17), `Auth__ServiceToken` |
 | University Record Service | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service) | `8084` | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential Service), `Auth__ServiceToken` |
+| Moderation Service | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service) | `8085` | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (empty = built-in mock) |
+| Discord DMs Service | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service) | `8086` | `MONGODB_URI` (MongoDB 7), `SERVICE_TOKEN`; optional `REDIS_URL` (fan-out between instances), `RABBITMQ_URL` |
 
-The root [`docker-compose.yml`](docker-compose.yml) in this repository runs both of the
-above (plus their own Postgres containers) on the shared `student-id-net` network, referencing
+The root [`docker-compose.yml`](docker-compose.yml) in this repository runs all of the
+above (plus their own database containers) on the shared `student-id-net` network, referencing
 these published images only - it never builds from source. Copy [`.env.example`](.env.example)
 to `.env` and fill in real values before running `docker compose up -d`.
 
 Full integration references (HTTP API, events, configuration, edge cases, divergences from
-this contract) live in [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVICE.md) and
-[`docs/UNIVERSITY_RECORD_SERVICE.md`](docs/UNIVERSITY_RECORD_SERVICE.md). Postman collections
-for both services are in [`postman/`](postman/).
+this contract) live in [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVICE.md),
+[`docs/UNIVERSITY_RECORD_SERVICE.md`](docs/UNIVERSITY_RECORD_SERVICE.md),
+[`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md) and
+[`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md). Postman collections for these
+services are in [`postman/`](postman/).
 
 ---
 

@@ -1,0 +1,2220 @@
+{
+  "info": {
+    "name": "Server Moderation Session Service",
+    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> sessions (contract) -> dev - decision.recorded -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> cleanup.\n\nRequests that act for a player send `Authorization: Bearer <jwt>` - an unsigned, JWT-shaped token carrying the player id as its `sub` claim, which is what University Record Service also accepts. The collection's pre-request script mints them, so there is nothing to set up. `X-Player-Id` still works as a fallback; see the 'caller identity' folder.\n\nSet `base_url` if the service is not on http://localhost:8088. The player ids are pre-filled with the ones Player Service seeds, so they resolve whether this service is pointed at the real Player Service or using its built-in stub.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8088",
+      "description": "Container port 8080, mapped to host 8088 by the team convention."
+    },
+    {
+      "key": "moderator_id",
+      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+      "description": "dima_mod, level 4. Seeded by Player Service and known to the stub."
+    },
+    {
+      "key": "junior_a_id",
+      "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
+      "description": "maxim_jr, level 2."
+    },
+    {
+      "key": "junior_b_id",
+      "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
+      "description": "vlad_jr, level 3. Levels 4, 2 and 3 average 3 - the contract's own example difficulty."
+    },
+    {
+      "key": "unknown_player_id",
+      "value": "00000000-0000-4000-8000-000000000000",
+      "description": "A valid UUID that no player has, for the PLAYER_NOT_FOUND case."
+    },
+    {
+      "key": "absent_session_id",
+      "value": "11111111-1111-4111-8111-111111111111",
+      "description": "A valid UUID that no session has, for the SESSION_NOT_FOUND case."
+    },
+    {
+      "key": "seeded_session_id",
+      "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+      "description": "The active session seeded into an empty database - the id the CPR contract uses in its own example."
+    },
+    {
+      "key": "seeded_lobby_id",
+      "value": "4b8fac2d-3e50-4c7b-9d1f-2a3b4c5d6e7f",
+      "description": "The seeded lobby, for checking that a lobby reports nulls."
+    },
+    {
+      "key": "decision_id",
+      "value": "e4f5a6b7-c8d9-4e0f-a1b2-c3d4e5f6a7b8",
+      "description": "Fixed so the replay request re-sends the same decision."
+    },
+    {
+      "key": "replay_event_id",
+      "value": "4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23",
+      "description": "Unused on its own - the replay request reuses the first event's id instead. Kept for a manual replay."
+    },
+    {
+      "key": "session_id",
+      "value": "",
+      "description": "Filled in by the contract-flow folder."
+    },
+    {
+      "key": "lobby_session_id",
+      "value": "",
+      "description": "Filled in by the errors-setup folder."
+    },
+    {
+      "key": "applicant_id",
+      "value": "",
+      "description": "Filled in by the contract-flow folder."
+    },
+    {
+      "key": "ended_score",
+      "value": "",
+      "description": "Filled in when the shift ends, so the outbox payload can be compared against the response."
+    },
+    {
+      "key": "solo_player_id",
+      "value": "d4f6b8ca-3e5a-4c7d-9f1b-2a4c6e8fab32",
+      "description": "rookie_one, level 1. Kept out of the main flow so it can hold a one-player lobby for the NOT_ENOUGH_PLAYERS case."
+    },
+    {
+      "key": "solo_session_id",
+      "value": "",
+      "description": "Filled in by the errors-setup folder."
+    },
+    {
+      "key": "jwt_moderator",
+      "value": "",
+      "description": "Minted by the collection's pre-request script from moderator_id."
+    },
+    {
+      "key": "jwt_junior_a",
+      "value": "",
+      "description": "Minted from junior_a_id."
+    },
+    {
+      "key": "jwt_junior_b",
+      "value": "",
+      "description": "Minted from junior_b_id."
+    },
+    {
+      "key": "jwt_solo",
+      "value": "",
+      "description": "Minted from solo_player_id."
+    },
+    {
+      "key": "jwt_unknown",
+      "value": "",
+      "description": "Minted from unknown_player_id."
+    }
+  ],
+  "item": [
+    {
+      "name": "health",
+      "description": "The liveness and readiness pair every service in the system exposes, outside /api/v1.",
+      "item": [
+        {
+          "name": "GET /health -> 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Liveness. Never consults a dependency: a database blip must not make an orchestrator restart a container that is running fine."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('names the service', () => pm.expect(pm.response.json().service).to.eql('server-moderation-session-service'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /health/ready -> 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Readiness. Reports Postgres plus each of the three services this one calls, saying which are real ('configured') and which are answered in-process ('stub')."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const deps = pm.response.json().dependencies;",
+                  "pm.test('postgres is up', () => pm.expect(deps.postgres.status).to.eql('ok'));",
+                  "pm.test('every dependency is reported', () => {",
+                  "  ['player-service','server-rules-service','applicant-service'].forEach(d =>",
+                  "    pm.expect(deps, d).to.have.property(d));",
+                  "});",
+                  "console.log('dependency wiring:', JSON.stringify(deps));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "caller identity",
+      "description": "Proves how this service decides which player a request acts for, without creating anything: each request either fails authentication outright, or gets past it to a Player Service lookup that 404s. Safe to run at any point.\n\nThe primary mechanism is `Authorization: Bearer <jwt>` with the player id in the `sub` claim, unverified - matching University Record Service. `X-Player-Id` is kept as a fallback because a bare UUID is easier to type into curl than a JWT.",
+      "item": [
+        {
+          "name": "Bearer token for an unknown player -> 404 PLAYER_NOT_FOUND",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_unknown}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "A 404 rather than a 401 is the proof: the token was read and its `sub` claim was taken as the caller, then Player Service was asked about that player and did not know them."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 - the token was read', () => pm.response.to.have.status(404));",
+                  "pm.test('PLAYER_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('PLAYER_NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "X-Player-Id fallback for an unknown player -> 404 PLAYER_NOT_FOUND",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Player-Id",
+                "value": "{{unknown_player_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "The same proof for the fallback header."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 - the fallback header was read', () => pm.response.to.have.status(404));",
+                  "pm.test('PLAYER_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('PLAYER_NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "no identity at all -> 401 MISSING_PLAYER_IDENTITY",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "401 rather than 400: the request is well formed, it simply says nothing about who is making it - which is the status a real token check would return too."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('MISSING_PLAYER_IDENTITY', () => pm.expect(pm.response.json().error.code).to.eql('MISSING_PLAYER_IDENTITY'));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "a token that is not JWT-shaped -> 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer just-a-string"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "A token present but unusable is refused rather than falling through to the fallback header: silently masking a bad token with a stale id would make the failure impossible to diagnose."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('MISSING_PLAYER_IDENTITY', () => pm.expect(pm.response.json().error.code).to.eql('MISSING_PLAYER_IDENTITY'));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "the wrong scheme -> 401",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Basic {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "Only the Bearer scheme is accepted (case-insensitively, per RFC 7235)."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "sessions (contract) - run in order",
+      "description": "The six endpoints of the CPR contract, in the order a shift actually happens. The first request stores the new session_id in a collection variable, so the rest of the folder follows it. Run the whole folder, not individual requests.",
+      "item": [
+        {
+          "name": "1. POST /sessions -> 201 (opens a lobby)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "The calling player opens a session. Session calls Player Service first to check they exist and read their level. Body is empty by contract; the caller is named by the X-Player-Id header."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('session_id', b.session_id);",
+                  "pm.test('starts in the lobby', () => pm.expect(b.status).to.eql('lobby'));",
+                  "pm.test('the caller is the creator and the only member', () => {",
+                  "  pm.expect(b.created_by).to.eql(pm.collectionVariables.get('moderator_id'));",
+                  "  pm.expect(b.players).to.have.lengthOf(1);",
+                  "});",
+                  "// The contract: in the lobby these three are null and junior_moderators is empty.",
+                  "pm.test('a lobby reports nulls, not zero values', () => {",
+                  "  pm.expect(b.moderator_id).to.eql(null);",
+                  "  pm.expect(b.ruleset_version).to.eql(null);",
+                  "  pm.expect(b.current_applicant_id).to.eql(null);",
+                  "  pm.expect(b.junior_moderators).to.eql([]);",
+                  "});",
+                  "pm.test('the session object has exactly the contract\\'s 16 members', () => {",
+                  "  pm.expect(Object.keys(b).sort()).to.eql(['applications_processed','created_at',",
+                  "    'created_by','current_applicant_decided','current_applicant_id','difficulty',",
+                  "    'ended_at','junior_moderators','moderator_id','penalties','players',",
+                  "    'ruleset_version','score','session_id','started_at','status']);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. POST /sessions/{id}/players -> 200 (first junior joins)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_a}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "players"
+              ]
+            },
+            "description": "The calling player joins a session that is still in the lobby. The player is checked in Player Service first, and their username and level are snapshotted."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('two players now', () => pm.expect(pm.response.json().players).to.have.lengthOf(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. POST /sessions/{id}/players -> 200 (second junior joins)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_b}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "players"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('three players now', () => pm.expect(pm.response.json().players).to.have.lengthOf(3));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4. POST /sessions/{id}/start -> 200 (shift begins)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/start",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "start"
+              ]
+            },
+            "description": "The creator starts the shift. Session assigns the roles, splits the four record categories between the Junior Moderators, asks Server Rules for the ruleset and writes session.started. If Server Rules does not answer, the session stays in the lobby and nothing at all is changed.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moderator_id\": \"{{moderator_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('active', () => pm.expect(b.status).to.eql('active'));",
+                  "// difficulty is the mean level rounded and clamped to 1-5.",
+                  "// The seeded players are level 4, 2 and 3, so: 3 - the contract's own example.",
+                  "pm.test('difficulty is the rounded mean level', () => pm.expect(b.difficulty).to.eql(3));",
+                  "pm.test('a ruleset version was stored', () => pm.expect(b.ruleset_version).to.be.a('number'));",
+                  "pm.test('the Moderator is the one that was named', () =>",
+                  "  pm.expect(b.moderator_id).to.eql(pm.collectionVariables.get('moderator_id')));",
+                  "pm.test('everyone else is a Junior Moderator', () =>",
+                  "  pm.expect(b.junior_moderators).to.have.lengthOf(2));",
+                  "pm.test('all four record categories are handed out, once each, none to the Moderator', () => {",
+                  "  const all = b.junior_moderators.flatMap(j => j.record_scopes);",
+                  "  pm.expect(all.sort()).to.eql(['courses','email-groups','enrollment','fcim-logs']);",
+                  "  pm.expect(b.junior_moderators.map(j => j.player_id))",
+                  "    .to.not.include(pm.collectionVariables.get('moderator_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5. POST /sessions/{id}/applicants/next -> 201",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "The Moderator asks for the next applicant. Session calls Applicant Service and stores the returned id as current_applicant_id."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('applicant_id', b.current_applicant_id);",
+                  "pm.test('exactly the contract\\'s three members', () =>",
+                  "  pm.expect(Object.keys(b).sort()).to.eql(",
+                  "    ['applications_processed','current_applicant_id','session_id']));",
+                  "// Asking for an applicant does not process one; only a decision does.",
+                  "pm.test('nothing has been processed yet', () =>",
+                  "  pm.expect(b.applications_processed).to.eql(0));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6. GET /sessions/{id} -> 200 (what Moderation Service reads)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}"
+              ]
+            },
+            "description": "Returns the current state of a session. Moderation Service calls this before recording every decision, to check that the session is active, that the caller is its Moderator, that the applicant is the current one, and which ruleset version the shift uses. It takes no identity header: its caller is a service, not a person."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('the four members Moderation Service checks are all present and true', () => {",
+                  "  pm.expect(b.status).to.eql('active');",
+                  "  pm.expect(b.moderator_id).to.eql(pm.collectionVariables.get('moderator_id'));",
+                  "  pm.expect(b.current_applicant_id).to.eql(pm.collectionVariables.get('applicant_id'));",
+                  "  pm.expect(b.ruleset_version).to.be.a('number');",
+                  "});",
+                  "pm.test('the current applicant has no decision yet', () =>",
+                  "  pm.expect(b.current_applicant_decided).to.eql(false));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7. POST /sessions/{id}/applicants/next -> 409 CURRENT_APPLICANT_NOT_DECIDED",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "A new applicant is given only when the current one already has a decision. This 409 is documented behaviour, not a bug: Session learns about decisions through the decision.recorded event, which can arrive a moment after the Moderator already saw Moderation Service's reply. The client waits briefly and retries."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('CURRENT_APPLICANT_NOT_DECIDED', () =>",
+                  "  pm.expect(pm.response.json().error.code).to.eql('CURRENT_APPLICANT_NOT_DECIDED'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "dev - decision.recorded (mocks Moderation Service)",
+      "description": "Moderation Service has not been written, and the team is writing its own message broker to replace RabbitMQ, so nothing delivers decision.recorded. This endpoint accepts the exact envelope a broker would carry and runs it through the same handler a broker client will call. It is mounted only when ENABLE_DEV_ENDPOINTS is true, and it moves a session's score with no credential - so it is off outside a demo.",
+      "item": [
+        {
+          "name": "1. POST a correct decision -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "events",
+                "decision-recorded"
+              ]
+            },
+            "description": "A correct decision adds SCORE_PER_CORRECT * difficulty to the score, increments applications_processed, and marks the current applicant decided so the Moderator may ask for the next one.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{decision_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"expected_action\": \"accept\",\n    \"violated_rules\": [],\n    \"penalty\": 0\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('applied, not a duplicate', () => pm.expect(b.duplicate).to.eql(false));",
+                  "// 10 per correct call, times the difficulty of 3.",
+                  "pm.test('score_delta is 10 x difficulty', () => pm.expect(b.score_delta).to.eql(30));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. POST the SAME event again -> 200 duplicate:true",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "events",
+                "decision-recorded"
+              ]
+            },
+            "description": "The contract requires every consumer to dedupe by event_id, because an event may be delivered more than once. A replay is a success, not an error - and the 'duplicate' flag is how a caller can see the deduplication fire. Run request 1 and this one, then check the session: the counters must have moved once.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{decision_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"expected_action\": \"accept\",\n    \"violated_rules\": [],\n    \"penalty\": 0\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 - a replay is a success', () => pm.response.to.have.status(200));",
+                  "pm.test('reported as a duplicate', () =>",
+                  "  pm.expect(pm.response.json().duplicate).to.eql(true));",
+                  "pm.test('nothing moved', () => {",
+                  "  pm.expect(pm.response.json().score_delta).to.eql(0);",
+                  "  pm.expect(pm.response.json().penalty_delta).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. GET /sessions/{id} -> 200 (the replay counted once)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('exactly one application was processed', () =>",
+                  "  pm.expect(b.applications_processed).to.eql(1));",
+                  "pm.test('the score moved once', () => pm.expect(b.score).to.eql(30));",
+                  "pm.test('the applicant is now decided', () =>",
+                  "  pm.expect(b.current_applicant_decided).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4. POST an incorrect decision -> 200 (penalty, no award)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "events",
+                "decision-recorded"
+              ]
+            },
+            "description": "An incorrect decision earns nothing; the cost arrives separately, as the penalty the event carries.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{$guid}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": false,\n    \"expected_action\": \"ban\",\n    \"violated_rules\": [\n      {\n        \"rule_id\": \"only-faf-or-teachers\",\n        \"description\": \"Only FAF students and FAF teachers may join\"\n      }\n    ],\n    \"penalty\": 20\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('no award for a wrong call', () => pm.expect(b.score_delta).to.eql(0));",
+                  "pm.test('the penalty is applied', () => pm.expect(b.penalty_delta).to.eql(20));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "5. POST with the wrong event_type -> 422 VALIDATION_ERROR",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "events",
+                "decision-recorded"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{$guid}}\",\n    \"session_id\": \"{{session_id}}\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('VALIDATION_ERROR', () =>",
+                  "  pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "6. POST for an unknown session -> 404 SESSION_NOT_FOUND",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "events",
+                "decision-recorded"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{$guid}}\",\n    \"session_id\": \"{{absent_session_id}}\",\n    \"applicant_id\": \"{{$guid}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"penalty\": 0\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('SESSION_NOT_FOUND', () =>",
+                  "  pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ending the shift and the outbox",
+      "description": "Ending the shift freezes the per-player result and writes session.ended. There is no broker yet, so the event goes to an outbox table in the same transaction as the state change - and the events endpoint is how you prove that what this service would publish is what Player Service expects to consume.",
+      "item": [
+        {
+          "name": "1. POST /sessions/{id}/end -> 200",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/end",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "end"
+              ]
+            },
+            "description": "The Moderator ends the shift. Session works out the final score, penalties, XP for every player and any disciplinary actions, freezes them and writes session.ended. An applicant still undecided is dropped and does not count."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('ended', () => pm.expect(b.status).to.eql('ended'));",
+                  "pm.test('exactly the contract\\'s members', () =>",
+                  "  pm.expect(Object.keys(b).sort()).to.eql(['applications_processed','ended_at',",
+                  "    'penalties','players','score','session_id','status']));",
+                  "pm.test('every player has a role, an xp_delta and an actions array', () => {",
+                  "  b.players.forEach(p => {",
+                  "    pm.expect(p.role).to.be.oneOf(['moderator','junior_moderator']);",
+                  "    pm.expect(p.xp_delta).to.be.a('number');",
+                  "    // never null: the contract's own example shows an empty array",
+                  "    pm.expect(p.disciplinary_actions).to.be.an('array');",
+                  "  });",
+                  "});",
+                  "pm.collectionVariables.set('ended_score', b.score);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. GET /sessions/{id}/events -> 200 (the outbox)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "events"
+              ]
+            },
+            "description": "BEYOND CONTRACT. The envelopes this service published for the session, oldest first - the order they happened in, and the order a broker would replay them in. A row from here can be posted to Player Service's own dev endpoint unchanged."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json().items;",
+                  "pm.test('session.started then session.ended', () => {",
+                  "  pm.expect(items.map(e => e.event_type)).to.eql(['session.started','session.ended']);",
+                  "});",
+                  "items.forEach(e => {",
+                  "  pm.test(e.event_type + ' uses the shared envelope', () => {",
+                  "    pm.expect(Object.keys(e).sort()).to.eql(",
+                  "      ['event_id','event_type','occurred_at','payload','producer','version']);",
+                  "    pm.expect(e.producer).to.eql('server-moderation-session-service');",
+                  "  });",
+                  "});",
+                  "const ended = items.find(e => e.event_type === 'session.ended');",
+                  "// The contract defines the event as the /end response WITHOUT status.",
+                  "pm.test('the payload carries no status', () =>",
+                  "  pm.expect(ended.payload).to.not.have.property('status'));",
+                  "pm.test('the payload is what Player Service parses', () => {",
+                  "  ['session_id','score','penalties','applications_processed','players','ended_at']",
+                  "    .forEach(k => pm.expect(ended.payload).to.have.property(k));",
+                  "});",
+                  "pm.test('the score matches the response', () =>",
+                  "  pm.expect(ended.payload.score).to.eql(pm.collectionVariables.get('ended_score')));",
+                  "console.log('Post this to Player Service:', JSON.stringify(ended));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. GET /sessions/{id}/decisions -> 200",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/decisions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "decisions"
+              ]
+            },
+            "description": "BEYOND CONTRACT. The decision log this service accumulated, newest first."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('the pagination envelope', () => {",
+                  "  pm.expect(b).to.have.property('items');",
+                  "  pm.expect(b).to.have.property('total');",
+                  "});",
+                  "pm.test('the replayed decision is stored once', () => pm.expect(b.total).to.eql(2));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4. POST /sessions/{id}/end again -> 409 SESSION_NOT_ACTIVE",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/end",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}",
+                "end"
+              ]
+            },
+            "description": "A session must not end twice: the results are frozen, and a second event would grant the XP again."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('SESSION_NOT_ACTIVE', () =>",
+                  "  pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_ACTIVE'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "errors - setup (run before the error folder)",
+      "description": "Three of the error requests need lobbies of a particular shape, and by this point the contract-flow session has ended - which frees its players again. This opens two: a pair lobby (for NOT_SESSION_CREATOR and PLAYER_ALREADY_IN_SESSION) and a solo one (for NOT_ENOUGH_PLAYERS).",
+      "item": [
+        {
+          "name": "1. POST /sessions -> 201 (a pair lobby)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_b}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "Created by junior_b, so junior_a starting it later is a non-creator."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('lobby_session_id', pm.response.json().session_id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "2. POST /sessions/{id}/players -> 200 (a second member)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_a}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{lobby_session_id}}",
+                "players"
+              ]
+            },
+            "description": "Two members, so the NOT_SESSION_CREATOR case is reached on its own merits rather than tripping NOT_ENOUGH_PLAYERS first."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        },
+        {
+          "name": "3. POST /sessions -> 201 (a solo lobby)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_solo}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "One member only, which is what makes starting it NOT_ENOUGH_PLAYERS."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('solo_session_id', pm.response.json().session_id);"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "error codes",
+      "description": "Every error code the CPR contract lists for this service, plus the ones the header-based caller identity introduces. These are independent of the flow folders above except where noted, and none of them change anything.",
+      "item": [
+        {
+          "name": "GET /sessions/{unknown} -> 404 SESSION_NOT_FOUND",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{absent_session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{absent_session_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('SESSION_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_FOUND'));",
+                  "pm.test('details is an object, never null', () =>",
+                  "  pm.expect(pm.response.json().error.details).to.be.an('object'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /sessions/not-a-uuid -> 400 INVALID_SESSION_ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/not-a-uuid",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "not-a-uuid"
+              ]
+            },
+            "description": "A malformed id is a client bug. Reporting it as 404 would hide that behind a legitimate-looking answer."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('INVALID_SESSION_ID', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SESSION_ID'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /sessions with no identity -> 401 MISSING_PLAYER_IDENTITY",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "The contract says a player's request carries their JWT and the endpoint takes player_id from it. No token issuer exists yet, so the id arrives in the X-Player-Id header. This is a stand-in for the JWT's sub claim, not authentication."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('MISSING_PLAYER_IDENTITY', () => pm.expect(pm.response.json().error.code).to.eql('MISSING_PLAYER_IDENTITY'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /sessions as an unknown player -> 404 PLAYER_NOT_FOUND",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_unknown}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "Session calls Player Service first. The 404 is propagated verbatim as this service's own PLAYER_NOT_FOUND."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('PLAYER_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('PLAYER_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /sessions while already in one -> 409 PLAYER_ALREADY_IN_SESSION",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_a}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": "Run the 'errors - setup' folder first: junior_a is in the pair lobby it opens. A player in a lobby or an active session cannot open another. A player whose last shift has ENDED can - which is why this uses junior_a rather than the moderator, whose session finished two folders ago."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('PLAYER_ALREADY_IN_SESSION', () => pm.expect(pm.response.json().error.code).to.eql('PLAYER_ALREADY_IN_SESSION'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /sessions/{id}/start as a non-creator -> 403 NOT_SESSION_CREATOR",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_a}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}/start",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{lobby_session_id}}",
+                "start"
+              ]
+            },
+            "description": "Run the 'errors - setup' request first to get a fresh lobby. Only the creator may start a session.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moderator_id\": \"{{junior_a_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('NOT_SESSION_CREATOR', () => pm.expect(pm.response.json().error.code).to.eql('NOT_SESSION_CREATOR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /sessions/{solo}/start -> 409 NOT_ENOUGH_PLAYERS",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_solo}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{solo_session_id}}/start",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{solo_session_id}}",
+                "start"
+              ]
+            },
+            "description": "The solo lobby from the setup folder. A shift needs a Moderator and at least one Junior Moderator.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moderator_id\": \"{{solo_player_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('NOT_ENOUGH_PLAYERS', () => pm.expect(pm.response.json().error.code).to.eql('NOT_ENOUGH_PLAYERS'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /sessions?status=paused -> 422 VALIDATION_ERROR",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions?status=paused",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "paused"
+                }
+              ]
+            },
+            "description": "The contract fixes three statuses and no others."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('details names the offending field', () =>",
+                  "  pm.expect(pm.response.json().error.details.field).to.eql('status'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /sessions?limit=lots -> 422 VALIDATION_ERROR",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions?limit=lots",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "lots"
+                }
+              ]
+            },
+            "description": "A typo in a query string is rejected rather than ignored, so it does not silently return the first page."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/nothing-here -> 404 NOT_FOUND",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/nothing-here",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "nothing-here"
+              ]
+            },
+            "description": "Even routing failures use the shared error envelope."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PUT /sessions/{id} -> 405 METHOD_NOT_ALLOWED",
+          "request": {
+            "method": "PUT",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('405', () => pm.response.to.have.status(405));",
+                  "pm.test('METHOD_NOT_ALLOWED', () => pm.expect(pm.response.json().error.code).to.eql('METHOD_NOT_ALLOWED'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "sessions (beyond contract)",
+      "description": "Read and admin endpoints that are NOT in the CPR contract. Nothing else in the system calls them; they exist for the Lab 1 CRUD requirement and to make the outbox inspectable while no broker exists.",
+      "item": [
+        {
+          "name": "GET /sessions -> 200 (all)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('the pagination envelope the contract fixes', () => {",
+                  "  pm.expect(b.items).to.be.an('array');",
+                  "  pm.expect(b.total).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /sessions?status=ended -> 200 (filtered)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions?status=ended",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "ended"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('only ended sessions', () => pm.response.json().items.forEach(s =>",
+                  "  pm.expect(s.status).to.eql('ended')));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /sessions?limit=1&offset=0 -> 200 (paginated)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions?limit=1&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('one item', () => pm.expect(b.items).to.have.lengthOf(1));",
+                  "// The total counts every match, not just the page.",
+                  "pm.test('the total is the whole set', () => pm.expect(b.total).to.be.at.least(b.items.length));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /sessions/{seeded active} -> 200 (the contract's own example)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{seeded_session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{seeded_session_id}}"
+              ]
+            },
+            "description": "An empty database is seeded with this session, whose id is the one the CPR contract prints in its own example session object - so the contract's published example is reproducible against a fresh service."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('it is the contract\\'s example', () => {",
+                  "  pm.expect(b.status).to.eql('active');",
+                  "  pm.expect(b.difficulty).to.eql(3);",
+                  "  pm.expect(b.ruleset_version).to.eql(7);",
+                  "  pm.expect(b.score).to.eql(40);",
+                  "  pm.expect(b.penalties).to.eql(10);",
+                  "  pm.expect(b.applications_processed).to.eql(5);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /sessions/{seeded lobby} -> 200 (nulls, not zero values)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{seeded_lobby_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{seeded_lobby_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('a seeded lobby is really a lobby', () => {",
+                  "  pm.expect(b.status).to.eql('lobby');",
+                  "  pm.expect(b.moderator_id).to.eql(null);",
+                  "  pm.expect(b.ruleset_version).to.eql(null);",
+                  "  pm.expect(b.junior_moderators).to.eql([]);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "cleanup (destructive - run last)",
+      "description": "Removes what this collection created. A session that has started cannot be deleted - a shift that ran is history, and other services hold copies of it - so only the leftover lobby goes.",
+      "item": [
+        {
+          "name": "DELETE /sessions/{id}/players/{id} -> 204 (leave a lobby)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_a}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}/players/{{junior_a_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{lobby_session_id}}",
+                "players",
+                "{{junior_a_id}}"
+              ]
+            },
+            "description": "BEYOND CONTRACT."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /sessions/{id} as a non-creator -> 403 NOT_SESSION_CREATOR",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{lobby_session_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('NOT_SESSION_CREATOR', () => pm.expect(pm.response.json().error.code).to.eql('NOT_SESSION_CREATOR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /sessions/{id} -> 204 (the creator abandons the lobby)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_b}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{lobby_session_id}}"
+              ]
+            },
+            "description": "BEYOND CONTRACT."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /sessions/{deleted} -> 404 SESSION_NOT_FOUND",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{lobby_session_id}}"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('SESSION_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_FOUND'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /sessions/{ended} -> 409 SESSION_NOT_IN_LOBBY",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{session_id}}"
+              ]
+            },
+            "description": "A shift that ran cannot be erased."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('SESSION_NOT_IN_LOBBY', () => pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_IN_LOBBY'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /sessions/{solo} -> 204",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_solo}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/sessions/{{solo_session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "sessions",
+                "{{solo_session_id}}"
+              ]
+            },
+            "description": "BEYOND CONTRACT. Frees the solo player for the next run."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "response": []
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Mint the unsigned, JWT-shaped tokens this collection sends.",
+          "//",
+          "// The CPR contract says a player's request carries their JWT and the endpoint",
+          "// takes player_id from the `sub` claim. No token issuer exists in the system yet,",
+          "// so the token is read but never verified - the same arrangement University Record",
+          "// Service uses, which is why the game client can identify a player to both",
+          "// services the same way.",
+          "//",
+          "// This is NOT authentication: anything below mints a token for anyone.",
+          "",
+          "function b64url(text) {",
+          "  return CryptoJS.enc.Base64",
+          "    .stringify(CryptoJS.enc.Utf8.parse(text))",
+          "    .replace(/\\+/g, '-')",
+          "    .replace(/\\//g, '_')",
+          "    .replace(/=+$/, '');",
+          "}",
+          "",
+          "const header = b64url(JSON.stringify({ alg: 'none', typ: 'JWT' }));",
+          "const iat = Math.floor(Date.now() / 1000);",
+          "",
+          "function mint(playerId) {",
+          "  // The signature segment is left empty: nothing checks it.",
+          "  return header + '.' + b64url(JSON.stringify({ sub: playerId, iat: iat })) + '.';",
+          "}",
+          "",
+          "[['moderator_id', 'jwt_moderator'],",
+          " ['junior_a_id', 'jwt_junior_a'],",
+          " ['junior_b_id', 'jwt_junior_b'],",
+          " ['solo_player_id', 'jwt_solo'],",
+          " ['unknown_player_id', 'jwt_unknown']].forEach(([idVar, jwtVar]) => {",
+          "  pm.collectionVariables.set(jwtVar, mint(pm.collectionVariables.get(idVar)));",
+          "});"
+        ]
+      }
+    }
+  ]
+}

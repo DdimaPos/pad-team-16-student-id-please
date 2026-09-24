@@ -1,8 +1,9 @@
 # Team-wide compose - references PUBLISHED Docker Hub images only, never `build:`. Any
 # teammate can run this without cloning anyone's (private) service repository. So far it
-# covers Server Rules, University Record, Moderation, Discord DMs, Player and Server
-# Moderation Session; other services should add their own blocks here the same way,
-# referencing their own published image and joining the same `student-id-net` network.
+# covers Server Rules, University Record, Moderation, Discord DMs, Player, Server
+# Moderation Session, Applicant and Credential, plus the one shared RabbitMQ broker;
+# other services should add their own blocks here the same way, referencing their own
+# published image and joining the same `student-id-net` network.
 #
 # Host ports are allocated in the Deployments table of README.md - check it and take the
 # next free number before adding a block, so two services never claim the same port.
@@ -15,6 +16,26 @@ name: student-id-please
 x-reference-year: &reference_year "2026"
 
 services:
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-student_id}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+    networks:
+      - student-id-net
+
   rules-postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -274,6 +295,105 @@ services:
     networks:
       - student-id-net
 
+  applicant-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${APPLICANT_POSTGRES_USER:-applicant_user}
+      POSTGRES_PASSWORD: ${APPLICANT_POSTGRES_PASSWORD:?set APPLICANT_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${APPLICANT_POSTGRES_DB:-applicant_db}
+    volumes:
+      - applicant_pgdata:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${APPLICANT_POSTGRES_USER:-applicant_user} -d ${APPLICANT_POSTGRES_DB:-applicant_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - student-id-net
+
+  applicant-service:
+    image: stewdh/applicant-service:1.0.0
+    restart: unless-stopped
+    depends_on:
+      applicant-postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      APP_ENV: docker
+      APP_PORT: "8081"
+      LOG_LEVEL: info
+      SERVICE_VERSION: "1.0.0"
+      TZ: UTC
+      DATABASE_URL: "postgres://${APPLICANT_POSTGRES_USER:-applicant_user}:${APPLICANT_POSTGRES_PASSWORD:?set APPLICANT_POSTGRES_PASSWORD}@applicant-postgres:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
+      MIGRATE_ON_START: "true"
+      RABBITMQ_URL: "amqp://${RABBITMQ_USER:-student_id}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}@rabbitmq:5672/"
+      RABBITMQ_EXCHANGE: student-id.events
+      REFERENCE_YEAR: *reference_year
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "/applicantd", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    networks:
+      - student-id-net
+
+  credential-mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${CREDENTIAL_MONGO_USER:-credential_user}
+      MONGO_INITDB_ROOT_PASSWORD: ${CREDENTIAL_MONGO_PASSWORD:?set CREDENTIAL_MONGO_PASSWORD}
+      MONGO_INITDB_DATABASE: credential_db
+    volumes:
+      - credential_mongodata:/data/db
+    ports:
+      - "27018:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - student-id-net
+
+  credential-service:
+    image: stewdh/credential-service:1.0.0
+    restart: unless-stopped
+    depends_on:
+      credential-mongo:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      APP_ENV: docker
+      APP_PORT: "8082"
+      LOG_LEVEL: info
+      SERVICE_VERSION: "1.0.0"
+      TZ: UTC
+      MONGODB_URI: "mongodb://${CREDENTIAL_MONGO_USER:-credential_user}:${CREDENTIAL_MONGO_PASSWORD:?set CREDENTIAL_MONGO_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
+      MONGODB_DATABASE: credential_db
+      ENSURE_INDEXES_ON_START: "true"
+      RABBITMQ_URL: "amqp://${RABBITMQ_USER:-student_id}:${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}@rabbitmq:5672/"
+      RABBITMQ_EXCHANGE: student-id.events
+      REFERENCE_YEAR: *reference_year
+    ports:
+      - "8082:8082"
+    healthcheck:
+      test: ["CMD", "/credentiald", "healthcheck"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    networks:
+      - student-id-net
+
 networks:
   student-id-net:
     external: true
@@ -286,3 +406,6 @@ volumes:
   dms_mongodata:
   player_pgdata:
   session_pgdata:
+  rabbitmq_data:
+  applicant_pgdata:
+  credential_mongodata:

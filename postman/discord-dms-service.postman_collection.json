@@ -3,7 +3,7 @@
     "name": "Discord DMs Service",
     "_postman_id": "1f8c3a2d-7b4e-4c5f-9a6d-2e3f4a5b6c7d",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Team 16, Student ID, please. Replays session.started through the dev endpoint (the same code path as the RabbitMQ consumer), lists channels per player, sends messages over REST, reads history, ends the session and checks that channels are archived. The WebSocket itself is tested with a Postman WebSocket request: ws://localhost:8086/api/v1/ws?session_id={{session_id}}&access_token={{moderator_token}}, then send {\"type\":\"message.send\",\"channel_id\":\"...\",\"content\":\"hi\"}. Requires DEV_ENDPOINTS=true."
+    "description": "Team 16, Student ID, please. Replays session.started through the dev endpoint (the same code path a broker consumer will use), lists channels per player, sends messages over REST, reads history, ends the session and checks that channels are archived. The WebSocket itself is tested with a Postman WebSocket request: ws://localhost:8086/api/v1/ws?session_id={{session_id}}&access_token={{moderator_token}}, then send {\"type\":\"message.send\",\"channel_id\":\"...\",\"content\":\"hi\"}. Requires DEV_ENDPOINTS=true."
   },
   "variable": [
     {
@@ -303,7 +303,7 @@
                 "session-started"
               ]
             },
-            "description": "Same handler as the RabbitMQ consumer. Creates the four channels of {{session_id}} with the access mapping.",
+            "description": "Same handler a broker consumer will use. Creates the four channels of {{session_id}} with the access mapping.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ]\n  }\n}",

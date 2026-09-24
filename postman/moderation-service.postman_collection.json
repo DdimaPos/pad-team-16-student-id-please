@@ -1614,6 +1614,54 @@
               }
             }
           ]
+        },
+        {
+          "name": "GET /admin/events (outbox, oldest first)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/events?limit=10",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "10"
+                }
+              ]
+            },
+            "description": "Every decision.recorded event with its envelope. Hand a row to Server Moderation Session Service's POST /api/v1/dev/events/decision-recorded until the team broker exists."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('events listed', () => pm.expect(pm.response.json().total).to.be.at.least(1));",
+                  "pm.test('routing key', () => pm.expect(pm.response.json().items[0].routing_key).to.eql('decision.recorded'));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },

@@ -57,6 +57,7 @@ services:
 
   server-rules-service:
     image: d1vinexd/server-rules-service:0.1.0
+    platform: linux/amd64   # image is published for amd64 only; runs under emulation on Apple Silicon
     restart: unless-stopped
     depends_on:
       rules-postgres:
@@ -90,6 +91,7 @@ services:
 
   university-record-service:
     image: d1vinexd/university-record-service:0.1.0
+    platform: linux/amd64   # image is published for amd64 only; runs under emulation on Apple Silicon
     restart: unless-stopped
     depends_on:
       university-record-postgres:
@@ -126,7 +128,7 @@ services:
       - student-id-net
 
   moderation-service:
-    image: dmracovit/moderation-service:0.1.0
+    image: dmracovit/moderation-service:0.1.1
     restart: unless-stopped
     depends_on:
       moderation-postgres:
@@ -134,16 +136,17 @@ services:
     environment:
       DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
       SERVICE_TOKEN: ${MODERATION_SERVICE_TOKEN:?set MODERATION_SERVICE_TOKEN}
+      # University Record Service only answers /applicants/{id}/records to its own service token.
+      UPSTREAM_SERVICE_TOKEN: ${UNIVERSITY_RECORD_SERVICE_TOKEN:?set UNIVERSITY_RECORD_SERVICE_TOKEN}
       DEV_ENDPOINTS: ${MODERATION_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
       REFERENCE_YEAR: *reference_year
-      # Peers inside student-id-net. Empty = the built-in mock of that peer. Session Service is mocked until it ships.
+      # Peers inside student-id-net. Clearing a URL selects the built-in mock of that peer.
       APPLICANT_URL: ${MODERATION_APPLICANT_URL:-http://applicant-service:8081}
       CREDENTIAL_URL: ${MODERATION_CREDENTIAL_URL:-http://credential-service:8082}
       RULES_URL: ${MODERATION_RULES_URL:-http://server-rules-service:8080}
       UNIVERSITY_RECORD_URL: ${MODERATION_UNIVERSITY_RECORD_URL:-http://university-record-service:8080}
-      SESSION_URL: ${MODERATION_SESSION_URL:-}
-      # RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/   # uncomment once the shared broker is added here
+      SESSION_URL: ${MODERATION_SESSION_URL:-http://session-service:8080}
     ports:
       - "8085:8085"
     networks:
@@ -181,7 +184,7 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:0.1.0
+    image: dmracovit/discord-dms-service:0.1.1
     restart: unless-stopped
     depends_on:
       dms-mongo:
@@ -194,7 +197,6 @@ services:
       SERVICE_TOKEN: ${DMS_SERVICE_TOKEN:?set DMS_SERVICE_TOKEN}
       DEV_ENDPOINTS: ${DMS_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
-      # RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672/   # uncomment once the shared broker is added here
     ports:
       - "8086:8086"
     networks:

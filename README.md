@@ -1411,6 +1411,8 @@ need to clone the (private) service repository to run one.
 
 | Service | Docker Hub image | Host port | Requires |
 | --- | --- | --- | --- |
+| Applicant Service | [`stewdh/applicant-service`](https://hub.docker.com/r/stewdh/applicant-service) | `8081` | `DATABASE_URL` (PostgreSQL 16), `REFERENCE_YEAR` (must match Credential/University Record Service), `RABBITMQ_URL` (shared broker) |
+| Credential Service | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service) | `8082` | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record Service), `RABBITMQ_URL` (shared broker) |
 | Server Rules Service | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service) | `8083` | `ConnectionStrings__RulesDb` (PostgreSQL 17), `Auth__ServiceToken` |
 | University Record Service | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service) | `8084` | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential Service), `Auth__ServiceToken` |
 | Moderation Service | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service) | `8085` | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (empty = built-in mock) |
@@ -1419,9 +1421,10 @@ need to clone the (private) service repository to run one.
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088` | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL` and `RULES_SERVICE_URL` to reach the real services instead of its stubs - see below |
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
-free number: `8083`-`8088` are taken above, and the database containers hold `5434`-`5438`, `6380`
-and `27019`. Every service listens on `8080` inside its own container except Moderation and Discord
-DMs, which listen on `8085` and `8086`.
+free number: `8081`-`8088` are taken above, and the database containers hold `5433`-`5438`, `6380`,
+`27018` and `27019`. Every service listens on `8080` inside its own container except Applicant and
+Credential, which listen on `8081` and `8082`, and Moderation and Discord DMs, which listen on `8085`
+and `8086`.
 
 `dimapos/player-service` is published for `linux/amd64` and `linux/arm64`. `POSTGRES_PASSWORD` is
 its only required variable - everything else has a working default, the schema is applied at

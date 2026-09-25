@@ -16,7 +16,7 @@
     },
     {
       "key": "session_id",
-      "value": "{{$guid}}"
+      "value": ""
     },
     {
       "key": "moderator_token",
@@ -41,20 +41,6 @@
     {
       "key": "last_message_id",
       "value": ""
-    }
-  ],
-  "event": [
-    {
-      "listen": "prerequest",
-      "script": {
-        "type": "text/javascript",
-        "exec": [
-          "if (!pm.collectionVariables.get('session_id') || pm.collectionVariables.get('session_id').startsWith('{{')) {",
-          "  const g = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random()*16|0; return (c === 'x' ? r : (r&0x3|0x8)).toString(16); });",
-          "  pm.collectionVariables.set('session_id', g());",
-          "}"
-        ]
-      }
     }
   ],
   "item": [
@@ -315,6 +301,17 @@
             }
           },
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A fresh session on every run: replaying session.ended in folder 4 archives the previous one for good.",
+                  "const g = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); });",
+                  "pm.collectionVariables.set('session_id', g());"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {

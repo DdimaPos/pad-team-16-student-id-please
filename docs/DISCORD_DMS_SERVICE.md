@@ -9,7 +9,7 @@ shift ends. It never checks whether what players write is true.
 Owner: Racovita Dumitru. Source: the private `discord-DMs-service` repository, linked as a submodule of this CPR.
 
 > **Audience:** developers of the other services of *"Student ID, please"* (Team 16, FAF.PAD21.1), or the gateway.
-> Copied from the service's own README at `v0.1.1`; relative paths below refer to the `discord-DMs-service/` submodule.
+> Copied from the service's own README at `v0.2.0`; relative paths below refer to the `discord-DMs-service/` submodule.
 > Where the implementation diverges from the CPR contract, the divergence is called out in the last section.
 
 ## Integration card
@@ -27,7 +27,7 @@ Owner: Racovita Dumitru. Source: the private `discord-DMs-service` repository, l
 | Consumes | `session.started`, `session.ended` |
 | Calls | nothing. Zero outbound HTTP dependencies |
 | Authentication | `Authorization: Bearer <jwt>` or `?access_token=` for players (signature not verified, `sub` is the player id); `X-Service-Token` for `/admin/*` and `/dev/*` |
-| Docker image | `dmracovit/discord-dms-service:0.1.1` (also `:latest`), public on Docker Hub, linux/amd64 and linux/arm64 |
+| Docker image | `dmracovit/discord-dms-service:0.2.0` (also `:latest`), public on Docker Hub, linux/amd64 and linux/arm64 |
 
 ## Running it
 
@@ -59,7 +59,7 @@ docker run -d --name discord-dms-service --network student-id-net -p 8086:8086 \
   -e MONGODB_URI="mongodb://dms_user:<password>@<mongo-host>:27017/dms_db?authSource=admin" \
   -e REDIS_URL="redis://<redis-host>:6379/0" \
   -e SERVICE_TOKEN="<shared-secret>" -e DEV_ENDPOINTS=true -e SEED_ON_START=true \
-  dmracovit/discord-dms-service:0.1.1
+  dmracovit/discord-dms-service:0.2.0
 ```
 
 `discord-DMs-service/deployments/docker-compose.team.yml` is the same stack without `build:`, the fragment merged into
@@ -99,6 +99,7 @@ Extensions beyond the contract (the CRUD surface of Lab 1):
 | Method | Path | Notes |
 | --- | --- | --- |
 | `POST` | `/api/v1/channels/{channel_id}/messages` | `{ "content": "..." }` sends a message without a WebSocket. It is delivered to the open connections like any other |
+| `PATCH` | `/api/v1/channels/{channel_id}/messages/{message_id}` | `{ "content": "..." }` edits the caller's own message while the channel is not archived; the message gets `edited_at` and open connections receive `message.updated`. `403 NOT_MESSAGE_AUTHOR` for anyone else |
 | `DELETE` | `/api/v1/admin/messages/{message_id}` | Removes a message. Service token only |
 | `GET` | `/api/v1/dev/tokens?player_id=` | Mints an unsigned player JWT for Postman (`DEV_ENDPOINTS=true`) |
 | `POST` | `/api/v1/dev/events/session-started`, `/session-ended` | Accept a full event envelope and apply it: this is how session events arrive until the team's message broker exists |
@@ -110,6 +111,7 @@ WebSocket protocol, JSON text frames both ways:
 | client to server | `{ "type": "message.send", "channel_id": "...", "content": "..." }` |
 | client to server | `{ "type": "ping" }` |
 | server to client | `{ "type": "message.new", "message": { message_id, channel_id, author_id, content, sent_at } }` |
+| server to client | `{ "type": "message.updated", "message": { ..., edited_at } }` |
 | server to client | `{ "type": "error", "error": { "code": "CHANNEL_ACCESS_DENIED", "message": "..." } }` |
 | server to client | `{ "type": "pong" }` |
 | server to client | `{ "type": "session.ended", "session_id": "..." }`, followed by a normal close |
@@ -117,7 +119,7 @@ WebSocket protocol, JSON text frames both ways:
 The server pings every `WS_PING_INTERVAL` and drops a connection that stays silent for `WS_PONG_WAIT`.
 
 Error codes: `VALIDATION_ERROR` (400), `UNAUTHENTICATED`, `INVALID_SERVICE_TOKEN` (401),
-`NOT_IN_SESSION`, `CHANNEL_ACCESS_DENIED`, `SERVICE_TOKEN_REQUIRED` (403), `CHANNEL_NOT_FOUND`,
+`NOT_IN_SESSION`, `CHANNEL_ACCESS_DENIED`, `NOT_MESSAGE_AUTHOR`, `SERVICE_TOKEN_REQUIRED` (403), `CHANNEL_NOT_FOUND`,
 `MESSAGE_NOT_FOUND`, `NOT_FOUND` (404), `SESSION_NOT_ACTIVE`, `CHANNEL_ARCHIVED` (409),
 `INVALID_CONTENT`, `INVALID_EVENT` (422), `INTERNAL_ERROR` (500). Shared envelope
 `{ "error": { "code", "message", "details" } }`.
@@ -173,7 +175,7 @@ and are skipped otherwise.
 
 | # | Divergence | Who is affected |
 | --- | --- | --- |
-| 1 | `POST /channels/{id}/messages`, `/admin/*` and `/dev/*` exist beyond the contract | gateway and auth: `/admin/*` and `/dev/*` must never be routed to players |
+| 1 | `POST /channels/{id}/messages`, `PATCH /channels/{id}/messages/{message_id}` (the update side of the Lab 1 CRUD requirement), `/admin/*` and `/dev/*` exist beyond the contract | gateway and auth: `/admin/*` and `/dev/*` must never be routed to players |
 | 2 | The player token is also accepted as `?access_token=`, because browsers cannot set headers on a WebSocket upgrade | the game client, the gateway |
 | 3 | The WebSocket protocol adds `ping` / `pong` and a final `session.ended` frame before the close | the game client |
 | 4 | `422 INVALID_CONTENT` (empty or longer than `MAX_MESSAGE_LENGTH`) and `409 CHANNEL_ARCHIVED` are answered; the contract names neither | the game client |

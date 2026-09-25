@@ -237,6 +237,64 @@
               }
             }
           ]
+        },
+        {
+          "name": "reset: delete this session's decisions and bans (admin)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/decisions?session_id={{session_id}}&limit=100",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decisions"
+              ],
+              "query": [
+                {
+                  "key": "session_id",
+                  "value": "{{session_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            },
+            "description": "Decisions are immutable, so a second run of this collection would get 409 ALREADY_DECIDED. This request lists the session's decisions and deletes them, plus the ban list entries they created, through the admin endpoints, so the collection can be run again and again."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const base = pm.variables.get('base_url');",
+                  "const svcHeaders = [{ key: 'X-Service-Token', value: pm.variables.get('service_token') }];",
+                  "const playerHeaders = [{ key: 'Authorization', value: 'Bearer ' + pm.variables.get('moderator_token') }];",
+                  "const sid = pm.variables.get('session_id');",
+                  "const items = pm.response.json().items || [];",
+                  "console.log('reset: deleting ' + items.length + ' decision(s) of session ' + sid);",
+                  "items.forEach(d => pm.sendRequest({ url: base + '/api/v1/admin/decisions/' + d.decision_id, method: 'DELETE', header: svcHeaders }, (err, res) => console.log('delete decision', d.decision_id.slice(0, 8), err ? String(err) : res.code)));",
+                  "pm.sendRequest({ url: base + '/api/v1/bans?q=FAF23104&limit=100', method: 'GET', header: playerHeaders }, (err, res) => {",
+                  "  if (err || !res) { console.log('ban lookup failed', String(err)); return; }",
+                  "  (res.json().items || []).filter(b => b.session_id === sid).forEach(b => pm.sendRequest({ url: base + '/api/v1/admin/bans/' + b.ban_id, method: 'DELETE', header: svcHeaders }, (e, r) => console.log('delete ban', b.ban_id.slice(0, 8), e ? String(e) : r.code)));",
+                  "});",
+                  "pm.collectionVariables.set('last_decision_id', '');",
+                  "pm.collectionVariables.set('ban_id', '');"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -1713,6 +1771,58 @@
                 "exec": [
                   "pm.test('201', () => pm.response.to.have.status(201));",
                   "pm.collectionVariables.set('ban_id', pm.response.json().ban_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PATCH /admin/bans/{id}",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/bans/{{ban_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "bans",
+                "{{ban_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Manual Ban Edited\",\n  \"student_id\": \"FAF20102\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Update side of the CRUD surface: edits a ban list entry. Decisions are immutable by contract, the ban list is not."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('edited', () => { pm.expect(b.name).to.eql('Manual Ban Edited'); pm.expect(b.student_id).to.eql('FAF20102'); });"
                 ]
               }
             }

@@ -141,12 +141,14 @@ services:
       DEV_ENDPOINTS: ${MODERATION_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
       REFERENCE_YEAR: *reference_year
-      # Peers inside student-id-net. Clearing a URL selects the built-in mock of that peer.
-      APPLICANT_URL: ${MODERATION_APPLICANT_URL:-http://applicant-service:8081}
-      CREDENTIAL_URL: ${MODERATION_CREDENTIAL_URL:-http://credential-service:8082}
-      RULES_URL: ${MODERATION_RULES_URL:-http://server-rules-service:8080}
-      UNIVERSITY_RECORD_URL: ${MODERATION_UNIVERSITY_RECORD_URL:-http://university-record-service:8080}
-      SESSION_URL: ${MODERATION_SESSION_URL:-http://session-service:8080}
+      # Peers inside student-id-net. Unset = the real service; set to an empty value in .env
+      # (for example MODERATION_SESSION_URL=) = the built-in mock of that peer. The Postman
+      # collection needs all five mocked.
+      APPLICANT_URL: ${MODERATION_APPLICANT_URL-http://applicant-service:8081}
+      CREDENTIAL_URL: ${MODERATION_CREDENTIAL_URL-http://credential-service:8082}
+      RULES_URL: ${MODERATION_RULES_URL-http://server-rules-service:8080}
+      UNIVERSITY_RECORD_URL: ${MODERATION_UNIVERSITY_RECORD_URL-http://university-record-service:8080}
+      SESSION_URL: ${MODERATION_SESSION_URL-http://session-service:8080}
     ports:
       - "8085:8085"
     networks:

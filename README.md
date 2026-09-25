@@ -98,16 +98,16 @@ The diagram below visualizes the communication paths described above: the Sessio
 
 We use two languages: **Go** and **C#**.
 
-| # | Service | Owner | Language | Framework |
-| --- | --- | --- | --- | --- |
-| 1 | Player Service | Postoronca Dumitru | Go | Gin |
-| 2 | Server Moderation Session Service | Postoronca Dumitru | Go | Gin |
-| 3 | Applicant Service | Iacovlev Maxim | Go | Gin |
-| 4 | Credential Service | Iacovlev Maxim | Go | Gin |
-| 5 | Server Rules Service | Titerez Vladislav | C# | ASP.NET Core |
-| 6 | University Record Service | Titerez Vladislav | C# | ASP.NET Core |
-| 7 | Moderation Service | Racovita Dumitru | Go | Gin |
-| 8 | Discord DMs Service | Racovita Dumitru | Go | Gin + `gorilla/websocket` |
+| #   | Service                           | Owner              | Language | Framework                 |
+| --- | --------------------------------- | ------------------ | -------- | ------------------------- |
+| 1   | Player Service                    | Postoronca Dumitru | Go       | Gin                       |
+| 2   | Server Moderation Session Service | Postoronca Dumitru | Go       | Gin                       |
+| 3   | Applicant Service                 | Iacovlev Maxim     | Go       | Gin                       |
+| 4   | Credential Service                | Iacovlev Maxim     | Go       | Gin                       |
+| 5   | Server Rules Service              | Titerez Vladislav  | C#       | ASP.NET Core              |
+| 6   | University Record Service         | Titerez Vladislav  | C#       | ASP.NET Core              |
+| 7   | Moderation Service                | Racovita Dumitru   | Go       | Gin                       |
+| 8   | Discord DMs Service               | Racovita Dumitru   | Go       | Gin + `gorilla/websocket` |
 
 **Why Go for six services.** Most of our services do the same kind of work: receive an HTTP request, call one or two other services, read or write their own database, and answer. Go is built for exactly this. It compiles to one small binary, starts in milliseconds, and goroutines make it simple to call several services at the same time (Moderation Service calls four at once). Go is also quick to learn, which matters because most of the team is picking it up during this course.
 
@@ -117,15 +117,15 @@ We use two languages: **Go** and **C#**.
 
 ### Frameworks and libraries
 
-| Purpose | Go | C# |
-| --- | --- | --- |
-| HTTP server | Gin | ASP.NET Core Web API |
-| HTTP client | `net/http` | `HttpClient` |
-| RabbitMQ | `rabbitmq/amqp091-go` | `RabbitMQ.Client` |
-| WebSocket | `gorilla/websocket` (Discord DMs only) | not needed |
-| PostgreSQL | `pgx` | Npgsql + EF Core |
-| MongoDB | `mongo-go-driver` | `MongoDB.Driver` |
-| Redis | `go-redis` | `StackExchange.Redis` |
+| Purpose     | Go                                     | C#                    |
+| ----------- | -------------------------------------- | --------------------- |
+| HTTP server | Gin                                    | ASP.NET Core Web API  |
+| HTTP client | `net/http`                             | `HttpClient`          |
+| RabbitMQ    | `rabbitmq/amqp091-go`                  | `RabbitMQ.Client`     |
+| WebSocket   | `gorilla/websocket` (Discord DMs only) | not needed            |
+| PostgreSQL  | `pgx`                                  | Npgsql + EF Core      |
+| MongoDB     | `mongo-go-driver`                      | `MongoDB.Driver`      |
+| Redis       | `go-redis`                             | `StackExchange.Redis` |
 
 Every service runs in its own Docker container. RabbitMQ runs as one shared container.
 
@@ -135,16 +135,16 @@ Every service runs in its own Docker container. RabbitMQ runs as one shared cont
 
 We use three engines. PostgreSQL is the default. MongoDB and Redis are used only where there is a concrete reason.
 
-| Service | Database | Engine | Why this engine |
-| --- | --- | --- | --- |
-| Player | `player_db` | PostgreSQL | Accounts, XP, shift history and the disciplinary log are tables with relations between them. When a shift ends, XP and history must update together, which needs a transaction. |
-| Server Moderation Session | `session_db`, `session_cache` | PostgreSQL, Redis | History of shifts (who, when, score) goes to PostgreSQL. The state of the shift running right now (current applicant, counters) goes to Redis because it is read on every action and must be fast. |
-| Applicant | `applicant_db` | PostgreSQL | Every applicant has the same fields (name, student ID, major, year, status, courses). A fixed structure is a table. |
-| Credential | `credential_db` | MongoDB | Each applicant has a bundle of documents, and every document type has different fields. In a table this would be many empty columns. A document store keeps each bundle as one JSON document. |
-| Server Rules | `rules_db` | PostgreSQL | Rulesets are versioned, and each shift records which version it used, so versions must be queryable. Rule conditions are stored as JSONB so a new rule type does not need a schema change. |
-| University Record | `university_record_db` | PostgreSQL | Enrollment lists, email groups, courses and schedules are tables. Access control is a join between "records by category" and "which player may see which category in this session". |
-| Moderation | `moderation_db` | PostgreSQL | Each decision is an audit record: who decided, what, whether it was correct, which rules were broken. Queried by session, moderator and applicant. Never changed after it is written. |
-| Discord DMs | `dms_db`, `dms_pubsub` | MongoDB, Redis | Messages are appended and read back per channel in time order, which is what a Mongo collection with an index does. Redis Pub/Sub is not storage: it passes each new message to every running instance of the service so all connected players receive it. |
+| Service                   | Database                      | Engine            | Why this engine                                                                                                                                                                                                                                            |
+| ------------------------- | ----------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Player                    | `player_db`                   | PostgreSQL        | Accounts, XP, shift history and the disciplinary log are tables with relations between them. When a shift ends, XP and history must update together, which needs a transaction.                                                                            |
+| Server Moderation Session | `session_db`, `session_cache` | PostgreSQL, Redis | History of shifts (who, when, score) goes to PostgreSQL. The state of the shift running right now (current applicant, counters) goes to Redis because it is read on every action and must be fast.                                                         |
+| Applicant                 | `applicant_db`                | PostgreSQL        | Every applicant has the same fields (name, student ID, major, year, status, courses). A fixed structure is a table.                                                                                                                                        |
+| Credential                | `credential_db`               | MongoDB           | Each applicant has a bundle of documents, and every document type has different fields. In a table this would be many empty columns. A document store keeps each bundle as one JSON document.                                                              |
+| Server Rules              | `rules_db`                    | PostgreSQL        | Rulesets are versioned, and each shift records which version it used, so versions must be queryable. Rule conditions are stored as JSONB so a new rule type does not need a schema change.                                                                 |
+| University Record         | `university_record_db`        | PostgreSQL        | Enrollment lists, email groups, courses and schedules are tables. Access control is a join between "records by category" and "which player may see which category in this session".                                                                        |
+| Moderation                | `moderation_db`               | PostgreSQL        | Each decision is an audit record: who decided, what, whether it was correct, which rules were broken. Queried by session, moderator and applicant. Never changed after it is written.                                                                      |
+| Discord DMs               | `dms_db`, `dms_pubsub`        | MongoDB, Redis    | Messages are appended and read back per channel in time order, which is what a Mongo collection with an index does. Redis Pub/Sub is not storage: it passes each new message to every running instance of the service so all connected players receive it. |
 
 ---
 
@@ -170,21 +170,21 @@ Players chat in channels and must see new messages instantly. Discord DMs Servic
 
 ### Every arrow in the diagram and the rule it follows
 
-| Interaction | Rule | Who calls whom | Why this rule |
-| --- | --- | --- | --- |
-| Player creates or joins a session | REST | client → Session; Session → Player `GET /players/{id}` | Needs an answer now |
-| Session reports shift results | Event `session.ended` | Session → Player | Player updates XP later; closing the shift must not wait for it |
-| Session picks the ruleset for a new shift | REST `GET /rulesets/current` | Session → Server Rules | The shift cannot start without knowing its `ruleset_version` |
-| Session requests the next applicant | REST | Session → Applicant | Needs the `applicant_id` now |
-| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized` | the service contacted first → the other two | Two listeners, no waiting, no cross-service writes |
-| Session assigns record scopes to Junior Moderators | Event `session.started` | Session → University Record | Membership and scopes travel together in one event |
-| Session supplies channel membership | Events `session.started`, `session.ended` | Session → Discord DMs | Discord DMs creates and archives channels on its own |
-| Moderator submits a decision | REST `POST /decisions` | client → Moderation | The verdict must come back now |
-| Session supplies the current applicant | REST `GET /sessions/{id}` | Moderation → Session | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
-| Moderation gathers data for the verdict | REST, three calls in parallel | Moderation → Applicant, Credential, University Record | All three answers are needed to know what is true about the applicant |
-| Moderation checks the rules | REST `POST /rulesets/{version}/evaluations` | Moderation → Server Rules | Needs the verified facts from the three calls above, so it comes after them |
-| Moderation reports the outcome | Event `decision.recorded` | Moderation → Session | Session updates score and counters; no reply needed |
-| Players chat during a shift | WebSocket (REST for history) | client ↔ Discord DMs | Push in real time |
+| Interaction                                                             | Rule                                        | Who calls whom                                           | Why this rule                                                                                              |
+| ----------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Player creates or joins a session                                       | REST                                        | client => Session; Session => Player `GET /players/{id}` | Needs an answer now                                                                                        |
+| Session reports shift results                                           | Event `session.ended`                       | Session => Player                                        | Player updates XP later; closing the shift must not wait for it                                            |
+| Session picks the ruleset for a new shift                               | REST `GET /rulesets/current`                | Session => Server Rules                                  | The shift cannot start without knowing its `ruleset_version`                                               |
+| Session requests the next applicant                                     | REST                                        | Session => Applicant                                     | Needs the `applicant_id` now                                                                               |
+| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized`               | the service contacted first => the other two             | Two listeners, no waiting, no cross-service writes                                                         |
+| Session assigns record scopes to Junior Moderators                      | Event `session.started`                     | Session => University Record                             | Membership and scopes travel together in one event                                                         |
+| Session supplies channel membership                                     | Events `session.started`, `session.ended`   | Session => Discord DMs                                   | Discord DMs creates and archives channels on its own                                                       |
+| Moderator submits a decision                                            | REST `POST /decisions`                      | client => Moderation                                     | The verdict must come back now                                                                             |
+| Session supplies the current applicant                                  | REST `GET /sessions/{id}`                   | Moderation => Session                                    | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
+| Moderation gathers data for the verdict                                 | REST, three calls in parallel               | Moderation => Applicant, Credential, University Record   | All three answers are needed to know what is true about the applicant                                      |
+| Moderation checks the rules                                             | REST `POST /rulesets/{version}/evaluations` | Moderation => Server Rules                               | Needs the verified facts from the three calls above, so it comes after them                                |
+| Moderation reports the outcome                                          | Event `decision.recorded`                   | Moderation => Session                                    | Session updates score and counters; no reply needed                                                        |
+| Players chat during a shift                                             | WebSocket (REST for history)                | client ↔ Discord DMs                                     | Push in real time                                                                                          |
 
 ### Worked example: one applicant from start to finish
 
@@ -214,12 +214,12 @@ Why:
 What it costs, and what we do about it:
 
 - **Data that crosses a boundary through events arrives a little later.** Credential Service learns about a new applicant a few milliseconds after Applicant Service creates it. Consumers are idempotent and keyed by the shared identifier, so order and repeats do not matter.
-- **No transaction can span two services.** A flow like "decision → session score → player XP" is a chain of events, not one transaction. Compensation for failures is a topic for the transactions laboratory.
+- **No transaction can span two services.** A flow like "decision => session score => player XP" is a chain of events, not one transaction. Compensation for failures is a topic for the transactions laboratory.
 - **No joins across services.** A service that needs a combined view asks each owner and combines the answers itself. Moderation Service does exactly this.
 
 **Permitted duplication.** A service may keep a read-only copy of another service's data if it needs it for auditing or speed, as long as the owner stays the source of truth. Moderation Service stores a snapshot of the applicant, credentials and rule version behind each verdict, so the decision can still be explained after the applicant or the rules have changed.
 
-**Shared identifiers.** `player_id`, `session_id`, `applicant_id`, `decision_id`, `channel_id` and `message_id` are UUID v4 strings. `ruleset_version` is an integer that grows by one with every new ruleset. `applicant_id` is generated by whichever service initializes the applicant and is the same in Applicant, Credential and University Record.
+**Shared identifiers.** `player_id`, `session_id`, `applicant_id`, `decision_id`, `channel_id` and `message_id` are UUID v4 strings. `ruleset_version` is an integer that grows by one with every new ruleset - within one deployment: wiping Server Rules Service's database resets the counter to 1, which silently invalidates any `ruleset_version` a peer (Moderation Service) has snapshotted from before the reset. Do not drop that volume between demos. `applicant_id` is generated by whichever service initializes the applicant and is the same in Applicant, Credential and University Record.
 
 #### Event catalog
 
@@ -236,12 +236,12 @@ Exchange `student-id.events`, type `topic`. Every event has the same envelope; o
 }
 ```
 
-| Routing key | Published by | Consumed by | Payload (key fields) |
-| --- | --- | --- | --- |
-| `applicant.initialized` | the first of Applicant, Credential, University Record to be contacted | the other two | `applicant_id`, `session_id`, `initialized_by`, `difficulty`, `claimed { profile }`, `actual { profile }` |
-| `session.started` | Server Moderation Session | University Record, Discord DMs | `session_id`, `moderator_id`, `junior_moderators[] { player_id, record_scopes[] }`, `ruleset_version`, `started_at` |
-| `session.ended` | Server Moderation Session | Player, Discord DMs, University Record | `session_id`, `score`, `penalties`, `applications_processed`, `players[] { player_id, xp_delta, disciplinary_actions[] }`, `ended_at` |
-| `decision.recorded` | Moderation | Server Moderation Session | `decision_id`, `session_id`, `applicant_id`, `moderator_id`, `action`, `is_correct`, `expected_action`, `violated_rules[]`, `penalty` |
+| Routing key             | Published by                                                          | Consumed by                            | Payload (key fields)                                                                                                                  |
+| ----------------------- | --------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `applicant.initialized` | the first of Applicant, Credential, University Record to be contacted | the other two                          | `applicant_id`, `session_id`, `initialized_by`, `difficulty`, `claimed { profile }`, `actual { profile }`                             |
+| `session.started`       | Server Moderation Session                                             | University Record, Discord DMs         | `session_id`, `moderator_id`, `junior_moderators[] { player_id, record_scopes[] }`, `ruleset_version`, `started_at`                   |
+| `session.ended`         | Server Moderation Session                                             | Player, Discord DMs, University Record | `session_id`, `score`, `penalties`, `applications_processed`, `players[] { player_id, xp_delta, disciplinary_actions[] }`, `ended_at` |
+| `decision.recorded`     | Moderation                                                            | Server Moderation Session              | `decision_id`, `session_id`, `applicant_id`, `moderator_id`, `action`, `is_correct`, `expected_action`, `violated_rules[]`, `penalty` |
 
 #### API conventions
 
@@ -269,35 +269,98 @@ How to read it:
 
 These values are used by more than one service, so they are defined once here.
 
-| Field | Allowed values |
-| --- | --- |
-| `university_status` | `faf_student`, `other_major_student`, `teaching_assistant`, `staff`, `alumni`, `outsider` |
-| `role` (the server role an applicant asks for) | `student`, `teacher`, `alumni`, `guest` |
-| document `type` | `student_id_card`, `university_email`, `enrollment_confirmation`, `course_registration` |
-| document `validation_status` | `valid`, `expired`, `forged`, `inconsistent`, `incomplete` |
-| record `category` | `enrollment` (enrollment list and current academic year), `email-groups` (Outlook group lists), `courses` (existing courses and semester schedule), `fcim-logs` (FCIM server messages) |
-| decision `action` | `accept`, `reject`, `flag`, `ban` |
-| session `status` | `lobby` (players are joining), `active` (the shift is running), `ended` |
-| server channels (what an accepted applicant may enter) | `general`, `dark-memes`, `groapa`, `teachers`, `alumni`; a ruleset may add more |
-| moderator channels (in Discord DMs) | `general-mod-chat`, `enrollment-check`, `faculty-check`, `course-registration` |
-| `difficulty` | integer from `1` (easy) to `5` (hard) |
+| Field                                                  | Allowed values                                                                                                                                                                         |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `university_status`                                    | `faf_student`, `other_major_student`, `teaching_assistant`, `staff`, `alumni`, `outsider`                                                                                              |
+| `role` (the server role an applicant asks for)         | `student`, `teacher`, `alumni`, `guest`                                                                                                                                                |
+| document `type`                                        | `student_id_card`, `university_email`, `enrollment_confirmation`, `course_registration`                                                                                                |
+| document `validation_status`                           | `valid`, `expired`, `forged`, `inconsistent`, `incomplete`                                                                                                                             |
+| record `category`                                      | `enrollment` (enrollment list and current academic year), `email-groups` (Outlook group lists), `courses` (existing courses and semester schedule), `fcim-logs` (FCIM server messages) |
+| decision `action`                                      | `accept`, `reject`, `flag`, `ban`                                                                                                                                                      |
+| session `status`                                       | `lobby` (players are joining), `active` (the shift is running), `ended`                                                                                                                |
+| server channels (what an accepted applicant may enter) | `general`, `dark-memes`, `groapa`, `teachers`, `alumni`; a ruleset may add more                                                                                                        |
+| moderator channels (in Discord DMs)                    | `general-mod-chat`, `enrollment-check`, `faculty-check`, `course-registration`                                                                                                         |
+| `difficulty`                                           | integer from `1` (easy) to `5` (hard)                                                                                                                                                  |
 
 **Applicant profile.** This is the shape of what an applicant says about themselves. It is used by Applicant Service and inside the `applicant.initialized` event (both `claimed` and `actual` have this shape):
 
 ```json
 {
   "name": "Ion Popescu",
-  "student_id": "FAF231017",
+  "student_id": "FAF23117",
   "email": "ion.popescu@isa.utm.md",
   "major": "FAF",
-  "year": 2,
+  "year": 4,
   "university_status": "faf_student",
   "courses": ["PAD", "ELSE-NET"],
   "role": "student"
 }
 ```
 
-`student_id`, `major` and `year` are `null` for people who never studied at the university.
+#### Identity model
+
+Applicant, Credential and University Record all generate or validate the same identity, so
+the rules are defined once here. A service that disagrees with them turns an honest applicant
+into an apparent liar.
+
+**Student ID - `{MAJOR}{yy}{g}{nn}`**
+
+```
+FAF 23 1 17   ->  "FAF23117"
+ |   |  |  `- nn : 2 digits, index within the group
+ |   |  `---- g  : 1 digit,  group number
+ |   `------- yy : 2 digits, admission year mod 100 (23 = admitted 2023)
+ `----------- MAJOR : 2-4 uppercase letters, equal to the profile's major
+```
+
+Regex `^[A-Z]{2,4}[0-9]{5}$`. The academic group is derivable from the identifier alone -
+`FAF23117` => group `FAF-231`, email group `faf-231` - so it never has to travel as a separate
+field. `enrollment` records still carry `group` for display, but it must agree with the
+identifier. Parsers are deliberately tolerant: a service never rejects a peer's identifier for
+its shape, it only declines to interpret it.
+
+**`REFERENCE_YEAR` is `2026`.** It is the calendar year the applicant-data services treat as
+"now", and all three must be configured with the same value, or perfectly honest applicants
+will look like liars. It matches the first component of `academic_year` (`"2026-2027"`).
+
+**Admission year and study year are independent.** Neither is derived from the other: in the
+spring of 2026 someone admitted in 2025 is a first-year, and in the autumn of the same calendar
+year a second-year. The pair is constrained rather than computed:
+
+```
+year ∈ { REFERENCE_YEAR − admissionYear, REFERENCE_YEAR − admissionYear + 1 } ∩ [1, 4]
+```
+
+So someone admitted in 2023 is in year 3 or 4 during `2026-2027` and **never** in year 2, and
+claiming otherwise is a lie provable from the identifier on their own card. The `years_enrolled`
+fact Moderation sends to Server Rules is `REFERENCE_YEAR − admissionYear`.
+
+**University email addresses are numbered only on collision.**
+
+| Status                                                     | Address                    | Suffix                                               |
+| ---------------------------------------------------------- | -------------------------- | ---------------------------------------------------- |
+| `faf_student`, `other_major_student`, `teaching_assistant` | `first.last@isa.utm.md`    | none, unless taken => `first.last2@`, `first.last3@` |
+| `staff`                                                    | `first.last@utm.md`        | the same rule                                        |
+| `alumni`, `outsider`                                       | `first.last{nn}@gmail.com` | always a two-digit suffix                            |
+
+`first.last` is lower-cased and folded to ASCII: `Ștefan Băț` => `stefan.bat`, `Ana-Maria Rusu`
+=> `ana-maria.rusu`. Uniqueness is asked across all three applicant-data services, and any one
+of them can answer it locally: each holds the union of the applicants it generated and every
+applicant it ingested from `applicant.initialized`, and registers the addresses of both.
+
+**Which fields each status carries.** `role` is not chosen freely - it follows from
+`university_status`, and is the server role that status entitles the applicant to ask for.
+
+| `university_status`                  | `student_id` | `major` | `year`  | `courses` | `role`    |
+| ------------------------------------ | ------------ | ------- | ------- | --------- | --------- |
+| `faf_student`, `other_major_student` | yes          | yes     | `1`-`4` | may have  | `student` |
+| `teaching_assistant`                 | yes          | yes     | `1`-`4` | may have  | `teacher` |
+| `alumni`                             | yes          | yes     | `null`  | empty     | `alumni`  |
+| `staff`                              | `null`       | `null`  | `null`  | empty     | `teacher` |
+| `outsider`                           | `null`       | `null`  | `null`  | empty     | `guest`   |
+
+An alumnus is the case the old one-line rule got wrong: they carry a student ID and a major,
+but no current study year and no course registrations.
 
 #### Player Service
 
@@ -329,6 +392,24 @@ None. Player Service never calls other services; it only listens to `session.end
 
 **Usage.** Private data (email, password hash, friends list, disciplinary log) is never returned here.
 
+###### Level and XP
+
+`level` is derived from `xp`, never stored: `level = xp / 400 + 1`, capped at 10. The step and the
+cap are configurable (`XP_PER_LEVEL`, `MAX_LEVEL`) but the defaults are what this document's example
+above assumes - 1250 XP is level 4. Player Service owns this rule; no other service should
+reimplement it. Session Service reads `level` from this endpoint and clamps the _average_ to 1-5 to
+pick a `difficulty`, which is a separate calculation on its side.
+
+A total XP is floored at zero, so the minimum level is always 1.
+
+###### Endpoints beyond this contract
+
+Player Service also exposes register, list, profile read/edit, delete, shift history, disciplinary
+log and friends endpoints, plus a development endpoint that applies a `session.ended` event without
+a broker. They are not part of this contract and may change without amending it - see
+[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md). No endpoint of the service requires
+authentication, and none returns a player's email.
+
 ##### Message queue events
 
 **Published:** none.
@@ -337,6 +418,12 @@ None. Player Service never calls other services; it only listens to `session.end
 
 - `session.ended` - published by Server Moderation Session Service  
   For every player in `players[]`, adds `xp_delta` to their XP, recalculates their level, adds the shift to their history and appends any `disciplinary_actions` to their log. The `event_id` is remembered, so the same shift is never counted twice.
+
+  An id in `players[]` with no account here is skipped and logged - Session Service decides who was
+  in a shift, and one unknown id must not cost the other players their XP.
+
+  **Not yet wired:** Player Service has no broker client, so this event currently reaches it only
+  through `POST /api/v1/dev/events/session-ended` - see [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md).
 
 #### Server Moderation Session Service
 
@@ -359,14 +446,32 @@ Several endpoints below return the **session object**:
   "status": "active",
   "created_by": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
   "players": [
-    { "player_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11", "username": "dima_mod", "level": 4 },
-    { "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "username": "maxim_jr", "level": 2 },
-    { "player_id": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21", "username": "vlad_jr", "level": 3 }
+    {
+      "player_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+      "username": "dima_mod",
+      "level": 4
+    },
+    {
+      "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
+      "username": "maxim_jr",
+      "level": 2
+    },
+    {
+      "player_id": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
+      "username": "vlad_jr",
+      "level": 3
+    }
   ],
   "moderator_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
   "junior_moderators": [
-    { "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "record_scopes": ["enrollment", "courses"] },
-    { "player_id": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21", "record_scopes": ["email-groups", "fcim-logs"] }
+    {
+      "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
+      "record_scopes": ["enrollment", "courses"]
+    },
+    {
+      "player_id": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
+      "record_scopes": ["email-groups", "fcim-logs"]
+    }
   ],
   "difficulty": 3,
   "ruleset_version": 7,
@@ -465,8 +570,23 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
   "penalties": 10,
   "applications_processed": 6,
   "players": [
-    { "player_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11", "role": "moderator", "xp_delta": 30, "disciplinary_actions": [{ "type": "warning", "reason": "Accepted an applicant with a forged student ID" }] },
-    { "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "role": "junior_moderator", "xp_delta": 40, "disciplinary_actions": [] }
+    {
+      "player_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+      "role": "moderator",
+      "xp_delta": 30,
+      "disciplinary_actions": [
+        {
+          "type": "warning",
+          "reason": "Accepted an applicant with a forged student ID"
+        }
+      ]
+    },
+    {
+      "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
+      "role": "junior_moderator",
+      "xp_delta": 40,
+      "disciplinary_actions": []
+    }
   ],
   "ended_at": "2026-09-10T18:45:00Z"
 }
@@ -494,8 +614,14 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
     "session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
     "moderator_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
     "junior_moderators": [
-      { "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "record_scopes": ["enrollment", "courses"] },
-      { "player_id": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21", "record_scopes": ["email-groups", "fcim-logs"] }
+      {
+        "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
+        "record_scopes": ["enrollment", "courses"]
+      },
+      {
+        "player_id": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
+        "record_scopes": ["email-groups", "fcim-logs"]
+      }
     ],
     "ruleset_version": 7,
     "started_at": "2026-09-10T18:05:00Z"
@@ -560,10 +686,10 @@ None. Applicant Service never calls other services. It shares new applicants thr
   "applicant_id": "5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13",
   "session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
   "name": "Ion Popescu",
-  "student_id": "FAF231017",
+  "student_id": "FAF23117",
   "email": "ion.popescu@isa.utm.md",
   "major": "FAF",
-  "year": 2,
+  "year": 4,
   "university_status": "faf_student",
   "courses": ["PAD", "ELSE-NET"],
   "role": "student",
@@ -587,12 +713,24 @@ None. Applicant Service never calls other services. It shares new applicants thr
     "initialized_by": "applicant-service",
     "difficulty": 3,
     "claimed": {
-      "name": "Ion Popescu", "student_id": "FAF231017", "email": "ion.popescu@isa.utm.md",
-      "major": "FAF", "year": 2, "university_status": "faf_student", "courses": ["PAD", "ELSE-NET"], "role": "student"
+      "name": "Ion Popescu",
+      "student_id": "FAF23117",
+      "email": "ion.popescu@isa.utm.md",
+      "major": "FAF",
+      "year": 4,
+      "university_status": "faf_student",
+      "courses": ["PAD", "ELSE-NET"],
+      "role": "student"
     },
     "actual": {
-      "name": "Ion Popescu", "student_id": null, "email": "ion.popescu99@gmail.com",
-      "major": null, "year": null, "university_status": "outsider", "courses": [], "role": "guest"
+      "name": "Ion Popescu",
+      "student_id": null,
+      "email": "ion.popescu99@gmail.com",
+      "major": null,
+      "year": null,
+      "university_status": "outsider",
+      "courses": [],
+      "role": "guest"
     }
   }
   ```
@@ -637,12 +775,34 @@ None. Credential Service never calls other services. It learns about new applica
     {
       "document_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
       "type": "student_id_card",
-      "fields": { "name": "Ion Popescu", "student_id": "FAF231017", "faculty": "FCIM", "major": "FAF", "valid_until": "2027-06-30" }
+      "fields": {
+        "name": "Ion Popescu",
+        "student_id": "FAF23117",
+        "faculty": "FCIM",
+        "major": "FAF",
+        "valid_until": "2027-06-30"
+      }
     },
     {
       "document_id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
       "type": "enrollment_confirmation",
-      "fields": { "name": "Ion Popescu", "student_id": "FAF231017", "academic_year": "2026-2027", "year": 2, "issued_at": "2026-09-01" }
+      "fields": {
+        "name": "Ion Popescu",
+        "student_id": "FAF23117",
+        "academic_year": "2026-2027",
+        "year": 4,
+        "issued_at": "2026-09-01"
+      }
+    },
+    {
+      "document_id": "f1a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5c",
+      "type": "university_email",
+      "fields": {
+        "name": "Ion Popescu",
+        "email": "ion.popescu@isa.utm.md",
+        "groups": ["faf-students", "faf-231"],
+        "issued_at": "2023-09-01"
+      }
     }
   ]
 }
@@ -665,16 +825,40 @@ None. Credential Service never calls other services. It learns about new applica
     {
       "document_id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
       "type": "student_id_card",
-      "fields": { "name": "Ion Popescu", "student_id": "FAF231017", "faculty": "FCIM", "major": "FAF", "valid_until": "2027-06-30" },
+      "fields": {
+        "name": "Ion Popescu",
+        "student_id": "FAF23117",
+        "faculty": "FCIM",
+        "major": "FAF",
+        "valid_until": "2027-06-30"
+      },
       "validation_status": "forged",
-      "problems": ["Student ID FAF231017 was never issued to this person"]
+      "problems": ["Student ID FAF23117 was never issued to this person"]
     },
     {
       "document_id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
       "type": "enrollment_confirmation",
-      "fields": { "name": "Ion Popescu", "student_id": "FAF231017", "academic_year": "2026-2027", "year": 2, "issued_at": "2026-09-01" },
+      "fields": {
+        "name": "Ion Popescu",
+        "student_id": "FAF23117",
+        "academic_year": "2026-2027",
+        "year": 4,
+        "issued_at": "2026-09-01"
+      },
       "validation_status": "forged",
       "problems": ["The confirmation number does not exist"]
+    },
+    {
+      "document_id": "f1a2b3c4-d5e6-4f7a-8b9c-0d1e2f3a4b5c",
+      "type": "university_email",
+      "fields": {
+        "name": "Ion Popescu",
+        "email": "ion.popescu@isa.utm.md",
+        "groups": ["faf-students", "faf-231"],
+        "issued_at": "2023-09-01"
+      },
+      "validation_status": "forged",
+      "problems": ["No mailbox exists for ion.popescu@isa.utm.md"]
     }
   ]
 }
@@ -709,10 +893,26 @@ Several endpoints below return the **ruleset object**:
   "version": 7,
   "difficulty": 3,
   "rules": [
-    { "rule_id": "only-faf-or-teachers", "kind": "admission", "description": "Only FAF students and FAF teachers may join" },
-    { "rule_id": "no-previously-banned", "kind": "admission", "description": "Previously banned people cannot enter, whatever their documents say" },
-    { "rule_id": "first-years-general-only", "kind": "channel", "description": "First-year students may access #general but not #dark-memes or #groapa" },
-    { "rule_id": "teachers-channel", "kind": "channel", "description": "Teachers may access #teachers" }
+    {
+      "rule_id": "only-faf-or-teachers",
+      "kind": "admission",
+      "description": "Only FAF students and FAF teachers may join"
+    },
+    {
+      "rule_id": "no-previously-banned",
+      "kind": "admission",
+      "description": "Previously banned people cannot enter, whatever their documents say"
+    },
+    {
+      "rule_id": "first-years-general-only",
+      "kind": "channel",
+      "description": "First-year students may access #general but not #dark-memes or #groapa"
+    },
+    {
+      "rule_id": "teachers-channel",
+      "kind": "channel",
+      "description": "Teachers may access #teachers"
+    }
   ],
   "created_at": "2026-09-01T00:00:00Z"
 }
@@ -726,9 +926,9 @@ A rule of kind `admission` decides whether a person may join at all. A rule of k
 
 **Query params.**
 
-| Name | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `difficulty` | integer 1-5 | yes | How hard the shift should be |
+| Name         | Type        | Required | Meaning                      |
+| ------------ | ----------- | -------- | ---------------------------- |
+| `difficulty` | integer 1-5 | yes      | How hard the shift should be |
 
 **Payload.** None.
 
@@ -807,26 +1007,34 @@ None. University Record never calls other services. It learns about applicants a
 
 ###### `GET /api/v1/records/{category}` - consumed by Client
 
-**Description.** A Junior Moderator searches one record category, for example "is student ID FAF231017 on the enrollment list?". A player can only search the categories assigned to them in the current session.
+**Description.** A Junior Moderator searches one record category, for example "is student ID FAF23117 on the enrollment list?". A player can only search the categories assigned to them in the current session.
 
 **Query params.**
 
-| Name | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `session_id` | UUID | yes | The session the player is playing in |
-| `q` | string | yes | What to look for: a name, student ID, email or course code |
-| `limit`, `offset` | integer | no | Pagination, as in the API conventions |
+| Name              | Type    | Required | Meaning                                                    |
+| ----------------- | ------- | -------- | ---------------------------------------------------------- |
+| `session_id`      | UUID    | yes      | The session the player is playing in                       |
+| `q`               | string  | yes      | What to look for: a name, student ID, email or course code |
+| `limit`, `offset` | integer | no       | Pagination, as in the API conventions                      |
 
 **Payload.** None.
 
-**Response.** `200 OK`. Example for `enrollment` with `q=FAF231004`:
+**Response.** `200 OK`. Example for `enrollment` with `q=FAF23104`:
 
 ```json
 {
   "category": "enrollment",
   "academic_year": "2026-2027",
   "items": [
-    { "student_id": "FAF231004", "name": "Ana Rusu", "major": "FAF", "group": "FAF-231", "year": 2, "enrolled_since": "2025-09-01", "status": "enrolled" }
+    {
+      "student_id": "FAF23104",
+      "name": "Ana Rusu",
+      "major": "FAF",
+      "group": "FAF-231",
+      "year": 3,
+      "enrolled_since": "2023-09-01",
+      "status": "enrolled"
+    }
   ],
   "total": 1
 }
@@ -834,18 +1042,24 @@ None. University Record never calls other services. It learns about applicants a
 
 Fields of one record in each category:
 
-| Category | Fields |
-| --- | --- |
-| `enrollment` | `student_id`, `name`, `major`, `group`, `year`, `enrolled_since`, `status` (`enrolled`, `graduated`, `expelled`); the response also has `academic_year` |
-| `email-groups` | `email`, `name`, `groups` (for example `faf-students`, `faf-231`, `teaching-assistants`, `staff`) |
-| `courses` | `course_code`, `title`, `semester`, `schedule[] { day, time, room }`, `registered_student_ids[]` |
-| `fcim-logs` | `message_id`, `author_name`, `author_email`, `channel`, `content`, `sent_at` |
+| Category       | Fields                                                                                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enrollment`   | `student_id`, `name`, `major`, `group`, `year`, `enrolled_since`, `status` (`enrolled`, `graduated`, `expelled`); the response also has `academic_year` |
+| `email-groups` | `email`, `name`, `groups` (for example `faf-students`, `faf-231`, `teaching-assistants`, `staff`, `alumni`)                                             |
+| `courses`      | `course_code`, `title`, `semester`, `schedule[] { day, time, room }`, `registered_student_ids[]`                                                        |
+| `fcim-logs`    | `message_id`, `author_name`, `author_email`, `channel`, `content`, `sent_at`                                                                            |
+
+`alumni` is a legal value inside `groups` even though the category is nominally "Outlook group lists" - without it an honest alumnus would be unverifiable in every category except `enrollment`.
+
+**Known gap:** the shared applicant profile's `university_status` enum has no value for an expelled student, so `enrollment.status = "expelled"` can never arise from an ingested `applicant.initialized` event - only from records seeded directly in University Record Service. Either a status value should be added to the shared identity model, or "expelled" should be treated as out of scope for Lab 1-3; not resolved here.
 
 **Usage.**
 
 - The calling player must have `category` in their `record_scopes` for this `session_id` (received with `session.started`). Otherwise the answer is `403 CATEGORY_NOT_ASSIGNED`. The Moderator has no categories.
 - After `session.ended`, every request for that session gets `403 SESSION_ENDED`.
 - An empty `items` list is a valid answer: it means the records know nothing about what was searched, which is often the clue.
+- `group` is derived from `student_id`, and `year` and `enrolled_since` must agree with the
+  admission year encoded in it. See the [identity model](#identity-model).
 - Errors: `403 CATEGORY_NOT_ASSIGNED`, `403 SESSION_ENDED`, `422 UNKNOWN_CATEGORY`.
 
 ###### `GET /api/v1/applicants/{applicant_id}/records` - consumed by Moderation Service
@@ -863,14 +1077,26 @@ Fields of one record in each category:
   "enrollment": [],
   "email_groups": [],
   "courses": [
-    { "course_code": "PAD", "title": "Distributed Applications Programming", "exists": true, "registered": false },
-    { "course_code": "ELSE-NET", "title": null, "exists": false, "registered": false }
+    {
+      "course_code": "PAD",
+      "title": "Distributed Applications Programming",
+      "exists": true,
+      "registered": false
+    },
+    {
+      "course_code": "ELSE-NET",
+      "title": null,
+      "exists": false,
+      "registered": false
+    }
   ],
   "fcim_logs": []
 }
 ```
 
-The lists hold the same records a junior would find by searching, but for every category at once. Empty lists mean the university knows nothing about the claimed identity. In this example, that is how Moderation sees that the "FAF student" is really an outsider. For each claimed course, `courses` says whether the course exists and whether the claimed student is registered for it.
+The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a junior would find by searching, but for every category at once. Empty lists mean the university knows nothing about the claimed identity. In this example, that is how Moderation sees that the "FAF student" is really an outsider.
+
+`courses` is different: it is one entry **per course the applicant claims**, in claimed order, saying whether that course exists in the catalog and whether the claimed student is registered for it - a course that does not exist has no catalog record to return, so `exists: false` with `title: null` is the only way to represent it. This is why its shape (`course_code`, `title`, `exists`, `registered`) differs from the `courses` category record returned by `GET /records/courses`.
 
 **Usage.** This endpoint gives full read access to all categories, so it is only for services (see the note on University Record access above). `404 APPLICANT_NOT_FOUND` if the applicant does not exist.
 
@@ -938,9 +1164,15 @@ The lists hold the same records a junior would find by searching, but for every 
   "expected_action": "ban",
   "allowed_channels": [],
   "violated_rules": [
-    { "rule_id": "only-faf-or-teachers", "description": "Only FAF students and FAF teachers may join" }
+    {
+      "rule_id": "only-faf-or-teachers",
+      "description": "Only FAF students and FAF teachers may join"
+    }
   ],
-  "reasons": ["The student ID card is forged", "The university has no record of student ID FAF231017"],
+  "reasons": [
+    "The student ID card is forged",
+    "The university has no record of student ID FAF23117"
+  ],
   "penalty": 30,
   "ruleset_version": 7,
   "decided_at": "2026-09-10T18:14:00Z"
@@ -955,12 +1187,12 @@ The lists hold the same records a junior would find by searching, but for every 
 4. Build the verified facts from the records (not from the claims) and send them to Server Rules with the shift's `ruleset_version`.
 5. Work out the expected action. The rows are checked from top to bottom, and the first one that matches wins:
 
-   | Situation | Expected action |
-   | --- | --- |
-   | A document is `forged`, or the records for the claimed student ID or email belong to a different person | `ban` |
-   | Server Rules answers `"admitted": false` (for example, not a FAF student, or banned before), or a document is `expired` | `reject` |
-   | A document is `inconsistent` or `incomplete`, so the claims cannot be confirmed | `flag` |
-   | None of the above | `accept`, with `granted_channels` equal to `allowed_channels` |
+   | Situation                                                                                                               | Expected action                                               |
+   | ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+   | A document is `forged`, or the records for the claimed student ID or email belong to a different person                 | `ban`                                                         |
+   | Server Rules answers `"admitted": false` (for example, not a FAF student, or banned before), or a document is `expired` | `reject`                                                      |
+   | A document is `inconsistent` or `incomplete`, so the claims cannot be confirmed                                         | `flag`                                                        |
+   | None of the above                                                                                                       | `accept`, with `granted_channels` equal to `allowed_channels` |
 
 6. Store the decision with a snapshot of the data behind it. If `action` is `ban`, add the claimed student ID and name to the ban list. Publish `decision.recorded` and reply.
 
@@ -977,12 +1209,12 @@ Further rules:
 
 **Query params.**
 
-| Name | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `session_id` | UUID | no | Only decisions of this session |
-| `applicant_id` | UUID | no | Only decisions about this applicant |
-| `moderator_id` | UUID | no | Only decisions made by this Moderator |
-| `limit`, `offset` | integer | no | Pagination, as in the API conventions |
+| Name              | Type    | Required | Meaning                               |
+| ----------------- | ------- | -------- | ------------------------------------- |
+| `session_id`      | UUID    | no       | Only decisions of this session        |
+| `applicant_id`    | UUID    | no       | Only decisions about this applicant   |
+| `moderator_id`    | UUID    | no       | Only decisions made by this Moderator |
+| `limit`, `offset` | integer | no       | Pagination, as in the API conventions |
 
 **Payload.** None.
 
@@ -994,10 +1226,10 @@ Further rules:
 
 **Query params.**
 
-| Name | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `q` | string | yes | A student ID or a name |
-| `limit`, `offset` | integer | no | Pagination, as in the API conventions |
+| Name              | Type    | Required | Meaning                               |
+| ----------------- | ------- | -------- | ------------------------------------- |
+| `q`               | string  | yes      | A student ID or a name                |
+| `limit`, `offset` | integer | no       | Pagination, as in the API conventions |
 
 **Payload.** None.
 
@@ -1007,7 +1239,7 @@ Further rules:
 {
   "items": [
     {
-      "student_id": "FAF231017",
+      "student_id": "FAF23117",
       "name": "Ion Popescu",
       "banned_at": "2026-09-03T17:20:00Z",
       "decision_id": "e4f5a6b7-c8d9-4e0f-a1b2-c3d4e5f6a7b8",
@@ -1036,7 +1268,12 @@ Further rules:
     "action": "accept",
     "is_correct": false,
     "expected_action": "ban",
-    "violated_rules": [{ "rule_id": "only-faf-or-teachers", "description": "Only FAF students and FAF teachers may join" }],
+    "violated_rules": [
+      {
+        "rule_id": "only-faf-or-teachers",
+        "description": "Only FAF students and FAF teachers may join"
+      }
+    ],
     "penalty": 30
   }
   ```
@@ -1057,22 +1294,41 @@ None. Discord DMs never calls other services. Everything it needs about a sessio
 
 **Query params.**
 
-| Name | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `session_id` | UUID | yes | The session whose channels the player wants to use |
+| Name         | Type | Required | Meaning                                            |
+| ------------ | ---- | -------- | -------------------------------------------------- |
+| `session_id` | UUID | yes      | The session whose channels the player wants to use |
 
 **Payload.** None for the upgrade request. After the connection is open, the messages look like this:
 
 ```json
-{ "type": "message.send", "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8", "content": "FAF231017 is not on the enrollment list" }
+{
+  "type": "message.send",
+  "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8",
+  "content": "FAF23117 is not on the enrollment list"
+}
 ```
 
 ```json
-{ "type": "message.new", "message": { "message_id": "f6a7b8c9-d0e1-4f2a-b3c4-d5e6f7a8b9c0", "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8", "author_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "content": "FAF231017 is not on the enrollment list", "sent_at": "2026-09-10T18:12:30Z" } }
+{
+  "type": "message.new",
+  "message": {
+    "message_id": "f6a7b8c9-d0e1-4f2a-b3c4-d5e6f7a8b9c0",
+    "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8",
+    "author_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
+    "content": "FAF23117 is not on the enrollment list",
+    "sent_at": "2026-09-10T18:12:30Z"
+  }
+}
 ```
 
 ```json
-{ "type": "error", "error": { "code": "CHANNEL_ACCESS_DENIED", "message": "You cannot write in #faculty-check" } }
+{
+  "type": "error",
+  "error": {
+    "code": "CHANNEL_ACCESS_DENIED",
+    "message": "You cannot write in #faculty-check"
+  }
+}
 ```
 
 The client sends `message.send`. The server stores the message and pushes `message.new` to every player who can see that channel, the sender included. It pushes `error` when a message is refused.
@@ -1092,8 +1348,16 @@ The client sends `message.send`. The server stores the message and pushes `messa
 ```json
 {
   "items": [
-    { "channel_id": "c3d4e5f6-a7b8-4c9d-0e1f-a2b3c4d5e6f7", "name": "general-mod-chat", "archived": false },
-    { "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8", "name": "enrollment-check", "archived": false }
+    {
+      "channel_id": "c3d4e5f6-a7b8-4c9d-0e1f-a2b3c4d5e6f7",
+      "name": "general-mod-chat",
+      "archived": false
+    },
+    {
+      "channel_id": "d4e5f6a7-b8c9-4d0e-a1f2-b3c4d5e6f7a8",
+      "name": "enrollment-check",
+      "archived": false
+    }
   ],
   "total": 2
 }
@@ -1101,12 +1365,12 @@ The client sends `message.send`. The server stores the message and pushes `messa
 
 **Usage.** Who can see which channel is worked out from `session.started`:
 
-| Channel | Who can see it |
-| --- | --- |
-| `general-mod-chat` | everyone in the session |
-| `enrollment-check` | the Moderator and juniors with the `enrollment` scope |
-| `course-registration` | the Moderator and juniors with the `courses` scope |
-| `faculty-check` | the Moderator and juniors with the `email-groups` or `fcim-logs` scope |
+| Channel               | Who can see it                                                         |
+| --------------------- | ---------------------------------------------------------------------- |
+| `general-mod-chat`    | everyone in the session                                                |
+| `enrollment-check`    | the Moderator and juniors with the `enrollment` scope                  |
+| `course-registration` | the Moderator and juniors with the `courses` scope                     |
+| `faculty-check`       | the Moderator and juniors with the `email-groups` or `fcim-logs` scope |
 
 `403 NOT_IN_SESSION` if the calling player is not a member of the session.
 
@@ -1116,10 +1380,10 @@ The client sends `message.send`. The server stores the message and pushes `messa
 
 **Query params.**
 
-| Name | Type | Required | Meaning |
-| --- | --- | --- | --- |
-| `limit` | integer | no | How many messages to return, 50 by default |
-| `offset` | integer | no | How many of the newest messages to skip |
+| Name     | Type    | Required | Meaning                                    |
+| -------- | ------- | -------- | ------------------------------------------ |
+| `limit`  | integer | no       | How many messages to return, 50 by default |
+| `offset` | integer | no       | How many of the newest messages to skip    |
 
 **Payload.** None.
 
@@ -1137,6 +1401,76 @@ The client sends `message.send`. The server stores the message and pushes `messa
   Creates the four channels of the session and the access mapping of every player, using `moderator_id` and each junior's `record_scopes`.
 - `session.ended` - published by Server Moderation Session Service  
   Archives the channels of the session (they become read-only) and closes its WebSocket connections.
+
+---
+
+## Deployments
+
+Each service publishes a versioned, public Docker Hub image. Pull the image directly - no
+need to clone the (private) service repository to run one.
+
+| Service | Docker Hub image | Host port | Requires |
+| --- | --- | --- | --- |
+| Applicant Service | [`stewdh/applicant-service`](https://hub.docker.com/r/stewdh/applicant-service) | `8081` | `DATABASE_URL` (PostgreSQL 16), `REFERENCE_YEAR` (must match Credential/University Record Service), `RABBITMQ_URL` (shared broker) |
+| Credential Service | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service) | `8082` | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record Service), `RABBITMQ_URL` (shared broker) |
+| Server Rules Service | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service) | `8083` | `ConnectionStrings__RulesDb` (PostgreSQL 17), `Auth__ServiceToken` |
+| University Record Service | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service) | `8084` | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential Service), `Auth__ServiceToken` |
+| Moderation Service | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service) | `8085` | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (each one falls back to a built-in mock when empty), `UPSTREAM_SERVICE_TOKEN` (must equal University Record's `Auth__ServiceToken`) |
+| Discord DMs Service | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service) | `8086` | `MONGODB_URI` (MongoDB 7), `SERVICE_TOKEN`; optional `REDIS_URL` (fan-out between instances) |
+| Player Service | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service) | `8087` | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), no broker and no auth - see below |
+| Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088` | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL` and `RULES_SERVICE_URL` to reach the real services instead of its stubs - see below |
+
+**Host ports are allocated in this table.** Check it before adding a service block, and take the next
+free number: `8081`-`8088` are taken above, and the database containers hold `5433`-`5438`, `6380`,
+`27018` and `27019`. Every service listens on `8080` inside its own container except Applicant and
+Credential, which listen on `8081` and `8082`, and Moderation and Discord DMs, which listen on `8085`
+and `8086`.
+
+`dimapos/player-service` is published for `linux/amd64` and `linux/arm64`. `POSTGRES_PASSWORD` is
+its only required variable - everything else has a working default, the schema is applied at
+startup, and an empty database is seeded with six players (including
+`8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11` / `dima_mod`, the one this contract uses in its own example
+response). Two optional switches matter in a shared stack: `SEED_ON_START` and
+`ENABLE_DEV_ENDPOINTS` - the latter mounts `POST /api/v1/dev/events/session-ended`, which applies a
+`session.ended` event with no credential and should be off outside the demo.
+
+`dimapos/server-moderation-session-service` is published for `linux/amd64` and `linux/arm64`.
+`POSTGRES_PASSWORD` is its only required variable. The schema is applied at startup, and an empty
+database is seeded with three sessions - one in each state - including the session id this contract
+uses in its own example (`3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e`), so the published session object
+above is reproducible against a fresh pair of services.
+
+It is the one service that calls three others. Each of `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL` and
+`APPLICANT_SERVICE_URL` selects the real HTTP client when set and a contract-shaped in-process stub
+when left empty, so it runs before its dependencies exist and each can be wired up independently as
+it lands. `GET /health/ready` reports every dependency as `configured` or `stub`, so a demo cannot
+look more integrated than it is. In the compose file below the first two point at the live Player
+Service and Server Rules containers; Applicant Service is left stubbed because it has not been
+written yet.
+
+Two things differ from this contract and are worth knowing before integrating. It uses **PostgreSQL
+only** - the Databases table above also assigns it Redis for live shift state, which is not
+implemented. And because no token issuer exists yet, the endpoints that act for "the calling player"
+read that player's id from the `sub` claim of an **`Authorization: Bearer <jwt>`** token whose
+signature is never checked - the same arrangement University Record Service uses, so a client
+identifies a player to both services the same way. It is not authentication. (`X-Player-Id: <uuid>`
+is accepted as a fallback, for curl.)
+
+The root [`docker-compose.yml`](docker-compose.yml) in this repository runs all of the
+above (plus their own database containers) on the shared `student-id-net` network, referencing
+these published images only - it never builds from source. Copy [`.env.example`](.env.example)
+to `.env` and fill in real values before running `docker compose up -d`.
+
+Full integration references (HTTP API, events, configuration, edge cases, divergences from
+this contract) live in [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVICE.md),
+[`docs/UNIVERSITY_RECORD_SERVICE.md`](docs/UNIVERSITY_RECORD_SERVICE.md),
+[`docs/APPLICANT_SERVICE.md`](docs/APPLICANT_SERVICE.md),
+[`docs/CREDENTIAL_SERVICE.md`](docs/CREDENTIAL_SERVICE.md),
+[`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md),
+[`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md),
+[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md) and
+[`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md). Postman
+collections are in [`postman/`](postman/).
 
 ---
 
@@ -1238,9 +1572,9 @@ We follow **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`
 
 ### Version Types
 
-- **MAJOR** (e.g., 1.0.0 → 2.0.0): Breaking changes that require user action
-- **MINOR** (e.g., 1.0.0 → 1.1.0): New features that are backward compatible
-- **PATCH** (e.g., 1.0.0 → 1.0.1): Bug fixes and small improvements
+- **MAJOR** (e.g., 1.0.0 => 2.0.0): Breaking changes that require user action
+- **MINOR** (e.g., 1.0.0 => 1.1.0): New features that are backward compatible
+- **PATCH** (e.g., 1.0.0 => 1.0.1): Bug fixes and small improvements
 
 ### Release Process
 

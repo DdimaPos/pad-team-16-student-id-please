@@ -1,0 +1,1138 @@
+{
+  "info": {
+    "name": "Player Service",
+    "description": "Player Service owns the moderator player accounts: identity, credentials, profile, friends, XP, level, shift history and the disciplinary log.\n\nExactly one endpoint is in the CPR communication contract - GET /api/v1/players/{player_id}. Everything else is an extension the root README pre-authorises (\"Account features (register, login, friends, profile editing) will be added when the client is designed\") and is labelled \"beyond contract\" in the folder names.\n\nThere is no authentication: the contract puts it out of scope for now and no token issuer exists in the system yet, so no request here carries a token. As partial mitigation no endpoint returns `email`.\n\nMOCKED BUSINESS LOGIC. Server Moderation Session Service does not exist yet and neither does the transport that would carry its events, so nothing publishes `session.ended`. The \"dev\" folder posts that exact envelope to POST /api/v1/dev/events/session-ended, which hands it to the same ApplySessionEnded a real client will call - so XP, shift history, the disciplinary log and the event deduplication the contract requires are all exercisable today. Nothing else in this service is mocked.\n\nPREREQUISITES. Run the service with its database (`./scripts/run.sh` in the player-service repository, or the team compose) on host port 8087. On an empty database it seeds six players; the {{dima_id}}, {{maxim_id}} and {{vlad_id}} variables are the ids the CPR README and the other services' collections already use. {{dima_id}} carries xp 1250 / 12 completed shifts, so the contract's published example response is reproducible verbatim.\n\nORDER. Folders are written to run top to bottom on a freshly seeded database. Requests whose names start with a number belong to a sequence and depend on the ones before them. The last folder is destructive; `make clean-data` in the service repository restores the seed.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8087"
+    },
+    {
+      "key": "dima_id",
+      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
+    },
+    {
+      "key": "maxim_id",
+      "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10"
+    },
+    {
+      "key": "vlad_id",
+      "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21"
+    },
+    {
+      "key": "rookie_id",
+      "value": "d4f6a8c1-3e5b-4d7c-9f1a-2b4c6d8e0f32"
+    },
+    {
+      "key": "veteran_id",
+      "value": "e5a7b9c3-4f6d-4e8b-a012-3c5d7e9f1a43"
+    },
+    {
+      "key": "offender_id",
+      "value": "f6b8c0d4-5a7e-4f9c-b123-4d6e8f0a2b54"
+    },
+    {
+      "key": "unknown_id",
+      "value": "00000000-0000-0000-0000-000000000000"
+    },
+    {
+      "key": "absent_id",
+      "value": "11111111-2222-4333-8444-555555555555"
+    },
+    {
+      "key": "session_id",
+      "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
+    },
+    {
+      "key": "replay_event_id",
+      "value": "4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23"
+    }
+  ],
+  "item": [
+    {
+      "name": "health",
+      "item": [
+        {
+          "name": "GET /health (liveness - never touches a dependency)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/health"
+          }
+        },
+        {
+          "name": "GET /health/ready (readiness - postgres only; there is no broker yet)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/health/ready"
+          }
+        }
+      ]
+    },
+    {
+      "name": "players (contract)",
+      "item": [
+        {
+          "name": "get player - seeded dima_mod (200, the contract example: level 4, xp 1250)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}"
+          }
+        },
+        {
+          "name": "get player - maxim_jr (200, level 2)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{maxim_id}}"
+          }
+        },
+        {
+          "name": "get player - veteran at the level cap (200, level 10)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{veteran_id}}"
+          }
+        },
+        {
+          "name": "get player - unknown id (404 PLAYER_NOT_FOUND)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{unknown_id}}"
+          }
+        },
+        {
+          "name": "get player - malformed id (400 INVALID_PLAYER_ID)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/not-a-uuid"
+          }
+        }
+      ]
+    },
+    {
+      "name": "players CRUD (beyond contract)",
+      "item": [
+        {
+          "name": "create player (201, Location header)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"new_recruit\",\n  \"email\": \"new_recruit@example.test\",\n  \"password\": \"seed-password\",\n  \"display_name\": \"New Recruit\",\n  \"bio\": \"Just signed up.\",\n  \"avatar_url\": \"https://cdn.example.test/avatars/recruit.png\"\n}"
+            }
+          }
+        },
+        {
+          "name": "create player - duplicate username (409 USERNAME_TAKEN)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"dima_mod\",\n  \"email\": \"someone_else@example.test\",\n  \"password\": \"seed-password\"\n}"
+            }
+          }
+        },
+        {
+          "name": "create player - duplicate email (409 EMAIL_TAKEN)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"someone_else\",\n  \"email\": \"dima_mod@example.test\",\n  \"password\": \"seed-password\"\n}"
+            }
+          }
+        },
+        {
+          "name": "create player - username too short (422 VALIDATION_ERROR, details.field=username)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"ab\",\n  \"email\": \"ab@example.test\",\n  \"password\": \"seed-password\"\n}"
+            }
+          }
+        },
+        {
+          "name": "create player - username with a dash (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"not-allowed\",\n  \"email\": \"dashed@example.test\",\n  \"password\": \"seed-password\"\n}"
+            }
+          }
+        },
+        {
+          "name": "create player - password too short (422 VALIDATION_ERROR, details.field=password)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"short_pass\",\n  \"email\": \"short_pass@example.test\",\n  \"password\": \"short\"\n}"
+            }
+          }
+        },
+        {
+          "name": "create player - email without a domain dot (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"bad_email\",\n  \"email\": \"bad@example\",\n  \"password\": \"seed-password\"\n}"
+            }
+          }
+        },
+        {
+          "name": "create player - relative avatar_url (422 VALIDATION_ERROR, details.field=avatar_url)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"bad_avatar\",\n  \"email\": \"bad_avatar@example.test\",\n  \"password\": \"seed-password\",\n  \"avatar_url\": \"/avatars/1.png\"\n}"
+            }
+          }
+        },
+        {
+          "name": "create player - malformed JSON (400 MALFORMED_BODY)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\":"
+            }
+          }
+        },
+        {
+          "name": "list players (200, items + total)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players"
+          }
+        },
+        {
+          "name": "list players - first page of two (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/players?limit=2&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "list players - second page (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/players?limit=2&offset=2",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                },
+                {
+                  "key": "offset",
+                  "value": "2"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "list players - offset past the end (200, empty items, total unchanged)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/players?limit=2&offset=999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "2"
+                },
+                {
+                  "key": "offset",
+                  "value": "999"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "list players - limit above the cap (200, capped at 100)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/players?limit=5000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5000"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "list players - non-numeric limit (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/players?limit=lots",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "lots"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "list players - negative offset (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/players?offset=-1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players"
+              ],
+              "query": [
+                {
+                  "key": "offset",
+                  "value": "-1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "get profile - dima_mod (200, no email, no password_hash)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/profile"
+          }
+        },
+        {
+          "name": "get profile - unknown id (404 PLAYER_NOT_FOUND)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{unknown_id}}/profile"
+          }
+        },
+        {
+          "name": "patch profile - bio only, xp untouched (200)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bio\": \"Head moderator. Has seen every forged student ID there is.\"\n}"
+            }
+          }
+        },
+        {
+          "name": "patch profile - display name and avatar (200)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"display_name\": \"Dima\",\n  \"avatar_url\": \"https://cdn.example.test/avatars/dima.png\"\n}"
+            }
+          }
+        },
+        {
+          "name": "patch profile - change the password (200, hash replaced, never returned)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"password\": \"another-password\"\n}"
+            }
+          }
+        },
+        {
+          "name": "patch profile - email taken by another player (409 EMAIL_TAKEN)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"maxim_jr@example.test\"\n}"
+            }
+          }
+        },
+        {
+          "name": "patch profile - bad avatar_url (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"avatar_url\": \"ftp://example.test/a.png\"\n}"
+            }
+          }
+        },
+        {
+          "name": "patch profile - unknown id (404 PLAYER_NOT_FOUND)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/api/v1/players/{{unknown_id}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bio\": \"nobody\"\n}"
+            }
+          }
+        },
+        {
+          "name": "put player (405 METHOD_NOT_ALLOWED)",
+          "request": {
+            "method": "PUT",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"bio\": \"wrong method\"\n}"
+            }
+          }
+        },
+        {
+          "name": "unknown route (404 NOT_FOUND)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/nonsense"
+          }
+        }
+      ]
+    },
+    {
+      "name": "history (beyond contract)",
+      "item": [
+        {
+          "name": "shifts - dima_mod (200, 2 seeded rows, newest first)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/shifts"
+          }
+        },
+        {
+          "name": "shifts - dima_mod, one per page (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/players/{{dima_id}}/shifts?limit=1&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "{{dima_id}}",
+                "shifts"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "shifts - maxim_jr (200, 1 seeded row)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{maxim_id}}/shifts"
+          }
+        },
+        {
+          "name": "shifts - vlad_jr has none (200, empty items - never null)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{vlad_id}}/shifts"
+          }
+        },
+        {
+          "name": "shifts - unknown id (404 PLAYER_NOT_FOUND)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{unknown_id}}/shifts"
+          }
+        },
+        {
+          "name": "disciplinary actions - dima_mod (200, 1 seeded warning)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/disciplinary-actions"
+          }
+        },
+        {
+          "name": "disciplinary actions - repeat_offender (200, 2 warnings, newest first)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{offender_id}}/disciplinary-actions"
+          }
+        },
+        {
+          "name": "disciplinary actions - rookie_one has none (200, empty items)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{rookie_id}}/disciplinary-actions"
+          }
+        },
+        {
+          "name": "disciplinary actions - unknown id (404 PLAYER_NOT_FOUND)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{unknown_id}}/disciplinary-actions"
+          }
+        }
+      ]
+    },
+    {
+      "name": "friends (beyond contract)",
+      "item": [
+        {
+          "name": "friends - dima_mod (200, maxim_jr and vlad_jr from the seed)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/friends"
+          }
+        },
+        {
+          "name": "friends - dima_mod, one per page (200)",
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/players/{{dima_id}}/friends?limit=1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "players",
+                "{{dima_id}}",
+                "friends"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "friends - rookie_one has none (200, empty items)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{rookie_id}}/friends"
+          }
+        },
+        {
+          "name": "1. add friend - rookie_one befriends veteran_max (201)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players/{{rookie_id}}/friends",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"friend_id\": \"{{veteran_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "2. friends of rookie_one - now shows veteran_max (200)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{rookie_id}}/friends"
+          }
+        },
+        {
+          "name": "3. friends of veteran_max - symmetric, shows rookie_one (200)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{veteran_id}}/friends"
+          }
+        },
+        {
+          "name": "4. add the same friend again (409 ALREADY_FRIENDS)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players/{{rookie_id}}/friends",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"friend_id\": \"{{veteran_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "5. add it from the other side - same friendship (409 ALREADY_FRIENDS)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players/{{veteran_id}}/friends",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"friend_id\": \"{{rookie_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "6. remove from the other side (204)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/players/{{veteran_id}}/friends/{{rookie_id}}"
+          }
+        },
+        {
+          "name": "7. friends of rookie_one - gone from both sides (200, empty items)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{rookie_id}}/friends"
+          }
+        },
+        {
+          "name": "8. remove again (404 FRIEND_NOT_FOUND)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/players/{{veteran_id}}/friends/{{rookie_id}}"
+          }
+        },
+        {
+          "name": "add friend - self (422 CANNOT_FRIEND_SELF)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/friends",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"friend_id\": \"{{dima_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "add friend - friend_id is the nil UUID (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/friends",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"friend_id\": \"{{unknown_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "add friend - unknown friend_id (404 FRIEND_NOT_FOUND)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/friends",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"friend_id\": \"{{absent_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "add friend - unknown player in the path (404 PLAYER_NOT_FOUND)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players/{{unknown_id}}/friends",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"friend_id\": \"{{dima_id}}\"\n}"
+            }
+          }
+        },
+        {
+          "name": "add friend - friend_id absent (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/friends",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "add friend - malformed friend_id (400 MALFORMED_BODY)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/friends",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"friend_id\": \"not-a-uuid\"\n}"
+            }
+          }
+        },
+        {
+          "name": "friends - unknown id (404 PLAYER_NOT_FOUND)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{unknown_id}}/friends"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dev - session.ended (mocks Session Service, beyond contract)",
+      "item": [
+        {
+          "name": "1. dima_mod and maxim_jr before the event (200, xp 1250 / 640)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}"
+          }
+        },
+        {
+          "name": "2. apply session.ended (200, duplicate=false, players_updated=2)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{dima_id}}\",\n        \"role\": \"moderator\",\n        \"xp_delta\": 30,\n        \"disciplinary_actions\": [\n          { \"type\": \"warning\", \"reason\": \"Accepted an applicant with a forged student ID\" }\n        ]\n      },\n      {\n        \"player_id\": \"{{maxim_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": 40,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "3. dima_mod after - xp 1280, completed_shifts 13, still level 4 (200)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}"
+          }
+        },
+        {
+          "name": "4. shift history after - the new row is first (200)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/shifts"
+          }
+        },
+        {
+          "name": "5. disciplinary log after - the warning was appended (200)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/disciplinary-actions"
+          }
+        },
+        {
+          "name": "6. REPLAY the same event_id (200, duplicate=true - nothing changes)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{dima_id}}\",\n        \"role\": \"moderator\",\n        \"xp_delta\": 30,\n        \"disciplinary_actions\": [\n          { \"type\": \"warning\", \"reason\": \"Accepted an applicant with a forged student ID\" }\n        ]\n      },\n      {\n        \"player_id\": \"{{maxim_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": 40,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "7. dima_mod after the replay - unchanged, xp still 1280 (200)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}"
+          }
+        },
+        {
+          "name": "8. shift history after the replay - still one row for that session (200)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{dima_id}}/shifts"
+          }
+        },
+        {
+          "name": "apply - a player id this service does not know (200, listed in unknown_players)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{$guid}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{dima_id}}\",\n        \"role\": \"moderator\",\n        \"xp_delta\": 30,\n        \"disciplinary_actions\": [\n          { \"type\": \"warning\", \"reason\": \"Accepted an applicant with a forged student ID\" }\n        ]\n      },\n      {\n        \"player_id\": \"{{unknown_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": 40,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "apply - negative xp_delta, total floored at zero (200)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{$guid}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{offender_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": -100000,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "apply - repeat_offender after the drain (200, xp 0, level 1)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{offender_id}}"
+          }
+        },
+        {
+          "name": "apply - no role field, which the event catalog omits (200)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{$guid}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{vlad_id}}\",\n        \"xp_delta\": 25,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "apply - wrong event type (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.started\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {}\n}"
+            }
+          }
+        },
+        {
+          "name": "apply - missing event_id (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_type\": \"session.ended\",\n  \"payload\": { \"session_id\": \"{{session_id}}\", \"players\": [] }\n}"
+            }
+          }
+        },
+        {
+          "name": "apply - payload without session_id (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"payload\": { \"players\": [] }\n}"
+            }
+          }
+        },
+        {
+          "name": "apply - malformed JSON (422 VALIDATION_ERROR)",
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/api/v1/dev/events/session-ended",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\":"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "cleanup (destructive - run last)",
+      "item": [
+        {
+          "name": "delete player - veteran_max (204, history and friendships cascade)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/players/{{veteran_id}}"
+          }
+        },
+        {
+          "name": "delete the same player again (404 PLAYER_NOT_FOUND)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/players/{{veteran_id}}"
+          }
+        },
+        {
+          "name": "get the deleted player (404 PLAYER_NOT_FOUND)",
+          "request": {
+            "method": "GET",
+            "url": "{{base_url}}/api/v1/players/{{veteran_id}}"
+          }
+        },
+        {
+          "name": "delete player - malformed id (400 INVALID_PLAYER_ID)",
+          "request": {
+            "method": "DELETE",
+            "url": "{{base_url}}/api/v1/players/not-a-uuid"
+          }
+        }
+      ]
+    }
+  ]
+}

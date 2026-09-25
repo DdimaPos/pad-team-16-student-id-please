@@ -128,7 +128,7 @@ services:
       - student-id-net
 
   moderation-service:
-    image: dmracovit/moderation-service:0.1.1
+    image: dmracovit/moderation-service:0.2.0
     restart: unless-stopped
     depends_on:
       moderation-postgres:
@@ -184,7 +184,7 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:0.1.1
+    image: dmracovit/discord-dms-service:0.2.0
     restart: unless-stopped
     depends_on:
       dms-mongo:

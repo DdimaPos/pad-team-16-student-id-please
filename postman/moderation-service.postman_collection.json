@@ -1777,6 +1777,58 @@
           ]
         },
         {
+          "name": "PATCH /admin/bans/{id}",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/admin/bans/{{ban_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "admin",
+                "bans",
+                "{{ban_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Manual Ban Edited\",\n  \"student_id\": \"FAF20102\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Update side of the CRUD surface: edits a ban list entry. Decisions are immutable by contract, the ban list is not."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('edited', () => { pm.expect(b.name).to.eql('Manual Ban Edited'); pm.expect(b.student_id).to.eql('FAF20102'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "DELETE /admin/bans/{id}",
           "request": {
             "method": "DELETE",

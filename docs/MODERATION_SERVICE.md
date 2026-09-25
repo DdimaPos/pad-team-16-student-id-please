@@ -9,7 +9,7 @@ verdict with a penalty and publishes it for the session.
 Owner: Racovita Dumitru. Source: the private `moderation-service` repository, linked as a submodule of this CPR.
 
 > **Audience:** developers of the other services of *"Student ID, please"* (Team 16, FAF.PAD21.1), or the gateway.
-> Copied from the service's own README at `v0.1.1`; relative paths below refer to the `moderation-service/` submodule.
+> Copied from the service's own README at `v0.2.0`; relative paths below refer to the `moderation-service/` submodule.
 > Where the implementation diverges from the CPR contract, the divergence is called out in the last section.
 
 ## Integration card
@@ -26,7 +26,7 @@ Owner: Racovita Dumitru. Source: the private `moderation-service` repository, li
 | Consumes | nothing |
 | Calls | Server Moderation Session, Applicant, Credential, University Record, Server Rules; each one is replaced by a built-in mock when its URL is empty |
 | Authentication | `Authorization: Bearer <jwt>` for players (signature not verified, `sub` is the player id); `X-Service-Token` for `/admin/*` and `/dev/*` |
-| Docker image | `dmracovit/moderation-service:0.1.1` (also `:latest`), public on Docker Hub, linux/amd64 and linux/arm64 |
+| Docker image | `dmracovit/moderation-service:0.2.0` (also `:latest`), public on Docker Hub, linux/amd64 and linux/arm64 |
 
 ## Running it
 
@@ -56,7 +56,7 @@ docker network create student-id-net   # once
 docker run -d --name moderation-service --network student-id-net -p 8085:8085 \
   -e DATABASE_URL="postgres://moderation_user:<password>@<postgres-host>:5432/moderation_db?sslmode=disable" \
   -e SERVICE_TOKEN="<shared-secret>" -e DEV_ENDPOINTS=true -e SEED_ON_START=true \
-  dmracovit/moderation-service:0.1.1
+  dmracovit/moderation-service:0.2.0
 ```
 
 `moderation-service/deployments/docker-compose.team.yml` is the same stack without `build:`, the fragment merged into
@@ -102,6 +102,7 @@ Extensions beyond the contract (the CRUD surface of Lab 1):
 | `GET` | `/api/v1/admin/events?limit=&offset=` | The outbox, oldest first: every `decision.recorded` event with its full envelope, so it can be handed to Server Moderation Session Service until the team's message broker exists |
 | `DELETE` | `/api/v1/admin/decisions/{decision_id}` | Removes a decision so a demo scenario can be replayed. Decisions are immutable for players |
 | `POST` | `/api/v1/admin/bans` | `{ "student_id": "FAF20101", "name": "..." }` adds a ban list entry by hand |
+| `PATCH` | `/api/v1/admin/bans/{ban_id}` | `{ "name": "...", "student_id": "..." }` edits a ban list entry; an absent field keeps its value, an empty `student_id` clears it |
 | `DELETE` | `/api/v1/admin/bans/{ban_id}` | Removes a ban list entry |
 | `GET` | `/api/v1/dev/tokens?player_id=` | Mints an unsigned player JWT for Postman (`DEV_ENDPOINTS=true`) |
 | `GET` / `PUT` | `/api/v1/dev/mock/sessions[/{session_id}]` | Read or replace the mock session object |
@@ -177,7 +178,7 @@ otherwise.
 
 | # | Divergence | Who is affected |
 | --- | --- | --- |
-| 1 | `GET /decisions/{decision_id}` and the `/admin/*` and `/dev/*` routes exist beyond the contract | gateway and auth: `/admin/*` and `/dev/*` must never be routed to players |
+| 1 | `GET /decisions/{decision_id}` and the `/admin/*` and `/dev/*` routes exist beyond the contract; `PATCH /admin/bans/{ban_id}` is the update side of the Lab 1 CRUD requirement, decisions themselves stay immutable | gateway and auth: `/admin/*` and `/dev/*` must never be routed to players |
 | 2 | `422 GRANTED_CHANNELS_NOT_ALLOWED` is answered when `granted_channels` is sent with an action other than `accept`; the contract only names `GRANTED_CHANNELS_REQUIRED` | the game client |
 | 3 | The ban list lookup uses the claimed student ID when there is one, otherwise the exact name (case-insensitive) | Server Rules receives `previously_banned` computed this way |
 | 4 | The penalty matrix above is this service's reading of "grows with how harmful the mistake is" | Server Moderation Session Service, which adds `penalty` to the session |

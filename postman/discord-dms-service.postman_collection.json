@@ -698,6 +698,111 @@
           ]
         },
         {
+          "name": "Junior B edits their own message",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_b_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages/{{last_message_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{faculty_channel_id}}",
+                "messages",
+                "{{last_message_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"No mailbox in the Outlook groups. Checked twice.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Update side of the CRUD surface: only the author may edit, only while the channel is open. Open WebSocket connections receive message.updated."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const m = pm.response.json();",
+                  "pm.test('edited', () => { pm.expect(m.content).to.include('Checked twice'); pm.expect(m.edited_at).to.be.a('string'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator cannot edit someone else's message",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages/{{last_message_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "channels",
+                "{{faculty_channel_id}}",
+                "messages",
+                "{{last_message_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"hijack\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('NOT_MESSAGE_AUTHOR', () => pm.expect(pm.response.json().error.code).to.eql('NOT_MESSAGE_AUTHOR'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "empty content is refused",
           "request": {
             "method": "POST",

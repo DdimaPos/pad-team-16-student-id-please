@@ -1,0 +1,885 @@
+{
+  "info": {
+    "name": "Applicant Service",
+    "_postman_id": "a1c0f7e2-6b3d-4f8a-9e51-7c2d4b6a8e01",
+    "description": "Applicant Service \u2014 Team 16, \"Student ID, please\" (FAF.PAD21.1).\n\nThe service owns the identity of the people trying to get into the university Discord server. Every applicant exists twice: the profile they claim, which this API serves, and the profile that is true, which never leaves the service except inside the applicant.initialized event.\n\nRun the requests top to bottom: \"Next applicant\" stores the new applicant_id in a collection variable, and the requests after it reuse it.\n\nSet `base_url` to where the service is listening (http://localhost:8081 by default).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8081",
+      "type": "string"
+    },
+    {
+      "key": "session_id",
+      "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+      "type": "string"
+    },
+    {
+      "key": "applicant_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "created_applicant_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Liveness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "Answers 200 whenever the process is serving. It deliberately does not check Postgres: a liveness probe that fails on a dependency restarts a healthy container because somebody else is having a bad day."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('reports the service', () => {",
+                  "  pm.expect(pm.response.json().service).to.eql('applicant-service');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Reports whether the service can do useful work. Postgres is the only hard dependency; without RabbitMQ the status is \"degraded\" and events queue in the outbox until it returns."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('postgres is up', () => {",
+                  "  pm.expect(body.components.postgres.status).to.eql('up');",
+                  "});",
+                  "console.log('broker:', body.components.rabbitmq.status);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Contract endpoints",
+      "description": "The two endpoints the team communication contract defines.",
+      "item": [
+        {
+          "name": "Next applicant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "Called by Server Moderation Session Service when the Moderator asks for the next applicant. The service invents both halves of the person, stores them, queues applicant.initialized for Credential and University Record Service, and returns the identifiers.\n\nRaise `difficulty` (1-5) to make the applicant more likely to lie, and to lie better.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns the identifiers only', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql(",
+                  "    ['applicant_id', 'created_at', 'session_id']);",
+                  "});",
+                  "pm.test('timestamp is ISO 8601 UTC', () => {",
+                  "  pm.expect(body.created_at).to.match(/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$/);",
+                  "});",
+                  "pm.collectionVariables.set('applicant_id', body.applicant_id);",
+                  "console.log('applicant_id =', body.applicant_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get applicant",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/{{applicant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "What the applicant claims about themselves. Shown to the Moderator and read by Moderation Service, which compares it against the university records.\n\nThe truth is never returned here \u2014 that is the game."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('exactly the eleven contract fields', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql([",
+                  "    'applicant_id', 'courses', 'created_at', 'email', 'major', 'name',",
+                  "    'role', 'session_id', 'student_id', 'university_status', 'year']);",
+                  "});",
+                  "pm.test('the truth never leaks', () => {",
+                  "  const raw = pm.response.text().toLowerCase();",
+                  "  ['actual', 'lie_archetype', 'is_honest'].forEach(",
+                  "    f => pm.expect(raw).to.not.include(f));",
+                  "});",
+                  "pm.test('student_id uses {MAJOR}{yy}{g}{nn}', () => {",
+                  "  if (body.student_id !== null) {",
+                  "    pm.expect(body.student_id).to.match(/^[A-Z]{2,4}[0-9]{5}$/);",
+                  "  }",
+                  "});",
+                  "pm.test('courses is a list, never null', () => {",
+                  "  pm.expect(body.courses).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "CRUD (beyond the contract)",
+      "description": "Extensions for administration and testing. These are not part of the team contract; see the service README.",
+      "item": [
+        {
+          "name": "List applicants",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants?limit=5&offset=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Paginated, newest first. The shape follows the API conventions: { \"items\": [], \"total\": 0 }."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('paginated shape', () => {",
+                  "  pm.expect(body.items).to.be.an('array');",
+                  "  pm.expect(body.total).to.be.a('number');",
+                  "});",
+                  "pm.test('page respects the limit', () => {",
+                  "  pm.expect(body.items.length).to.be.at.most(5);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List by session",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants?session_id={{session_id}}&limit=20",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants"
+              ],
+              "query": [
+                {
+                  "key": "session_id",
+                  "value": "{{session_id}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                }
+              ]
+            },
+            "description": "Every applicant seen in one moderation shift."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('all belong to the session', () => {",
+                  "  const want = pm.collectionVariables.get('session_id');",
+                  "  pm.response.json().items.forEach(",
+                  "    a => pm.expect(a.session_id).to.eql(want));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Create applicant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants"
+              ]
+            },
+            "description": "Stores an applicant from a profile you supply, for testing a specific case by hand.\n\nIt does not publish applicant.initialized: that event carries both the claimed and the actual profile, and an applicant made this way has no separate truth to send.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"name\": \"Ana Rusu\",\n  \"student_id\": \"FAF24214\",\n  \"email\": \"ana.rusu@isa.utm.md\",\n  \"major\": \"FAF\",\n  \"year\": 2,\n  \"university_status\": \"faf_student\",\n  \"courses\": [\n    \"POO\",\n    \"SDA\"\n  ],\n  \"role\": \"student\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set('created_applicant_id',",
+                  "  pm.response.json().applicant_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Patch applicant",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/{{created_applicant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "{{created_applicant_id}}"
+              ]
+            },
+            "description": "Partially updates the claimed profile. Only the claimed side is editable; the truth is the answer key and is not reachable through the API at all.\n\nAn absent field is left alone and an explicit null clears it, which for student_id, major and year are different instructions.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Ana-Maria Rusu\",\n  \"year\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('created_applicant_id')) {",
+                  "  throw new Error('created_applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('the change was applied', () => {",
+                  "  pm.expect(body.name).to.eql('Ana-Maria Rusu');",
+                  "  pm.expect(body.year).to.eql(3);",
+                  "});",
+                  "pm.test('untouched fields survive', () => {",
+                  "  pm.expect(body.major).to.eql('FAF');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Delete applicant",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/{{created_applicant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "{{created_applicant_id}}"
+              ]
+            },
+            "description": "Removes the applicant and the email addresses reserved for them."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('created_applicant_id')) {",
+                  "  throw new Error('created_applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));",
+                  "pm.test('no body', () => pm.expect(pm.response.text()).to.be.empty);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get a deleted applicant",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/{{created_applicant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "{{created_applicant_id}}"
+              ]
+            },
+            "description": "Confirms the deletion took effect."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('created_applicant_id')) {",
+                  "  throw new Error('created_applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('APPLICANT_NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('APPLICANT_NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Error cases",
+      "description": "Every failure uses the same envelope: { \"error\": { \"code\", \"message\", \"details\" } }.",
+      "item": [
+        {
+          "name": "Difficulty out of range",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "The contract bounds difficulty to 1-5.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 9\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR with a named field', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Missing session_id",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown applicant",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/00000000-0000-4000-8000-000000000000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "00000000-0000-4000-8000-000000000000"
+              ]
+            },
+            "description": "A well-formed identifier that belongs to nobody."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('APPLICANT_NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('APPLICANT_NOT_FOUND');",
+                  "});",
+                  "pm.test('details is an object, never null', () => {",
+                  "  pm.expect(pm.response.json().error.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed identifier",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/not-a-uuid",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "not-a-uuid"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('names the offending field', () => {",
+                  "  pm.expect(pm.response.json().error.details).to.have.property('applicant_id');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Page size out of range",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants?limit=500",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "500"
+                }
+              ]
+            },
+            "description": "Rejected rather than clamped: quietly returning a different page than the one asked for is a confusing bug to chase."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Incoherent profile",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants"
+              ]
+            },
+            "description": "Someone claiming to be an enrolled student but carrying no student ID, major or year. The request is well formed, so it is not a 400; it just describes a person who cannot exist, and Credential Service would have nothing to print on an ID card.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"name\": \"Nobody At All\",\n  \"email\": \"nobody@isa.utm.md\",\n  \"university_status\": \"faf_student\",\n  \"role\": \"student\",\n  \"courses\": []\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable Entity', () => pm.response.to.have.status(422));",
+                  "pm.test('names the invariant it broke', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(e.details).to.have.property('invariant');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unsupported method",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/{{applicant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Nope\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('405 Method Not Allowed', () => pm.response.to.have.status(405));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Unknown route",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/nonsense",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "nonsense"
+              ]
+            },
+            "description": ""
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

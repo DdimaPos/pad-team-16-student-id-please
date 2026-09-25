@@ -9,7 +9,7 @@ shift ends. It never checks whether what players write is true.
 Owner: Racovita Dumitru. Source: the private `discord-DMs-service` repository, linked as a submodule of this CPR.
 
 > **Audience:** developers of the other services of *"Student ID, please"* (Team 16, FAF.PAD21.1), or the gateway.
-> Copied from the service's own README at `v0.1.0`; relative paths below refer to the `discord-DMs-service/` submodule.
+> Copied from the service's own README at `v0.1.1`; relative paths below refer to the `discord-DMs-service/` submodule.
 > Where the implementation diverges from the CPR contract, the divergence is called out in the last section.
 
 ## Integration card
@@ -19,15 +19,15 @@ Owner: Racovita Dumitru. Source: the private `discord-DMs-service` repository, l
 | Language / framework | Go 1.25, Gin, gorilla/websocket |
 | Container port | `8086` (host `8086`) |
 | Base path | `/api/v1` |
-| Health | `GET /health` (liveness), `GET /health/ready` (readiness: mongodb, pubsub, rabbitmq, open connections) |
+| Health | `GET /health` (liveness), `GET /health/ready` (readiness: mongodb, pubsub, open connections) |
 | Database | MongoDB 7, `dms_db` (own container, host port `27019`) |
 | Fan-out | Redis Pub/Sub, `dms_pubsub` (own container, host port `6380`); optional, empty `REDIS_URL` = one instance only |
-| Broker | RabbitMQ, exchange `student-id.events`, queue `discord-dms-service.session-events`; optional |
+| Events | `session.started` and `session.ended` are accepted through `POST /api/v1/dev/events/*`, the same path a broker consumer will use. No broker client: the team is building its own message broker |
 | Publishes | nothing |
 | Consumes | `session.started`, `session.ended` |
 | Calls | nothing. Zero outbound HTTP dependencies |
 | Authentication | `Authorization: Bearer <jwt>` or `?access_token=` for players (signature not verified, `sub` is the player id); `X-Service-Token` for `/admin/*` and `/dev/*` |
-| Docker image | `dmracovit/discord-dms-service:0.1.0` |
+| Docker image | `dmracovit/discord-dms-service:0.1.1` (also `:latest`), public on Docker Hub, linux/amd64 and linux/arm64 |
 
 ## Running it
 
@@ -35,7 +35,6 @@ Requirements: Docker with Compose v2. For development and tests: Go 1.25.
 
 ```bash
 ./scripts/run.sh            # build the image, start mongo + redis + service, wait until /health/ready answers
-./scripts/run.sh --broker   # same, plus a local RabbitMQ (only when the team broker is not running)
 ./scripts/run.sh --local    # run from source against the containerised mongo and redis
 ./scripts/run.sh --test     # unit tests with coverage
 ./scripts/run.sh --logs     # follow the logs
@@ -60,7 +59,7 @@ docker run -d --name discord-dms-service --network student-id-net -p 8086:8086 \
   -e MONGODB_URI="mongodb://dms_user:<password>@<mongo-host>:27017/dms_db?authSource=admin" \
   -e REDIS_URL="redis://<redis-host>:6379/0" \
   -e SERVICE_TOKEN="<shared-secret>" -e DEV_ENDPOINTS=true -e SEED_ON_START=true \
-  dmracovit/discord-dms-service:0.1.0
+  dmracovit/discord-dms-service:0.1.1
 ```
 
 `discord-DMs-service/deployments/docker-compose.team.yml` is the same stack without `build:`, the fragment merged into
@@ -80,8 +79,6 @@ the team-wide compose in the CPR.
 | `SEED_ON_START` | `false` | no | Seed the demo session when there are no sessions |
 | `ENSURE_INDEXES_ON_START` | `true` | no | Create the indexes at startup (idempotent) |
 | `REDIS_URL` | empty | no | Redis for fan-out between instances. Empty = messages are delivered to this instance's connections only |
-| `RABBITMQ_URL` | empty | no | Empty disables the consumer; replay events through the dev endpoints instead |
-| `RABBITMQ_EXCHANGE`, `RABBITMQ_QUEUE`, `RABBITMQ_DLX`, `RABBITMQ_DLQ`, `RABBITMQ_PREFETCH` | `student-id.events`, `discord-dms-service.session-events`, `student-id.dlx`, `discord-dms-service.dlq`, `10` | no | Broker wiring |
 | `MAX_MESSAGE_LENGTH` | `2000` | no | Characters per message |
 | `HISTORY_DEFAULT_LIMIT` | `50` | no | Page size of the history endpoint |
 | `WS_PING_INTERVAL`, `WS_PONG_WAIT`, `WS_WRITE_WAIT` | `30s`, `60s`, `10s` | no | WebSocket keep-alive |
@@ -104,7 +101,7 @@ Extensions beyond the contract (the CRUD surface of Lab 1):
 | `POST` | `/api/v1/channels/{channel_id}/messages` | `{ "content": "..." }` sends a message without a WebSocket. It is delivered to the open connections like any other |
 | `DELETE` | `/api/v1/admin/messages/{message_id}` | Removes a message. Service token only |
 | `GET` | `/api/v1/dev/tokens?player_id=` | Mints an unsigned player JWT for Postman (`DEV_ENDPOINTS=true`) |
-| `POST` | `/api/v1/dev/events/session-started`, `/session-ended` | Accept a full event envelope and run it through the exact same code path as the RabbitMQ consumer, so the whole flow is demoable with no broker |
+| `POST` | `/api/v1/dev/events/session-started`, `/session-ended` | Accept a full event envelope and apply it: this is how session events arrive until the team's message broker exists |
 
 WebSocket protocol, JSON text frames both ways:
 
@@ -138,7 +135,7 @@ Computed from `session.started` when the channels are created:
 
 ## Events
 
-Consumed from the shared topic exchange, at-least-once, deduplicated on `event_id`:
+Accepted through `POST /api/v1/dev/events/*` until the team's message broker exists, deduplicated on `event_id`, so sending the same event twice is harmless:
 
 - `session.started`: records the session and creates the four channels with their access lists. A replay never duplicates channels.
 - `session.ended`: marks the session ended, archives the channels (read-only, history stays readable), pushes `session.ended` to every open connection of the session and closes them.
@@ -146,8 +143,8 @@ Consumed from the shared topic exchange, at-least-once, deduplicated on `event_i
 If `session.ended` arrives before `session.started` (ordering is not guaranteed), the session is
 remembered as ended and a late `session.started` creates its channels already archived.
 
-Delivery policy of the consumer: unparseable or unknown events are dead-lettered; a transient failure
-is requeued once (bounded by the AMQP `Redelivered` flag) and dead-lettered the second time.
+Unparseable or unknown events, and events that fail validation, are answered with `422 INVALID_EVENT`;
+a storage failure is answered with `500` and the event can be sent again.
 
 ## Fan-out between instances
 
@@ -181,6 +178,7 @@ and are skipped otherwise.
 | 3 | The WebSocket protocol adds `ping` / `pong` and a final `session.ended` frame before the close | the game client |
 | 4 | `422 INVALID_CONTENT` (empty or longer than `MAX_MESSAGE_LENGTH`) and `409 CHANNEL_ARCHIVED` are answered; the contract names neither | the game client |
 | 5 | An unknown session answers `403 NOT_IN_SESSION` rather than 404: a session this service has not heard of grants membership to nobody | the game client |
+| 6 | No broker client: the team is building its own message broker, so `session.started` and `session.ended` arrive through `POST /api/v1/dev/events/*` until it exists | Server Moderation Session Service, whose outbox rows are handed over by hand for now |
 
 ---
 

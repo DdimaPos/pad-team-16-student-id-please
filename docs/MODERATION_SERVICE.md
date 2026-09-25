@@ -9,7 +9,7 @@ verdict with a penalty and publishes it for the session.
 Owner: Racovita Dumitru. Source: the private `moderation-service` repository, linked as a submodule of this CPR.
 
 > **Audience:** developers of the other services of *"Student ID, please"* (Team 16, FAF.PAD21.1), or the gateway.
-> Copied from the service's own README at `v0.1.0`; relative paths below refer to the `moderation-service/` submodule.
+> Copied from the service's own README at `v0.1.1`; relative paths below refer to the `moderation-service/` submodule.
 > Where the implementation diverges from the CPR contract, the divergence is called out in the last section.
 
 ## Integration card
@@ -19,14 +19,14 @@ Owner: Racovita Dumitru. Source: the private `moderation-service` repository, li
 | Language / framework | Go 1.25, Gin |
 | Container port | `8085` (host `8085`) |
 | Base path | `/api/v1` |
-| Health | `GET /health` (liveness), `GET /health/ready` (readiness: postgres, rabbitmq, pending outbox events) |
+| Health | `GET /health` (liveness), `GET /health/ready` (readiness: postgres, pending outbox events) |
 | Database | PostgreSQL 17, `moderation_db` (own container, host port `5436`) |
-| Broker | RabbitMQ, exchange `student-id.events`; optional, empty `RABBITMQ_URL` keeps events in the outbox |
+| Events | `decision.recorded` is written to the outbox table in the same transaction as the decision and listed by `GET /api/v1/admin/events`. No broker client: the team is building its own message broker |
 | Publishes | `decision.recorded` |
 | Consumes | nothing |
 | Calls | Server Moderation Session, Applicant, Credential, University Record, Server Rules; each one is replaced by a built-in mock when its URL is empty |
 | Authentication | `Authorization: Bearer <jwt>` for players (signature not verified, `sub` is the player id); `X-Service-Token` for `/admin/*` and `/dev/*` |
-| Docker image | `dmracovit/moderation-service:0.1.0` |
+| Docker image | `dmracovit/moderation-service:0.1.1` (also `:latest`), public on Docker Hub, linux/amd64 and linux/arm64 |
 
 ## Running it
 
@@ -34,7 +34,6 @@ Requirements: Docker with Compose v2. For development and tests: Go 1.25.
 
 ```bash
 ./scripts/run.sh            # build the image, start postgres + service, wait until /health/ready answers
-./scripts/run.sh --broker   # same, plus a local RabbitMQ (only when the team broker is not running)
 ./scripts/run.sh --local    # run from source against the containerised postgres
 ./scripts/run.sh --test     # unit tests with coverage
 ./scripts/run.sh --logs     # follow the logs
@@ -57,7 +56,7 @@ docker network create student-id-net   # once
 docker run -d --name moderation-service --network student-id-net -p 8085:8085 \
   -e DATABASE_URL="postgres://moderation_user:<password>@<postgres-host>:5432/moderation_db?sslmode=disable" \
   -e SERVICE_TOKEN="<shared-secret>" -e DEV_ENDPOINTS=true -e SEED_ON_START=true \
-  dmracovit/moderation-service:0.1.0
+  dmracovit/moderation-service:0.1.1
 ```
 
 `moderation-service/deployments/docker-compose.team.yml` is the same stack without `build:`, the fragment merged into
@@ -71,7 +70,8 @@ naming the variable.
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
 | `DATABASE_URL` | - | yes | PostgreSQL connection string (pgx format) |
-| `SERVICE_TOKEN` | - | yes | Shared secret: required on `/api/v1/admin/*` and `/api/v1/dev/*`, sent as `X-Service-Token` to peers |
+| `SERVICE_TOKEN` | - | yes | Shared secret required on `/api/v1/admin/*` and `/api/v1/dev/*` |
+| `UPSTREAM_SERVICE_TOKEN` | `SERVICE_TOKEN` | no | Sent as `X-Service-Token` to University Record Service, whose `Auth__ServiceToken` it must match |
 | `APP_PORT` | `8085` | no | HTTP port |
 | `APP_ENV` | `local` | no | `local` / `test` / `development` = text logs and Gin debug; anything else = JSON logs, release mode |
 | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn`, `error` |
@@ -81,9 +81,6 @@ naming the variable.
 | `REFERENCE_YEAR` | `2026` | no | The calendar year treated as "now" when computing `years_enrolled`; must match the applicant-data services |
 | `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL` | empty | no | Base URL of each peer. Empty = the built-in mock of that peer |
 | `UPSTREAM_TIMEOUT` | `5s` | no | Timeout per peer call |
-| `RABBITMQ_URL` | empty | no | Empty disables messaging; events accumulate in the outbox and are published once a broker is configured |
-| `RABBITMQ_EXCHANGE` | `student-id.events` | no | Must match every other service |
-| `OUTBOX_POLL_INTERVAL` / `OUTBOX_BATCH_SIZE` | `500ms` / `50` | no | Outbox relay |
 | `DB_CONNECT_TIMEOUT`, `DB_MAX_CONNS`, `HTTP_READ_TIMEOUT`, `HTTP_WRITE_TIMEOUT`, `SHUTDOWN_TIMEOUT` | `30s`, `10`, `10s`, `10s`, `10s` | no | Tuning |
 
 ## HTTP API
@@ -102,6 +99,7 @@ Extensions beyond the contract (the CRUD surface of Lab 1):
 | --- | --- | --- |
 | `GET` | `/api/v1/decisions/{decision_id}` | One decision. Players never see the snapshot |
 | `GET` | `/api/v1/admin/decisions/{decision_id}` | The same decision **with the snapshot** of the data behind the verdict. Service token only |
+| `GET` | `/api/v1/admin/events?limit=&offset=` | The outbox, oldest first: every `decision.recorded` event with its full envelope, so it can be handed to Server Moderation Session Service until the team's message broker exists |
 | `DELETE` | `/api/v1/admin/decisions/{decision_id}` | Removes a decision so a demo scenario can be replayed. Decisions are immutable for players |
 | `POST` | `/api/v1/admin/bans` | `{ "student_id": "FAF20101", "name": "..." }` adds a ban list entry by hand |
 | `DELETE` | `/api/v1/admin/bans/{ban_id}` | Removes a ban list entry |
@@ -158,11 +156,11 @@ The Postman collection in `postman/` of this repository runs every scenario with
 | **flag** | 15 | 5 | 0 | 10 |
 | **ban** | 30 | 10 | 15 | 0 |
 
-7. Decision, snapshot, ban list entry (for `ban`) and the `decision.recorded` outbox event are written in one transaction; the relay publishes the event with publisher confirms. Delivery is at-least-once; consumers deduplicate on `event_id`.
+7. Decision, snapshot, ban list entry (for `ban`) and the `decision.recorded` event are written in one transaction. The event stays in the outbox, listed by `GET /api/v1/admin/events`, until the team's message broker delivers it; consumers deduplicate on `event_id`.
 
 ## Storage
 
-PostgreSQL `moderation_db`: `decisions` (one row per applicant per session, immutable, with a `snapshot` jsonb column), `bans` (filled by ban decisions, searchable by student ID and name), `outbox` (events waiting for the broker). Migrations are embedded and applied at startup under an advisory lock.
+PostgreSQL `moderation_db`: `decisions` (one row per applicant per session, immutable, with a `snapshot` jsonb column), `bans` (filled by ban decisions, searchable by student ID and name), `outbox` (the `decision.recorded` events, oldest first). Migrations are embedded and applied at startup under an advisory lock.
 
 ## Tests
 

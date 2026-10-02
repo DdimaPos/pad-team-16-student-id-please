@@ -1,7 +1,5 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
-
 ## What this repo is
 
 This is the **Common Public Repository (CPR)** for Team 16's distributed-systems course project,
@@ -9,17 +7,8 @@ _"Student ID, please"_ — a Discord-moderation game decomposed into 8 microserv
 contains **no service source code**. It is documentation plus git submodules pointing at each
 service's own private repository.
 
-**Each of the 4 team members owns 2 services and can only see the submodule contents for the
-services they (or the professors) have access to.** Other members' submodule directories will be
-present but empty in your checkout. Do not assume a submodule directory has content — check
-before reading from it, and never treat an empty submodule directory as an error.
-
-| Owner              | Services                                              |
-| ------------------ | ----------------------------------------------------- |
-| Postoronca Dumitru | `player-service`, `server-moderation-session-service` |
-| Iacovlev Maxim     | `applicant-service`, `credential-service`             |
-| Racovita Dumitru   | `moderation-service`, `discord-DMs-service`           |
-| Titerez Vladislav  | `server-rules-service`, `university-record-service`   |
+8 services, 2 per team member; ownership and access rules are in
+`.claude/rules/submodule-management.md`.
 
 ### Check for a service-specific CLAUDE.md
 
@@ -53,9 +42,9 @@ relevant at this level:
 git submodule update --init --recursive   # pull the submodules you have access to
 ```
 
-Running the stack (only covers services with a published Docker Hub image — currently Server
-Rules and University Record; other services should add their own block to `docker-compose.yml`
-the same way, referencing a published image, never `build:`):
+Running the stack (all 8 services, their databases and the shared RabbitMQ broker, from published
+Docker Hub images only — `docker-compose.yml` never uses `build:`; image tags and host ports are
+listed in the README "Deployments" table):
 
 ```bash
 docker network create student-id-net   # once
@@ -118,10 +107,3 @@ Six services (Player, Session, Applicant, Credential, Moderation, Discord DMs) a
 shape regardless of language: REST + JSON under `/api/v1`, snake_case fields, the same error
 envelope, and RabbitMQ for events. Database-per-service, engine chosen per service (see the
 Databases table in `README.md` for which engine and why).
-
-## Branching and PR conventions (from README.md)
-
-- `main` and `dev` are protected — no direct pushes, PR required.
-- Branch naming: `type/issueID-short-description` with prefixes `features/`, `bugs/`, `hotfix/`, `chore/`.
-- Merge strategy is squash-and-merge into `dev`; feature branches target `dev`, not `main`.
-- PRs must close an issue, list specific changes, and include testing instructions — see `.github/pull_request_template.md`.

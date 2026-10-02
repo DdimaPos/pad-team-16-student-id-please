@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git log:*)",
+      "Bash(npm:*)",
+      "WebSearch"
+    ],
+    "deny":[
+      "Read(**/.env)"
+    ],
+    "disableBypassPermissionsMode": "disable"
+  },
+  "env":{
+    "DISABLE_TELEMETRY": "1"
+  }
+}

@@ -4,12 +4,13 @@
 change is any change to:
 
 - an endpoint under "Endpoints": path, query params, payload, response, status or error codes
-- an event in the "Event catalog": routing key, envelope, payload, publisher or consumers
-- "Shared values", "Identity model", "Shared identifiers" or "API conventions"
+- an event in the "Event catalog": `event_type`, envelope, payload, producer or consumers, or the "Event delivery" rules
+- "Shared values", "Identity model", "Shared identifiers", "Gateway" or "API conventions"
+  (authentication, errors, task timeout and concurrent limit included)
 
 ## Before changing
 
-1. Find every consumer: the endpoint's "consumed by" line, the event catalog's "Consumed by"
+1. Find every consumer: the endpoint's "consumed by" line, the event catalog's "Pushed to"
    column and the "Every arrow in the diagram" table. Check Moderation Service first; it calls
    five services.
 2. Classify the change. Breaking: a field removed, renamed or retyped, a new required field, a
@@ -21,7 +22,9 @@ change is any change to:
 
 - Update the README section in the CPR PR that bumps the submodule pointer.
 - Update `docs/<SERVICE>.md` and the Postman collection.
-- Bump the image version: MAJOR for breaking, MINOR for additive.
+- Bump the image version within the lab's `N.x.y` (README "Versioning Strategy"): MINOR for
+  additive, PATCH for a fix. A breaking change waits for the next lab's MAJOR, or needs the whole
+  team's agreement and every affected consumer shipping in the same lab.
 - Breaking event payload change: bump the envelope `version` of that event by one. Consumers
   reject versions they do not know.
 - Identity model changes apply to Applicant, Credential and University Record together;

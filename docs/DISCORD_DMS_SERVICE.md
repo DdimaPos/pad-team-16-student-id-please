@@ -17,16 +17,16 @@ Owner: Racovita Dumitru. Source: the private `discord-DMs-service` repository, l
 | | |
 | --- | --- |
 | Language / framework | Go 1.25, Gin, gorilla/websocket |
-| Container port | `8086` (host `8086`) |
-| Base path | `/api/v1` |
+| Container port | `8086` (host `8086` - one of the two ports that stay published, for the direct WebSocket) |
+| Base path | `/api/v1`; REST reached through the Gateway as `{gateway}/api/v1/discord-dms/...`; `GET /api/v1/ws` reached **directly** on port `8086` |
 | Health | `GET /health` (liveness), `GET /health/ready` (readiness: mongodb, pubsub, open connections) |
 | Database | MongoDB 7, `dms_db` (own container, host port `27019`) |
 | Fan-out | Redis Pub/Sub, `dms_pubsub` (own container, host port `6380`); optional, empty `REDIS_URL` = one instance only |
-| Events | `session.started` and `session.ended` are accepted through `POST /api/v1/dev/events/*`, the same path a broker consumer will use. No broker client: the team is building its own message broker |
-| Publishes | nothing |
-| Consumes | `session.started`, `session.ended` |
+| Events | Contract: `session.started` and `session.ended` are pushed by Session through the Gateway to `POST /api/v1/events`. **`0.2.0` accepts them through `POST /api/v1/dev/events/*` only** |
+| Produces | nothing |
+| Receives | `session.started`, `session.ended` |
 | Calls | nothing. Zero outbound HTTP dependencies |
-| Authentication | `Authorization: Bearer <jwt>` or `?access_token=` for players (signature not verified, `sub` is the player id); `X-Service-Token` for `/admin/*` and `/dev/*` |
+| Authentication | Contract: REST is checked by the Gateway, the service reads `X-Player-Id`; the WebSocket takes a one-time `?ticket=` from `POST /api/v1/ws-tickets`. **`0.2.0` reads `Authorization: Bearer <jwt>` or `?access_token=` (unverified) and checks `X-Service-Token` on `/admin/*` and `/dev/*` itself** - see the divergences |
 | Docker image | `dmracovit/discord-dms-service:0.2.0` (also `:latest`), public on Docker Hub, linux/amd64 and linux/arm64 |
 
 ## Running it
@@ -70,7 +70,7 @@ the team-wide compose in the CPR.
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
 | `MONGODB_URI` | - | yes | MongoDB connection string |
-| `SERVICE_TOKEN` | - | yes | Shared secret required as `X-Service-Token` on `/api/v1/admin/*` and `/api/v1/dev/*` |
+| `SERVICE_TOKEN` | - | yes in `0.2.0` | Shared secret required as `X-Service-Token` on `/api/v1/admin/*` and `/api/v1/dev/*`. Under the contract the Gateway checks it and this setting goes away |
 | `MONGODB_DATABASE` | `dms_db` | no | Database name |
 | `APP_PORT` | `8086` | no | HTTP port |
 | `APP_ENV` | `local` | no | `local` / `test` / `development` = text logs; anything else = JSON logs, release mode |
@@ -83,6 +83,8 @@ the team-wide compose in the CPR.
 | `HISTORY_DEFAULT_LIMIT` | `50` | no | Page size of the history endpoint |
 | `WS_PING_INTERVAL`, `WS_PONG_WAIT`, `WS_WRITE_WAIT` | `30s`, `60s`, `10s` | no | WebSocket keep-alive |
 | `DB_CONNECT_TIMEOUT`, `HTTP_READ_TIMEOUT`, `SHUTDOWN_TIMEOUT` | `30s`, `10s`, `10s` | no | Tuning |
+| WebSocket public base URL | - | contract | The `ws://host:8086` clients reach directly, used to build `ws_url` in `POST /ws-tickets`; variable name chosen by the owner. **Not in `0.2.0`** |
+| `HTTP_REQUEST_TIMEOUT` / `MAX_CONCURRENT_TASKS` | - | contract | Task timeout (`408 REQUEST_TIMEOUT`) and concurrent task limit (`429 TOO_MANY_REQUESTS`) for REST requests and upgrade requests. **Not in `0.2.0`** |
 
 ## HTTP and WebSocket API
 
@@ -90,9 +92,10 @@ Contract endpoints (payloads in the contract section below):
 
 | Method | Path | Consumed by | Auth |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/ws?session_id=` | Client, upgraded to a WebSocket | player JWT (header or `access_token` query) |
-| `GET` | `/api/v1/sessions/{session_id}/channels` | Client | player JWT |
-| `GET` | `/api/v1/channels/{channel_id}/messages?limit=&offset=` | Client | player JWT |
+| `POST` | `/api/v1/ws-tickets` | Client, through the Gateway | player JWT at the Gateway; `X-Player-Id` here. `{session_id}` → `201 {ws_url, expires_at}`, one-time ticket valid 30 s. **Not in `0.2.0`** |
+| `GET` | `/api/v1/ws?ticket=` | Client, **directly** on port `8086`, upgraded to a WebSocket | the ticket only; `401 INVALID_TICKET` if unknown, expired or used. `0.2.0`: `?session_id=` plus a player JWT (header or `access_token` query) |
+| `GET` | `/api/v1/sessions/{session_id}/channels` | Client, through the Gateway | player JWT at the Gateway |
+| `GET` | `/api/v1/channels/{channel_id}/messages?limit=&offset=` | Client, through the Gateway | player JWT at the Gateway |
 
 Extensions beyond the contract (the CRUD surface of Lab 1):
 
@@ -102,7 +105,7 @@ Extensions beyond the contract (the CRUD surface of Lab 1):
 | `PATCH` | `/api/v1/channels/{channel_id}/messages/{message_id}` | `{ "content": "..." }` edits the caller's own message while the channel is not archived; the message gets `edited_at` and open connections receive `message.updated`. `403 NOT_MESSAGE_AUTHOR` for anyone else |
 | `DELETE` | `/api/v1/admin/messages/{message_id}` | Removes a message. Service token only |
 | `GET` | `/api/v1/dev/tokens?player_id=` | Mints an unsigned player JWT for Postman (`DEV_ENDPOINTS=true`) |
-| `POST` | `/api/v1/dev/events/session-started`, `/session-ended` | Accept a full event envelope and apply it: this is how session events arrive until the team's message broker exists |
+| `POST` | `/api/v1/dev/events/session-started`, `/session-ended` | Accept a full event envelope and apply it: interim stand-in for the contract's `POST /api/v1/events` |
 
 WebSocket protocol, JSON text frames both ways:
 
@@ -122,7 +125,9 @@ Error codes: `VALIDATION_ERROR` (400), `UNAUTHENTICATED`, `INVALID_SERVICE_TOKEN
 `NOT_IN_SESSION`, `CHANNEL_ACCESS_DENIED`, `NOT_MESSAGE_AUTHOR`, `SERVICE_TOKEN_REQUIRED` (403), `CHANNEL_NOT_FOUND`,
 `MESSAGE_NOT_FOUND`, `NOT_FOUND` (404), `SESSION_NOT_ACTIVE`, `CHANNEL_ARCHIVED` (409),
 `INVALID_CONTENT`, `INVALID_EVENT` (422), `INTERNAL_ERROR` (500). Shared envelope
-`{ "error": { "code", "message", "details" } }`.
+`{ "error": { "code", "message", "details" } }`. Contract, not in `0.2.0`: `INVALID_TICKET` (401),
+`REQUEST_TIMEOUT` (408), `TOO_MANY_REQUESTS` (429); `INVALID_SERVICE_TOKEN` and
+`SERVICE_TOKEN_REQUIRED` move to the Gateway.
 
 ## Who sees which channel
 
@@ -137,7 +142,7 @@ Computed from `session.started` when the channels are created:
 
 ## Events
 
-Accepted through `POST /api/v1/dev/events/*` until the team's message broker exists, deduplicated on `event_id`, so sending the same event twice is harmless:
+Pushed by Session to `POST /api/v1/events` under the contract; in `0.2.0` accepted through `POST /api/v1/dev/events/*`. Deduplicated on `event_id`, so sending the same event twice is harmless:
 
 - `session.started`: records the session and creates the four channels with their access lists. A replay never duplicates channels.
 - `session.ended`: marks the session ended, archives the channels (read-only, history stays readable), pushes `session.ended` to every open connection of the session and closes them.
@@ -176,11 +181,13 @@ and are skipped otherwise.
 | # | Divergence | Who is affected |
 | --- | --- | --- |
 | 1 | `POST /channels/{id}/messages`, `PATCH /channels/{id}/messages/{message_id}` (the update side of the Lab 1 CRUD requirement), `/admin/*` and `/dev/*` exist beyond the contract | gateway and auth: `/admin/*` and `/dev/*` must never be routed to players |
-| 2 | The player token is also accepted as `?access_token=`, because browsers cannot set headers on a WebSocket upgrade | the game client, the gateway |
-| 3 | The WebSocket protocol adds `ping` / `pong` and a final `session.ended` frame before the close | the game client |
-| 4 | `422 INVALID_CONTENT` (empty or longer than `MAX_MESSAGE_LENGTH`) and `409 CHANNEL_ARCHIVED` are answered; the contract names neither | the game client |
-| 5 | An unknown session answers `403 NOT_IN_SESSION` rather than 404: a session this service has not heard of grants membership to nobody | the game client |
-| 6 | No broker client: the team is building its own message broker, so `session.started` and `session.ended` arrive through `POST /api/v1/dev/events/*` until it exists | Server Moderation Session Service, whose outbox rows are handed over by hand for now |
+| 2 | The WebSocket protocol adds `ping` / `pong` and a final `session.ended` frame before the close | the game client |
+| 3 | `422 INVALID_CONTENT` (empty or longer than `MAX_MESSAGE_LENGTH`) and `409 CHANNEL_ARCHIVED` are answered; the contract names neither | the game client |
+| 4 | An unknown session answers `403 NOT_IN_SESSION` rather than 404: a session this service has not heard of grants membership to nobody | the game client |
+| 5 | **No `POST /api/v1/events`.** `session.started` and `session.ended` arrive through `POST /api/v1/dev/events/*`, which also answer `422 INVALID_EVENT` for unusable events as the contract's endpoint would | Server Moderation Session Service, whose outbox rows are handed over by hand for now |
+| 6 | **No WebSocket negotiation.** `POST /api/v1/ws-tickets` does not exist; `GET /api/v1/ws` takes `?session_id=` and the player's JWT (header or `?access_token=`) instead of a one-time ticket. Since the JWT never reaches this service under the contract, chat is unreachable once the Gateway is in place | the game client, the Gateway |
+| 7 | **Identity read from the token.** REST endpoints take the player from `Authorization: Bearer <jwt>` instead of `X-Player-Id`, and `/admin/*` and `/dev/*` check `X-Service-Token` themselves; the Gateway strips both | the game client, demos through the Gateway |
+| 8 | **No task timeout or concurrent task limit** (`408` / `429`), and the image is tagged `0.2.0`, not a Lab 2 `2.x.y` | Gateway, Lab 2 grading |
 
 ---
 

@@ -17,7 +17,7 @@
 7. [The XP curve and the level](#7-the-xp-curve-and-the-level)
 8. [Divergences from the CPR contract](#8-divergences-from-the-cpr-contract)
 9. [Edge cases](#9-edge-cases)
-10. [Notes for a gateway](#10-notes-for-a-gateway)
+10. [Gateway requirements](#10-gateway-requirements)
 11. [Mocking strategy (grade 9) and testing recipes](#11-mocking-strategy-grade-9-and-testing-recipes)
 
 ---
@@ -51,11 +51,11 @@ one event.
 | --- | --- |
 | **Language / framework** | Go 1.26 / Gin |
 | **Container port** | `8080` (mapped to host `8087` by convention) |
-| **Base path** | `/api/v1` |
+| **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/player/...` |
 | **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports each dependency separately; today that is Postgres alone) |
 | **Database** | PostgreSQL 17, `player_db` (own container, host port `5437`). Schema applied at startup by GORM `AutoMigrate` |
-| **Broker** | **None** - see [§6](#6-events) |
-| **Authentication** | **None.** No token of any kind is read or required - see [§8](#8-divergences-from-the-cpr-contract) |
+| **Events** | Receives `session.ended` on `POST /api/v1/events` (contract; **not in `0.1.0`**, which takes it on a dev route) - see [§6](#6-events) |
+| **Authentication** | Checked by the Gateway, not here: the service receives `X-Player-Id` for player calls and validates no token. It **issues** the player JWT (`POST /api/v1/auth/login`, HS256 with `JWT_SECRET`). **`0.1.0` has no login endpoint** - see [§8](#8-divergences-from-the-cpr-contract) |
 | **Docker image** | `dimapos/player-service:0.1.0` (also `:latest`), public on Docker Hub |
 | **Producer name** | `player-service` (it publishes nothing, but this is the value to expect if it ever does) |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`; `details` is always an object, never `null` |
@@ -119,6 +119,10 @@ safe to leave enabled.
 | `SEED_ON_START` | `true` | no | Seeds fixtures, but only when the `players` table is empty |
 | `ENABLE_DEV_ENDPOINTS` | `true` | no | Mounts `/api/v1/dev/*`. **Enable for the team demo**, disable in anything shared |
 | `BCRYPT_COST` | `10` | no | Password hashing work factor |
+| `JWT_SECRET` | - | contract: **yes** | HS256 secret used to sign login tokens; the same value as the Gateway's. **Not read by `0.1.0`** |
+| `JWT_TTL` | `1h` | no | Lifetime of a login token (`expires_in`). **Not in `0.1.0`** |
+| `HTTP_REQUEST_TIMEOUT` | `5s` | no | Task timeout; reached = `408 REQUEST_TIMEOUT`. **Not in `0.1.0`** |
+| `MAX_CONCURRENT_TASKS` | per deployment | no | Concurrent task limit; reached = `429 TOO_MANY_REQUESTS`. **Not in `0.1.0`** |
 
 A variable that is set but unusable fails the boot with every problem listed at once, rather than
 silently reverting to a default.
@@ -127,14 +131,18 @@ silently reverting to a default.
 
 ## 5. HTTP API
 
-No endpoint requires a header of any kind beyond `Content-Type: application/json` on requests with
-a body.
+Every caller reaches this service through the Gateway (`{gateway}/api/v1/player/...`), which checks
+the credential and forwards only `X-Player-Id`. The service itself validates no token. In `0.1.0` no
+endpoint requires a header of any kind beyond `Content-Type: application/json` on requests with a
+body.
 
 ### 5.1 Contract endpoints
 
 | Method | Path | Consumed by | Auth |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/players/{player_id}` | Server Moderation Session Service, the client | none |
+| `GET` | `/api/v1/players/{player_id}` | Server Moderation Session Service, the client | player or service (not checked in `0.1.0`) |
+| `POST` | `/api/v1/events` | Server Moderation Session Service (`session.ended`) | service token, checked by the Gateway. **Not in `0.1.0`** |
+| `POST` | `/api/v1/auth/login` | the client | public. `{username, password}` → `200 {access_token, token_type: "Bearer", expires_in}`; `401 INVALID_CREDENTIALS`. **Not in `0.1.0`** |
 
 ```json
 {
@@ -155,7 +163,7 @@ Also mandatory for every service, outside the versioned base path:
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `GET` | `/health` | Liveness. Never consults a dependency, so a broker or database outage does not make an orchestrator restart a healthy container |
+| `GET` | `/health` | Liveness. Never consults a dependency, so a database outage does not make an orchestrator restart a healthy container |
 | `GET` | `/health/ready` | Readiness. `{"status":"ok","dependencies":{"postgres":{"status":"ok"}}}`; `503` with `"status":"degraded"` and a per-dependency `error` if any is down |
 
 ### 5.2 Extension endpoints (beyond contract - Lab 1 CRUD requirement)
@@ -175,7 +183,7 @@ editing) will be added when the client is designed."* Their shapes are this serv
 | `GET` | `/api/v1/players/{player_id}/friends` | Paginated. Returns **public** projections - a friend's fields are no more visible than anyone else's |
 | `POST` | `/api/v1/players/{player_id}/friends` | `201`. Body: `{ "friend_id": "<uuid>" }`. Symmetric |
 | `DELETE` | `/api/v1/players/{player_id}/friends/{friend_id}` | `204`. Removes both directions |
-| `POST` | `/api/v1/dev/events/session-ended` | Applies a `session.ended` envelope without a broker. Gated by `ENABLE_DEV_ENDPOINTS` |
+| `POST` | `/api/v1/dev/events/session-ended` | Applies a `session.ended` envelope. Interim stand-in for `POST /api/v1/events`. Gated by `ENABLE_DEV_ENDPOINTS` |
 
 Request and response bodies are `snake_case`. `items` is always an array, never `null`.
 
@@ -187,14 +195,17 @@ Request and response bodies are `snake_case`. `items` is always an array, never 
 | `FRIEND_NOT_FOUND` | 404 | The `friend_id` is unknown, or the two are not friends |
 | `NOT_FOUND` | 404 | Unknown route; `details.path` names it |
 | `METHOD_NOT_ALLOWED` | 405 | Known path, wrong method |
-| `INVALID_PLAYER_ID` | 400 | A path id that is not a UUID; `details.parameter` and `details.value` |
-| `MALFORMED_BODY` | 400 | The body is not parseable JSON, or a UUID field in it is malformed |
-| `VALIDATION_ERROR` | 422 | A field or query parameter is invalid; `details.field` and `details.reason` name it |
+| `INVALID_PLAYER_ID` | 400 | A path id that is not a UUID; `details.parameter` and `details.value`. **Contract: `400 VALIDATION_ERROR`** |
+| `MALFORMED_BODY` | 400 | The body is not parseable JSON, or a UUID field in it is malformed. **Contract: `400 VALIDATION_ERROR`** |
+| `VALIDATION_ERROR` | 422 | A field or query parameter is invalid; `details.field` and `details.reason` name it. **Contract: `400`** |
 | `CANNOT_FRIEND_SELF` | 422 | `friend_id` equals the player in the path |
 | `USERNAME_TAKEN` | 409 | |
 | `EMAIL_TAKEN` | 409 | |
 | `ALREADY_FRIENDS` | 409 | In either direction - it is one friendship |
 | `INTERNAL_ERROR` | 500 | Anything unexpected. The detail is logged with the request id, never returned |
+| `INVALID_CREDENTIALS` | 401 | Contract, `POST /auth/login`: unknown username or wrong password. **Not in `0.1.0`** |
+| `REQUEST_TIMEOUT` | 408 | Contract: the task timeout was reached. **Not in `0.1.0`** |
+| `TOO_MANY_REQUESTS` | 429 | Contract: the concurrent task limit was reached, with `Retry-After`. **Not in `0.1.0`** |
 
 Validation rules worth knowing before you call `POST /players`: username 3-32 characters of
 `[A-Za-z0-9_]` only; password 8-72 bytes (72 is bcrypt's own limit, past which it ignores input);
@@ -205,29 +216,27 @@ Validation rules worth knowing before you call `POST /players`: username 3-32 ch
 
 ## 6. Events
 
-**Published:** none. **Consumed:** `session.ended` only.
+**Produced:** none. **Received:** `session.ended` only, pushed by Server Moderation Session Service.
 
-**This service has no broker client.** The team is writing its own broker to replace RabbitMQ and
-its protocol is not designed yet, so there is nothing to subscribe with. Treat Player Service as not
-being on the bus: today a `session.ended` envelope reaches it by exactly one route, `POST
-/api/v1/dev/events/session-ended` ([§11](#11-mocking-strategy-grade-9-and-testing-recipes)).
+Events travel by direct HTTP push, as the CPR's "Event delivery" section defines it: Session's
+outbox relay sends the envelope to this service's `POST /api/v1/events` with `X-Service-Token`.
 
-### Wiring a client later
+**Image `0.1.0` does not expose `POST /api/v1/events` yet.** Today a `session.ended` envelope
+reaches it by exactly one route, `POST /api/v1/dev/events/session-ended`
+([§11](#11-mocking-strategy-grade-9-and-testing-recipes)).
 
-Everything below is written against the CPR's event envelope rather than a wire format, so it stands
-whatever the transport turns out to be. `internal/events` is the transport-neutral half a client
-plugs into:
+### Wiring `POST /api/v1/events`
 
-1. Receive a message.
+`internal/events` is already transport-neutral, so the endpoint is a thin handler around it:
+
+1. Check `X-Service-Token`.
 2. `events.Decode(body)` - the envelope and payload, or a permanent error.
 3. `shiftService.ApplySessionEnded(ctx, env, payload)` - the same call the dev endpoint makes.
-4. `events.DispositionFor(err, alreadyRetried)` - `Ack`, `Retry` or `Park`; settle accordingly.
+4. `events.DispositionFor(err, alreadyRetried)` - map `Ack` to `200`, `Park` to
+   `422 INVALID_EVENT`, `Retry` to `500`.
 
-`alreadyRetried` is a parameter rather than read from the message, because a transport that exposes
-no redelivery flag has to count attempts itself.
-
-Requirements on the transport: at-least-once delivery, acknowledgement, redelivery, and somewhere to
-park a message that can never be processed. Ordering is not required.
+Retrying is the producer's job under the contract: it repeats the push with backoff until it gets a
+`2xx`, so `alreadyRetried` is always `false` on this path. Ordering is not required.
 
 ### What applying the event does
 
@@ -236,14 +245,14 @@ history, and append any `disciplinary_actions` to their log. The level needs no 
 recalculation - it is derived from XP ([§7](#7-the-xp-curve-and-the-level)). All of it happens in
 one transaction together with the `event_id` marker.
 
-`role` (`moderator` / `junior_moderator`) is stored on the shift row for the history view. The
-event catalog table in the CPR README omits `role` while the payload example includes it, so it is
-treated as optional - an event without it applies fine.
+`role` (`moderator` / `junior_moderator`) is stored on the shift row for the history view. It is
+part of the contract's `session.ended` payload, but is still read leniently - an event without it
+applies fine.
 
 ### Delivery guarantees
 
-These hold no matter which broker is used, because they live in the database rather than in the
-transport - which is why the dev endpoint can demonstrate them today.
+These hold whichever route an event arrives by, because they live in the database rather than in
+the transport - which is why the dev endpoint can demonstrate them today.
 
 Delivery is assumed at-least-once, so the same event can arrive more than once. Two mechanisms
 prevent a shift being counted twice:
@@ -254,19 +263,20 @@ prevent a shift being counted twice:
 2. A unique index on `shifts (player_id, session_id)` underneath it, which holds even for an event
    republished under a fresh `event_id`.
 
-A replay is answered with an **ack**, not an error - it is the deduplication working.
+A replay is answered with a success (`200`, `"duplicate": true`), not an error - it is the
+deduplication working.
 
 ### Failure handling
 
-What `events.DispositionFor` decides, for a client to act on:
+What `events.DispositionFor` decides, and what `POST /api/v1/events` answers:
 
-| Situation | Disposition |
-| --- | --- |
-| Undecodable JSON, missing `event_id`, invalid payload | `Park` on the first attempt - retrying cannot change the outcome |
-| An event of another type | `Park`; it means a routing or subscription mistake |
-| Transient failure (in practice the database) | `Retry` once, then `Park` |
-| An `event_id` already applied | `Ack` |
-| A `player_id` with no account here | `Ack`; the id is skipped and logged, the rest of the event still applies |
+| Situation | Disposition | Answer |
+| --- | --- | --- |
+| Undecodable JSON, missing `event_id`, invalid payload | `Park` - retrying cannot change the outcome | `422 INVALID_EVENT` |
+| An event of another type | `Park`; it means a misconfigured producer | `422 INVALID_EVENT` |
+| Transient failure (in practice the database) | `Retry` | `500`; the producer retries |
+| An `event_id` already applied | `Ack` | `200`, `"duplicate": true` |
+| A `player_id` with no account here | `Ack`; the id is skipped and logged, the rest of the event still applies | `200` |
 
 That last row matters for Session Service: **this service will not reject an event because it does
 not recognise a player.** Session decides who was in a shift, and one unknown id must not cost the
@@ -303,24 +313,38 @@ a level of 0 would distort the average Session divides by.
 
 ## 8. Divergences from the CPR contract
 
-> **No AMQP consumer**, though the contract's library table still names RabbitMQ - see
-> [§6](#6-events). *Who this affects:* anyone expecting to reach this service over the bus.
+> **No `POST /api/v1/events`** in `0.1.0` - `session.ended` arrives only through the dev route,
+> see [§6](#6-events). *Who this affects:* Server Moderation Session Service, whose relay has
+> nowhere to push.
+
+> **No task timeout or concurrent task limit** (`408` / `429`), and the image is tagged `0.1.0`, not
+> a Lab 2 `2.x.y`. *Who this affects:* the Gateway and Lab 2 grading.
+
+> **Error codes differ from the contract's Errors convention.** `400 INVALID_PLAYER_ID` and
+> `400 MALFORMED_BODY` should be `400 VALIDATION_ERROR`, and `422 VALIDATION_ERROR` should be
+> `400 VALIDATION_ERROR` ([§5.3](#53-error-codes)). *Who this affects:* the game client and any
+> service that maps this service's errors.
 
 The rest, in no particular order:
+
+1. **Ten endpoints beyond the contract** (register, list, profile, edit, delete, shifts,
+   disciplinary actions, friends).
    *Who this affects:* anyone reading the CPR README and expecting a single endpoint. They are
    pre-authorised by the README's note that account features arrive with the client, and labelled
    "beyond contract" here, in the service README and in the Postman collection - the same way
    Server Rules labels its `admin` surface. The contract endpoint itself is untouched.
 
-2. **No authentication anywhere.**
-   *Who this affects:* everyone, and the gateway most of all. The contract's API conventions say
-   player requests carry a JWT and service-to-service requests carry a service token, while the
-   same README says *"Authentication is out of scope for now"*; this service follows the latter.
-   There is no token issuer in the system yet - Player Service is the natural owner of one and does
-   not have a login endpoint - so **any caller can read, edit or delete any player, friendships
-   included**. As partial mitigation, **no endpoint returns `email`**: it is accepted on create and
-   update and stored unique, but returned by nothing. It joins `/profile` when authentication is
-   implemented.
+2. **No login endpoint yet.**
+   *Who this affects:* everyone. The contract makes this service the token issuer
+   (`POST /api/v1/auth/login`, HS256 with `JWT_SECRET`) and moves token validation to the Gateway;
+   `0.1.0` issues nothing, so no player can obtain a token. Not reading a token itself is correct
+   under the contract - but until the Gateway is in place and this port is unpublished, **any caller
+   can read, edit or delete any player, friendships included**. As partial mitigation, **no endpoint
+   returns `email`**: it is accepted on create and update and stored unique, but returned by
+   nothing.
+
+   The extension endpoints that act on one player (`PATCH`, `DELETE`, friends) should, under the
+   Gateway, check that `X-Player-Id` matches the path's `player_id`; `0.1.0` does not.
 
 3. **The XP curve is this service's own invention** - 400 XP per level, capped at 10. The contract
    defines none. See [§7](#7-the-xp-curve-and-the-level).
@@ -337,8 +361,8 @@ The rest, in no particular order:
    chosen. The two numbers agree unless a shift row was blocked by the unique index while the
    counter still moved - see [§9](#9-edge-cases).
 
-6. **`role` from `session.ended` is stored on the shift row**, although the contract does not list
-   it among this service's owned data. It is kept for the history view only; role assignment
+6. **`role` from `session.ended` is stored on the shift row** (the field is in the contract's
+   payload), although the contract does not list it among this service's owned data. It is kept for the history view only; role assignment
    remains entirely Session Service's.
 
 7. **`POST /api/v1/dev/events/session-ended` exists and is enabled by default.**
@@ -380,18 +404,22 @@ The rest, in no particular order:
 - **Seeding never overwrites.** It runs only when `players` is empty, so a populated database is
   left alone on every boot.
 - **An unreachable database fails the boot** rather than starting a service that 500s on every
-  request. Nothing else can fail at boot: there is no broker to be unreachable.
+  request. Nothing else can fail at boot: the service depends on no other service.
 
 ---
 
-## 10. Notes for a gateway
+## 10. Gateway requirements
 
-- **Only `GET /api/v1/players/{player_id}` is contract surface.** Everything else may change
-  without a CPR amendment.
-- **Nothing here is authenticated.** Do not expose this service directly. The gateway must be where
-  a caller's identity is established, and until it is, `PATCH` and `DELETE` on any player and every
-  friends endpoint are open to anyone who can reach the port.
-- **Block `/api/v1/dev/*`.** It grants XP.
+What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, prefix `player`:
+
+- **Contract surface:** `GET /api/v1/players/{player_id}`, `POST /api/v1/auth/login` and
+  `POST /api/v1/events`. Everything else may change without a CPR amendment.
+- **Public routes:** `POST /api/v1/auth/login` and `POST /api/v1/players` (registration) are
+  forwarded with no credential.
+- **This service authenticates no one.** The Gateway is where a caller's identity is established;
+  it must strip any client-sent `X-Player-Id`, and this port must not be published, or `PATCH` and
+  `DELETE` on any player and every friends endpoint are open to anyone who can reach it.
+- **`/api/v1/dev/*` only with the service token.** It grants XP.
 - **`email` is never in a response**, so there is nothing to redact.
 - `X-Request-Id` is read from the request when present and echoed on every response, including
   errors. Pass yours through and one player action can be followed across every service's logs.
@@ -403,7 +431,7 @@ The rest, in no particular order:
 ## 11. Mocking strategy (grade 9) and testing recipes
 
 Two things this service needs do not exist yet: the `session.ended` event, which Server Moderation
-Session Service will publish, and the transport that would carry it. Nothing else is mocked - there
+Session Service will push to `POST /api/v1/events`, and that endpoint itself. Nothing else is mocked - there
 is no outbound call to stub, because this service calls nobody.
 
 `POST /api/v1/dev/events/session-ended` accepts the exact envelope and hands it to the same

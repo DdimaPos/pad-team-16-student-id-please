@@ -17,7 +17,7 @@
 6. [The condition DSL](#6-the-condition-dsl)
 7. [Divergences from the CPR contract](#7-divergences-from-the-cpr-contract)
 8. [Edge cases](#8-edge-cases)
-9. [Notes for a gateway](#9-notes-for-a-gateway)
+9. [Gateway requirements](#9-gateway-requirements)
 10. [Recipes for testing against it](#10-recipes-for-testing-against-it)
 
 ---
@@ -47,11 +47,11 @@ service, publishes no event, consumes no event, and stores nothing about applica
 | --- | --- |
 | **Language / framework** | C# / .NET 10, ASP.NET Core minimal APIs |
 | **Container port** | `8080` (mapped to host `8083` by convention) |
-| **Base path** | `/api/v1` |
+| **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/server-rules/...` |
 | **Health** | `GET /health` (liveness), `GET /health/ready` (readiness) |
 | **Database** | PostgreSQL, `rules_db` (own container, host port `5434`) |
-| **Broker** | none - this service never touches RabbitMQ |
-| **Authentication** | Public endpoints are open. Admin endpoints (`/api/v1/admin/*`) require `X-Service-Token` |
+| **Events** | none - this service neither produces nor receives events |
+| **Authentication** | Checked by the Gateway, not here: `GET /rulesets/current`, `POST /rulesets/{v}/evaluations` and `/admin/*` only with the service token, `GET /rulesets/{version}` with a player JWT. The service validates no token. **`0.1.0` still checks `X-Service-Token` itself on `/admin/*`**, which the Gateway strips - see §7 |
 | **Docker image** | `d1vinexd/server-rules-service:0.1.0` (also tagged `:latest`), public on Docker Hub |
 | **Architecture** | Clean Architecture, five projects: `Domain` (pure - the condition DSL, evaluator, channel resolver), `Repositories` (interfaces), `Services` (use cases), `Infrastructure` (EF Core + Npgsql), `Api` (minimal APIs) |
 
@@ -96,7 +96,8 @@ Moderation Session Service keeps a shift in the lobby otherwise.
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
 | `ConnectionStrings__RulesDb` | - | **yes** | Npgsql connection string |
-| `Auth__ServiceToken` | - | **yes** (for admin routes) | Shared secret required as `X-Service-Token` on `/api/v1/admin/*` |
+| `Auth__ServiceToken` | - | **yes** in `0.1.0` (for admin routes) | Shared secret required as `X-Service-Token` on `/api/v1/admin/*`. Under the contract the Gateway checks the token and this setting goes away |
+| `HTTP_REQUEST_TIMEOUT` / `MAX_CONCURRENT_TASKS` | - | contract | Task timeout (`408 REQUEST_TIMEOUT`) and concurrent task limit (`429 TOO_MANY_REQUESTS`), read from these names or mapped to configuration keys. **Not in `0.1.0`** |
 | `Rules__StrictFactShape` | `false` | no | See [§7](#7-divergences-from-the-cpr-contract) - whether an inconsistent fact (e.g. `major` on a `staff` applicant) is a `422` or silently nulled out |
 
 ---
@@ -117,8 +118,8 @@ ruleset is the resource being addressed, so a bad version wins over bad facts.
 
 ### 5.2 Extension endpoints (beyond contract - Lab 1 CRUD requirement)
 
-All under `/api/v1/admin/rulesets`, guarded by `X-Service-Token`. **Never exposed to
-players.**
+All under `/api/v1/admin/rulesets`, guarded by `X-Service-Token` - checked by the Gateway under the
+contract, by the service itself in `0.1.0`. **Never exposed to players.**
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -136,7 +137,8 @@ players.**
 Standard envelope `{ "error": { "code", "message", "details" } }`. Codes used:
 `VALIDATION_ERROR` (400), `INVALID_DIFFICULTY` / `INVALID_FACTS` / `INVALID_RULESET` (422),
 `RULESET_NOT_FOUND` (404), `LAST_ACTIVE_RULESET` (409), `UNAUTHENTICATED` /
-`INVALID_SERVICE_TOKEN` (401), `INTERNAL_ERROR` (500).
+`INVALID_SERVICE_TOKEN` (401), `INTERNAL_ERROR` (500). Contract, not in `0.1.0`: `REQUEST_TIMEOUT` (408),
+`TOO_MANY_REQUESTS` (429).
 
 ---
 
@@ -183,6 +185,8 @@ to grants/denies and can never "fail".
 | 2 | `version` is **one global monotonic sequence** shared across all five difficulties (not five independent sequences) - required because `GET /rulesets/{version}` takes no `difficulty` parameter, so a per-difficulty sequence would make that endpoint ambiguous | Anyone assuming version numbers are per-difficulty |
 | 3 | `Rules__StrictFactShape` defaults to **lenient**: an inconsistent fact (e.g. `major` present for `staff`) is nulled out with a warning, not rejected with `422`. Moderation Service builds these facts; a strict default would deadlock the whole decision flow at integration time over a field this service can safely ignore | Moderation Service |
 | 4 | The seeded rulesets for difficulties 1, 2, 4, 5 are **this service's own design** - only difficulty 3 is specified by the contract (verbatim). See the service's own README for the full seed content | Anyone expecting a specific ruleset at another difficulty |
+| 5 | **The admin routes check `X-Service-Token` themselves.** Under the contract the Gateway checks it and strips it before forwarding, so in `0.1.0` `/admin/*` answers `401`/`403` to every request that comes through the Gateway. The check must move to the Gateway (the contract endpoints already check nothing, which is correct) | anyone using the admin surface through the Gateway |
+| 6 | **No task timeout or concurrent task limit** (`408` / `429`), and the image is tagged `0.1.0`, not a Lab 2 `2.x.y` | Gateway, Lab 2 grading |
 
 ---
 
@@ -197,12 +201,14 @@ to grants/denies and can never "fail".
 
 ---
 
-## 9. Notes for a gateway
+## 9. Gateway requirements
 
-- Every contract endpoint (`/rulesets/*`, `/evaluations`) is open - no authentication, matching
-  the team-wide "authentication is out of scope for now" convention.
-- Admin endpoints require `X-Service-Token` and must never be routed to a player-facing
-  gateway path.
+What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, prefix `server-rules`:
+
+- `GET /rulesets/current` and `POST /rulesets/{v}/evaluations`: service token only (Session and
+  Moderation call them). `GET /rulesets/{version}`: player JWT.
+- `/admin/*`: service token only, never on a player JWT alone.
+- This service checks no credential on its contract endpoints, so the Gateway is the only guard.
 - No CORS headers, no rate limiting, no `Idempotency-Key` support. `POST /evaluations` and
   `POST /admin/rulesets` are not idempotent - two identical requests create two things (a log
   line; a new ruleset version, respectively). Safe to retry: every `GET`, `PATCH`, `DELETE`.
@@ -210,6 +216,9 @@ to grants/denies and can never "fail".
 ---
 
 ## 10. Recipes for testing against it
+
+Direct port `8083` is published only during Lab 2 development. Through the Gateway, replace
+`$BASE/api/v1/` with `http://localhost:8080/api/v1/server-rules/` and send `X-Service-Token`.
 
 ```bash
 BASE=http://localhost:8083

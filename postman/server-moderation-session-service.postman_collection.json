@@ -708,7 +708,7 @@
     },
     {
       "name": "dev - decision.recorded (mocks Moderation Service)",
-      "description": "Moderation Service has not been written, and the team is writing its own message broker to replace RabbitMQ, so nothing delivers decision.recorded. This endpoint accepts the exact envelope a broker would carry and runs it through the same handler a broker client will call. It is mounted only when ENABLE_DEV_ENDPOINTS is true, and it moves a session's score with no credential - so it is off outside a demo.",
+      "description": "Until POST /api/v1/events exists, nothing delivers decision.recorded from Moderation Service. This endpoint accepts the exact envelope Moderation's relay will push and runs it through the same handler POST /api/v1/events will call. It is mounted only when ENABLE_DEV_ENDPOINTS is true, and it moves a session's score with no credential - so it is off outside a demo.",
       "item": [
         {
           "name": "1. POST a correct decision -> 200",
@@ -1004,7 +1004,7 @@
     },
     {
       "name": "ending the shift and the outbox",
-      "description": "Ending the shift freezes the per-player result and writes session.ended. There is no broker yet, so the event goes to an outbox table in the same transaction as the state change - and the events endpoint is how you prove that what this service would publish is what Player Service expects to consume.",
+      "description": "Ending the shift freezes the per-player result and writes session.ended. The event goes to an outbox table in the same transaction as the state change, and is relayed from there to the consumers' POST /api/v1/events - the events endpoint is how you prove that what this service produces is what Player Service expects to receive.",
       "item": [
         {
           "name": "1. POST /sessions/{id}/end -> 200",
@@ -1076,7 +1076,7 @@
                 "events"
               ]
             },
-            "description": "BEYOND CONTRACT. The envelopes this service published for the session, oldest first - the order they happened in, and the order a broker would replay them in. A row from here can be posted to Player Service's own dev endpoint unchanged."
+            "description": "BEYOND CONTRACT. The envelopes this service published for the session, oldest first - the order they happened in, and the order the relay sends them in. A row from here can be posted to Player Service's own dev endpoint unchanged."
           },
           "response": [],
           "event": [
@@ -1741,7 +1741,7 @@
     },
     {
       "name": "sessions (beyond contract)",
-      "description": "Read and admin endpoints that are NOT in the CPR contract. Nothing else in the system calls them; they exist for the Lab 1 CRUD requirement and to make the outbox inspectable while no broker exists.",
+      "description": "Read and admin endpoints that are NOT in the CPR contract. Nothing else in the system calls them; they exist for the Lab 1 CRUD requirement and to make the outbox inspectable while the relay does not exist.",
       "item": [
         {
           "name": "GET /sessions -> 200 (all)",

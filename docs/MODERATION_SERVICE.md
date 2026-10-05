@@ -18,14 +18,14 @@ Owner: Racovita Dumitru. Source: the private `moderation-service` repository, li
 | --- | --- |
 | Language / framework | Go 1.25, Gin |
 | Container port | `8085` (host `8085`) |
-| Base path | `/api/v1` |
+| Base path | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/moderation/...` |
 | Health | `GET /health` (liveness), `GET /health/ready` (readiness: postgres, pending outbox events) |
 | Database | PostgreSQL 17, `moderation_db` (own container, host port `5436`) |
-| Events | `decision.recorded` is written to the outbox table in the same transaction as the decision and listed by `GET /api/v1/admin/events`. No broker client: the team is building its own message broker |
-| Publishes | `decision.recorded` |
-| Consumes | nothing |
-| Calls | Server Moderation Session, Applicant, Credential, University Record, Server Rules; each one is replaced by a built-in mock when its URL is empty |
-| Authentication | `Authorization: Bearer <jwt>` for players (signature not verified, `sub` is the player id); `X-Service-Token` for `/admin/*` and `/dev/*` |
+| Events | `decision.recorded` is written to the outbox table in the same transaction as the decision and listed by `GET /api/v1/admin/events`. The contract has a relay push it through the Gateway to `{gateway}/api/v1/session/events`; **`0.2.0` has no relay yet** |
+| Produces | `decision.recorded`, pushed to Server Moderation Session |
+| Receives | nothing |
+| Calls | Server Moderation Session, Applicant, Credential, University Record, Server Rules - all through the Gateway, with `X-Service-Token`; each one is replaced by a built-in mock when its URL is empty |
+| Authentication | Contract: checked by the Gateway; the service reads the calling player from `X-Player-Id` and validates no token. **`0.2.0` reads `Authorization: Bearer <jwt>` (unverified) and checks `X-Service-Token` on `/admin/*` and `/dev/*` itself** - see the divergences |
 | Docker image | `dmracovit/moderation-service:0.2.0` (also `:latest`), public on Docker Hub, linux/amd64 and linux/arm64 |
 
 ## Running it
@@ -70,17 +70,18 @@ naming the variable.
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
 | `DATABASE_URL` | - | yes | PostgreSQL connection string (pgx format) |
-| `SERVICE_TOKEN` | - | yes | Shared secret required on `/api/v1/admin/*` and `/api/v1/dev/*` |
-| `UPSTREAM_SERVICE_TOKEN` | `SERVICE_TOKEN` | no | Sent as `X-Service-Token` to University Record Service, whose `Auth__ServiceToken` it must match |
+| `SERVICE_TOKEN` | - | yes | `0.2.0`: shared secret required on `/api/v1/admin/*` and `/api/v1/dev/*`. Contract: the token this service sends to the Gateway on every outbound call; the Gateway, not the service, checks inbound tokens |
+| `UPSTREAM_SERVICE_TOKEN` | `SERVICE_TOKEN` | no | Sent as `X-Service-Token` - by `0.2.0` only to University Record Service. The contract uses one token for the whole stack and sends it on every outbound call |
 | `APP_PORT` | `8085` | no | HTTP port |
 | `APP_ENV` | `local` | no | `local` / `test` / `development` = text logs and Gin debug; anything else = JSON logs, release mode |
 | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn`, `error` |
 | `DEV_ENDPOINTS` | `false` | no | Mounts `/api/v1/dev/*` (token mint, mock editing). Keep `false` in shared deployments |
 | `SEED_ON_START` | `false` | no | Seed demo data when the ban list is empty |
 | `MIGRATE_ON_START` | `true` | no | Apply embedded migrations at startup |
-| `REFERENCE_YEAR` | `2026` | no | The calendar year treated as "now" when computing `years_enrolled`; must match the applicant-data services |
-| `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL` | empty | no | Base URL of each peer. Empty = the built-in mock of that peer |
-| `UPSTREAM_TIMEOUT` | `5s` | no | Timeout per peer call |
+| `REFERENCE_YEAR` | `2026` | no | The calendar year treated as "now" when computing `years_enrolled`; must match Applicant, Credential and University Record (the contract's identity model) |
+| `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL` | empty | no | Gateway URL of each peer, e.g. `http://gateway-service:8080/api/v1/session`, `.../applicant`, `.../credential`, `.../university-record`, `.../server-rules`. Empty = the built-in mock of that peer |
+| `UPSTREAM_TIMEOUT` | `5s` | no | Timeout per peer call. Contract: must be below `HTTP_REQUEST_TIMEOUT` (`5s`), e.g. `4s` |
+| `HTTP_REQUEST_TIMEOUT` / `MAX_CONCURRENT_TASKS` | - | contract | Task timeout (`408 REQUEST_TIMEOUT`) and concurrent task limit (`429 TOO_MANY_REQUESTS`). **Not in `0.2.0`** |
 | `DB_CONNECT_TIMEOUT`, `DB_MAX_CONNS`, `HTTP_READ_TIMEOUT`, `HTTP_WRITE_TIMEOUT`, `SHUTDOWN_TIMEOUT` | `30s`, `10`, `10s`, `10s`, `10s` | no | Tuning |
 
 ## HTTP API
@@ -89,9 +90,9 @@ Contract endpoints (see the contract section below for payloads):
 
 | Method | Path | Consumed by | Auth |
 | --- | --- | --- | --- |
-| `POST` | `/api/v1/decisions` | Client (the Moderator) | player JWT |
-| `GET` | `/api/v1/decisions?session_id=&applicant_id=&moderator_id=&limit=&offset=` | Client | player JWT |
-| `GET` | `/api/v1/bans?q=&limit=&offset=` | Client | player JWT |
+| `POST` | `/api/v1/decisions` | Client (the Moderator) | player JWT at the Gateway; `X-Player-Id` here |
+| `GET` | `/api/v1/decisions?session_id=&applicant_id=&moderator_id=&limit=&offset=` | Client | player JWT at the Gateway |
+| `GET` | `/api/v1/bans?q=&limit=&offset=` | Client | player JWT at the Gateway |
 
 Extensions beyond the contract (the CRUD surface of Lab 1):
 
@@ -99,7 +100,7 @@ Extensions beyond the contract (the CRUD surface of Lab 1):
 | --- | --- | --- |
 | `GET` | `/api/v1/decisions/{decision_id}` | One decision. Players never see the snapshot |
 | `GET` | `/api/v1/admin/decisions/{decision_id}` | The same decision **with the snapshot** of the data behind the verdict. Service token only |
-| `GET` | `/api/v1/admin/events?limit=&offset=` | The outbox, oldest first: every `decision.recorded` event with its full envelope, so it can be handed to Server Moderation Session Service until the team's message broker exists |
+| `GET` | `/api/v1/admin/events?limit=&offset=` | The outbox, oldest first: every `decision.recorded` event with its full envelope, so it can be handed to Server Moderation Session Service until the relay exists |
 | `DELETE` | `/api/v1/admin/decisions/{decision_id}` | Removes a decision so a demo scenario can be replayed. Decisions are immutable for players |
 | `POST` | `/api/v1/admin/bans` | `{ "student_id": "FAF20101", "name": "..." }` adds a ban list entry by hand |
 | `PATCH` | `/api/v1/admin/bans/{ban_id}` | `{ "name": "...", "student_id": "..." }` edits a ban list entry; an absent field keeps its value, an empty `student_id` clears it |
@@ -114,7 +115,9 @@ Error codes: `VALIDATION_ERROR` (400), `UNAUTHENTICATED`, `INVALID_SERVICE_TOKEN
 `RULESET_NOT_FOUND`, `DECISION_NOT_FOUND`, `BAN_NOT_FOUND`, `NOT_FOUND` (404), `SESSION_NOT_ACTIVE`,
 `NOT_CURRENT_APPLICANT`, `ALREADY_DECIDED`, `MOCKS_DISABLED` (409), `GRANTED_CHANNELS_REQUIRED`,
 `GRANTED_CHANNELS_NOT_ALLOWED` (422), `DEPENDENCY_UNAVAILABLE`, `INTERNAL_ERROR` (500). All use the
-shared envelope `{ "error": { "code", "message", "details" } }`.
+shared envelope `{ "error": { "code", "message", "details" } }`. Contract, not in `0.2.0`:
+`REQUEST_TIMEOUT` (408), `TOO_MANY_REQUESTS` (429); `INVALID_SERVICE_TOKEN` and
+`SERVICE_TOKEN_REQUIRED` move to the Gateway.
 
 ## Mocks and demo fixtures
 
@@ -135,8 +138,8 @@ ships with eight applicants, one per scenario, and one active session whose Mode
 
 The mock Server Rules implements the example ruleset of the contract (`only-faf-or-teachers`,
 `no-previously-banned`, `first-years-general-only`, `teachers-channel`). Mixed mode works: point
-`APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL` and `UNIVERSITY_RECORD_URL` at the real services and
-leave `SESSION_URL` empty until Server Moderation Session Service exists.
+`APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL` and `SESSION_URL` at the real
+services one by one; the root compose file points all five at them.
 
 The Postman collection in `postman/` of this repository runs every scenario with assertions: set `base_url` and
 `service_token`, run the folders in order.
@@ -145,7 +148,7 @@ The Postman collection in `postman/` of this repository runs every scenario with
 
 1. `GET /sessions/{id}`: the session must be `active`, the caller its Moderator, the applicant the current one. `ruleset_version` is read from it.
 2. Applicant, Credential and University Record are called in parallel; the ban list is checked for the claimed student ID (or the name when there is none).
-3. Facts are built **from the records**, never from the claims: `university_status`, `major`, `year`, `currently_enrolled` from the enrollment list and email groups, `years_enrolled` from the admission year encoded in the student ID (`{MAJOR}{yy}{g}{nn}`), `previously_banned` from the ban list.
+3. Facts are built **from the records**, never from the claims (courses are compared by `code`, the contract's course identifier): `university_status`, `major`, `year`, `currently_enrolled` from the enrollment list and email groups, `years_enrolled` from the admission year encoded in the student ID (`{MAJOR}{yy}{g}{nn}`), `previously_banned` from the ban list.
 4. Server Rules evaluates the facts against the shift's ruleset version.
 5. Expected action, first match wins: a `forged` document or records that belong to another person = `ban`; `admitted: false` or an `expired` document = `reject`; an `inconsistent` or `incomplete` document = `flag`; otherwise `accept` with `allowed_channels`.
 6. `is_correct` compares the Moderator's action (and, for `accept`, the granted channels) with the expected one. Penalty matrix (expected in rows, actual in columns):
@@ -157,7 +160,7 @@ The Postman collection in `postman/` of this repository runs every scenario with
 | **flag** | 15 | 5 | 0 | 10 |
 | **ban** | 30 | 10 | 15 | 0 |
 
-7. Decision, snapshot, ban list entry (for `ban`) and the `decision.recorded` event are written in one transaction. The event stays in the outbox, listed by `GET /api/v1/admin/events`, until the team's message broker delivers it; consumers deduplicate on `event_id`.
+7. Decision, snapshot, ban list entry (for `ban`) and the `decision.recorded` event are written in one transaction. Under the contract a relay pushes it to Session's `POST /api/v1/events`; in `0.2.0` it stays in the outbox, listed by `GET /api/v1/admin/events`. Consumers deduplicate on `event_id`.
 
 ## Storage
 
@@ -182,6 +185,11 @@ otherwise.
 | 2 | `422 GRANTED_CHANNELS_NOT_ALLOWED` is answered when `granted_channels` is sent with an action other than `accept`; the contract only names `GRANTED_CHANNELS_REQUIRED` | the game client |
 | 3 | The ban list lookup uses the claimed student ID when there is one, otherwise the exact name (case-insensitive) | Server Rules receives `previously_banned` computed this way |
 | 4 | The penalty matrix above is this service's reading of "grows with how harmful the mistake is" | Server Moderation Session Service, which adds `penalty` to the session |
+| 5 | **No relay for `decision.recorded`.** The contract pushes it to Session's `POST /api/v1/events`; `0.2.0` only keeps it in the outbox | Server Moderation Session Service, whose score and "current applicant decided" flag never move |
+| 6 | **Peers are called directly, and `X-Service-Token` is sent only to University Record.** The contract routes all five calls through the Gateway with the service token. Pointing the URLs at the Gateway without sending the token gets `403 SERVICE_TOKEN_REQUIRED` on the service-only `GET .../documents/validation` and `POST /rulesets/{v}/evaluations` | Gateway, Credential, Server Rules |
+| 7 | **Course identifier rename.** The contract names it `code` in University Record's `/applicants/{id}/records` (it was `course_code`). Whether the `0.2.0` client and mocks read `course_code` is unverified here; they must read `code` | University Record Service |
+| 8 | **Identity read from the token.** `0.2.0` takes the calling player from `Authorization: Bearer <jwt>` and checks `X-Service-Token` on `/admin/*` and `/dev/*` itself. The Gateway strips both, so through it `POST /decisions` answers `401` and the admin/dev routes `401`/`403`. Under the contract the player comes from `X-Player-Id` and the Gateway alone checks the service token | the game client, demos through the Gateway |
+| 9 | **No task timeout or concurrent task limit** (`408` / `429`); `UPSTREAM_TIMEOUT` equals the 5 s task timeout instead of staying below it; the image is tagged `0.2.0`, not a Lab 2 `2.x.y` | Gateway, Lab 2 grading |
 
 ---
 

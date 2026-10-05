@@ -7,8 +7,8 @@ _"Student ID, please"_ — a Discord-moderation game decomposed into 8 microserv
 contains **no service source code**. It is documentation plus git submodules pointing at each
 service's own private repository.
 
-8 services, 2 per team member; ownership and access rules are in
-`.claude/rules/submodule-management.md`.
+8 services, 2 per team member, plus the shared Gateway (Lab 2, Python); ownership and access rules
+are in `.claude/rules/submodule-management.md`.
 
 ### Check for a service-specific CLAUDE.md
 
@@ -19,6 +19,7 @@ it's there, and if present, follow it in addition to this file for work inside t
 - @applicant-service/CLAUDE.md
 - @credential-service/CLAUDE.md
 - @discord-DMs-service/CLAUDE.md
+- @gateway-service/CLAUDE.md
 - @moderation-service/CLAUDE.md
 - @player-service/CLAUDE.md
 - @server-moderation-session-service/CLAUDE.md

@@ -1419,9 +1419,10 @@ need to clone the (private) service repository to run one.
 | Discord DMs Service | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service) | `8086` | `MONGODB_URI` (MongoDB 7), `SERVICE_TOKEN`; optional `REDIS_URL` (fan-out between instances) |
 | Player Service | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service) | `8087` | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), no broker and no auth - see below |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088` | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL` and `RULES_SERVICE_URL` to reach the real services instead of its stubs - see below |
+| Gateway Service | `d1vinexd/gateway-service` (Docker Hub image is published by CI on the first merge to `main`; not yet available) | `8080` | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md) |
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
-free number: `8081`-`8088` are taken above, and the database containers hold `5433`-`5438`, `6380`,
+free number: `8080`-`8088` are taken above, and the database containers hold `5433`-`5438`, `6380`,
 `27018` and `27019`. Every service listens on `8080` inside its own container except Applicant and
 Credential, which listen on `8081` and `8082`, and Moderation and Discord DMs, which listen on `8085`
 and `8086`.

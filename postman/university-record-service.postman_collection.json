@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "University Record Service",
-    "description": "The dev-replay endpoints (/api/v1/dev/*) dispatch into the exact same handler classes the RabbitMQ consumer uses, so this collection demonstrates the full ingest -> search -> Moderation-view loop without a broker running. Run the 'scenario' folder top to bottom.",
+    "description": "The dev-replay endpoints (/api/v1/dev/*) dispatch into the exact same handler classes POST /api/v1/events will use, so this collection demonstrates the full ingest -> search -> Moderation-view loop without any event producer running. Run the 'scenario' folder top to bottom.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [

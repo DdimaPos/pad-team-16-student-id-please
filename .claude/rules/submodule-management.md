@@ -25,9 +25,8 @@ The session owner is the git user; ask if it does not match a handle.
 After a change in an owned submodule, check each item and report which are missing. Do not push
 images, tags or commits unless asked.
 
-1. Image version bumped per SemVer (README "Versioning Strategy"); MAJOR for a breaking contract
-   change.
-2. Image published to Docker Hub under that tag.
+1. `VERSION` file bumped within the lab's `N.x.y` (README "Versioning Strategy"; Lab 2 = `2.x.y`).
+2. Image published to Docker Hub under that tag and `latest`, by the CI workflow on merge to `main`.
 3. `docker-compose.yml` references the new tag.
 4. README "Deployments" row current (image, host port, env vars).
 5. `docs/<SERVICE>.md` reflects the change.

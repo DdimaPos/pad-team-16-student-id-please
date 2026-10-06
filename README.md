@@ -29,7 +29,7 @@ git submodule update --init --recursive
 
 The system is decomposed following a data ownership principle: for every piece of state, exactly one service is the source of truth and the only service allowed to write it. Other services may read or trigger changes only through that owning service's API. This is why applicant-related data is split into three services (Applicant, Credential, University Record) rather than one - each owns a distinct category of data (identity, documents, hidden institutional records) with a different lifecycle and different access rules, even though they describe the same real-world person.
 
-**Note on applicant initialization:** the topic allows any of Applicant, Credential, or University Record Service to be the first to encounter a new applicant. To keep this from turning into three services writing to each other's data, we resolve it as follows: whichever service is contacted first generates a shared `applicant_id` and publishes an `ApplicantInitialized` event carrying that ID plus the fields it was given. The other two services subscribe to this event and create their own record under the same `applicant_id`, populated only with the fields relevant to them. Each service still only ever writes its own record - there is no cross-service write, only event-driven record creation.
+**Note on applicant initialization:** the topic allows any of Applicant, Credential, or University Record Service to be the first to encounter a new applicant. To keep this from turning into three services writing to each other's data, we resolve it as follows: whichever service is contacted first generates a shared `applicant_id` and pushes an `ApplicantInitialized` event carrying that ID plus the fields it was given to the other two services, which create their own record under the same `applicant_id`, populated only with the fields relevant to them. Each service still only ever writes its own record - there is no cross-service write, only event-driven record creation.
 
 **Note on applicant assignment to sessions:** the topic does not specify how a session acquires its `current_applicant_id`. We resolve this as: when the Moderator requests the next applicant, Server Moderation Session Service calls Applicant Service to generate the next applicant profile, and stores the returned `applicant_id` as `current_applicant_id` for that session.
 
@@ -88,7 +88,11 @@ The system is decomposed following a data ownership principle: for every piece o
 
 The diagram below visualizes the communication paths described above: the Session Layer (Player, Server Moderation Session, Discord DMs) coordinates around an active shift; the Applicant Data group (Applicant, Credential, University Record) stays loosely coupled through a shared `ApplicantInitialized` event instead of direct service-to-service calls; and Moderation Service sits at the center as the only consumer that reads from every data-owning service to produce a decision, which then flows back into the session.
 
+Since Lab 2 a **Gateway** sits in front of all eight services: every REST request - from a client or from another service, events included - enters through it, and it forwards the request to the service that owns the path. The one exception is the chat WebSocket, which the Gateway only negotiates; the client then connects to Discord DMs Service directly. See [Gateway](#gateway).
+
 ![Architecture Diagram](img/Architecture_2.drawio.png)
+
+> **Not yet updated:** the diagram above predates the Gateway and still draws direct arrows between services. It has to be redrawn with the Gateway between the clients and the services, and between the services themselves.
 
 ---
 
@@ -96,7 +100,7 @@ The diagram below visualizes the communication paths described above: the Sessio
 
 ### Languages
 
-We use two languages: **Go** and **C#**.
+The eight services use two languages, **Go** and **C#**. The Gateway, added in Lab 2, is written in **Python** - the language the lab requires for it.
 
 | #   | Service                           | Owner              | Language | Framework                 |
 | --- | --------------------------------- | ------------------ | -------- | ------------------------- |
@@ -108,12 +112,13 @@ We use two languages: **Go** and **C#**.
 | 6   | University Record Service         | Titerez Vladislav  | C#       | ASP.NET Core              |
 | 7   | Moderation Service                | Racovita Dumitru   | Go       | Gin                       |
 | 8   | Discord DMs Service               | Racovita Dumitru   | Go       | Gin + `gorilla/websocket` |
+| 9   | Gateway                           | whole team         | Python   | FastAPI + `httpx`         |
 
 **Why Go for six services.** Most of our services do the same kind of work: receive an HTTP request, call one or two other services, read or write their own database, and answer. Go is built for exactly this. It compiles to one small binary, starts in milliseconds, and goroutines make it simple to call several services at the same time (Moderation Service calls four at once). Go is also quick to learn, which matters because most of the team is picking it up during this course.
 
 **Why C# for the rules and records services.** These two services are about data rules, not traffic. Server Rules answers "does this applicant satisfy rule version 7?" and University Record answers "may this player read the enrollment list?". C# has a strong type system and pattern matching that make such rules explicit in code, and ASP.NET Core has built-in policy-based authorization that expresses "player X may read category Y" directly. Their owner has the most C# experience in the team.
 
-**Trade-off.** Two languages mean two toolchains, two sets of libraries and two ways to write a Dockerfile. We accept that because every service exposes the same interface (REST + JSON, RabbitMQ events), so a Go service and a C# service talk to each other in exactly the same way.
+**Trade-off.** Two languages mean two toolchains, two sets of libraries and two ways to write a Dockerfile. We accept that because every service exposes the same interface (REST + JSON, with events delivered as plain HTTP requests), so a Go service and a C# service talk to each other in exactly the same way.
 
 ### Frameworks and libraries
 
@@ -121,13 +126,12 @@ We use two languages: **Go** and **C#**.
 | ----------- | -------------------------------------- | --------------------- |
 | HTTP server | Gin                                    | ASP.NET Core Web API  |
 | HTTP client | `net/http`                             | `HttpClient`          |
-| RabbitMQ    | `rabbitmq/amqp091-go`                  | `RabbitMQ.Client`     |
 | WebSocket   | `gorilla/websocket` (Discord DMs only) | not needed            |
 | PostgreSQL  | `pgx`                                  | Npgsql + EF Core      |
 | MongoDB     | `mongo-go-driver`                      | `MongoDB.Driver`      |
 | Redis       | `go-redis`                             | `StackExchange.Redis` |
 
-Every service runs in its own Docker container. RabbitMQ runs as one shared container.
+Every service runs in its own Docker container. There is no message broker: services call each other directly.
 
 ### Databases
 
@@ -150,52 +154,59 @@ We use three engines. PostgreSQL is the default. MongoDB and Redis are used only
 
 ## Communication Patterns
 
-Services talk to each other in three ways. Each way has one rule for when to use it.
+Every REST request goes through the **Gateway**: a client calling a service, and a service calling another service, alike. A caller never addresses a service directly; it addresses `{gateway}/api/v1/<service>/...` and the Gateway forwards the request to that service as `/api/v1/...` (see [Gateway](#gateway)). On that common path, services talk to each other in three ways. Each way has one rule for when to use it.
 
 ### Rule 1. You need an answer right now: REST (HTTP + JSON)
 
-Example: Session Service needs the next applicant before it can continue. It calls `POST /api/v1/applicants/next` on Applicant Service and waits for the reply.
+Example: Session Service needs the next applicant before it can continue. It calls `POST {gateway}/api/v1/applicant/applicants/next`; the Gateway forwards it to Applicant Service as `POST /api/v1/applicants/next`, and Session waits for the reply.
 
-Every service exposes a REST API. Services call each other through the same API a client would use. We chose REST over gRPC because JSON is easy to read, to test with curl or Postman, and to debug across two languages. gRPC would be faster, but nothing in Lab 0 needs that speed. If the four parallel calls of Moderation Service ever become a bottleneck, that path is the candidate for gRPC.
+Every service exposes a REST API, and services call each other through the same API a client would use, through the same Gateway. We chose REST over gRPC because JSON is easy to read, to test with curl or Postman, and to debug across three languages. gRPC would be faster, but nothing in Lab 0 needs that speed. If the four parallel calls of Moderation Service ever become a bottleneck, that path is the candidate for gRPC.
 
-### Rule 2. Something happened and others should know, no reply needed: RabbitMQ event
+### Rule 2. Something happened and others should know, no reply needed: event, pushed over HTTP
 
-Example: a shift ends. Session Service publishes one event, `session.ended`. Player Service reads it and updates XP. Discord DMs Service reads it and archives the channels. Session Service does not wait for either of them and does not need to know who is listening.
+Example: a shift ends. Session Service produces one event, `session.ended`, and pushes it to Player, Discord DMs and University Record. Player Service updates XP, Discord DMs archives the channels. Closing the shift does not wait for any of them.
 
-All events go through one RabbitMQ topic exchange. An event may be delivered twice, so every consumer remembers the `event_id` values it has seen and ignores repeats. This is what makes events safe: if Player Service is down for a minute, the event waits in the queue and XP is still awarded exactly once.
+There is no broker. The producer writes the event to its own outbox table in the same database transaction as the change it announces, and a background relay sends it to every consumer listed in the [event catalog](#event-catalog) - through the Gateway, as `POST {gateway}/api/v1/<consumer>/events` - retrying until each one accepts it. An event may therefore be delivered twice, so every consumer remembers the `event_id` values it has seen and ignores repeats. This is what makes events safe: if Player Service is down for a minute, the event waits in Session's outbox and XP is still awarded exactly once. The full delivery rules are under [Event delivery](#event-delivery).
 
 ### Rule 3. The client must be pushed to: WebSocket (Discord DMs only)
 
-Players chat in channels and must see new messages instantly. Discord DMs Service keeps one WebSocket connection open per player. No other service holds client connections. Channel lists and message history are also available over REST, so a client that reconnects can catch up.
+Players chat in channels and must see new messages instantly. Discord DMs Service keeps one WebSocket connection open per player. No other service holds client connections. The connection is **negotiated through the Gateway but not carried by it**: the client asks the Gateway for a connection, gets back a WebSocket URL with a one-time ticket, and connects to Discord DMs Service directly, so the Gateway is not kept busy in the middle of every chat (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)). Channel lists and message history are also available over REST, through the Gateway, so a client that reconnects can catch up.
 
 ### Every arrow in the diagram and the rule it follows
 
-| Interaction                                                             | Rule                                        | Who calls whom                                           | Why this rule                                                                                              |
-| ----------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Player creates or joins a session                                       | REST                                        | client => Session; Session => Player `GET /players/{id}` | Needs an answer now                                                                                        |
-| Session reports shift results                                           | Event `session.ended`                       | Session => Player                                        | Player updates XP later; closing the shift must not wait for it                                            |
-| Session picks the ruleset for a new shift                               | REST `GET /rulesets/current`                | Session => Server Rules                                  | The shift cannot start without knowing its `ruleset_version`                                               |
-| Session requests the next applicant                                     | REST                                        | Session => Applicant                                     | Needs the `applicant_id` now                                                                               |
-| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized`               | the service contacted first => the other two             | Two listeners, no waiting, no cross-service writes                                                         |
-| Session assigns record scopes to Junior Moderators                      | Event `session.started`                     | Session => University Record                             | Membership and scopes travel together in one event                                                         |
-| Session supplies channel membership                                     | Events `session.started`, `session.ended`   | Session => Discord DMs                                   | Discord DMs creates and archives channels on its own                                                       |
-| Moderator submits a decision                                            | REST `POST /decisions`                      | client => Moderation                                     | The verdict must come back now                                                                             |
-| Session supplies the current applicant                                  | REST `GET /sessions/{id}`                   | Moderation => Session                                    | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
-| Moderation gathers data for the verdict                                 | REST, three calls in parallel               | Moderation => Applicant, Credential, University Record   | All three answers are needed to know what is true about the applicant                                      |
-| Moderation checks the rules                                             | REST `POST /rulesets/{version}/evaluations` | Moderation => Server Rules                               | Needs the verified facts from the three calls above, so it comes after them                                |
-| Moderation reports the outcome                                          | Event `decision.recorded`                   | Moderation => Session                                    | Session updates score and counters; no reply needed                                                        |
-| Players chat during a shift                                             | WebSocket (REST for history)                | client ↔ Discord DMs                                     | Push in real time                                                                                          |
+"`A => GW => B`" means A calls the Gateway, which forwards to B. Paths are the service's own paths; through the Gateway they carry the service prefix (`/api/v1/player/...`).
+
+| Interaction                                                             | Rule                                        | Who calls whom                                                     | Why this rule                                                                                              |
+| ----------------------------------------------------------------------- | ------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
+| Player logs in                                                          | REST `POST /auth/login`                     | client => GW => Player                                             | The client needs a token before anything else                                                              |
+| Player creates or joins a session                                       | REST                                        | client => GW => Session; Session => GW => Player `GET /players/{id}` | Needs an answer now                                                                                        |
+| Session reports shift results                                           | Event `session.ended`                       | Session => GW => Player, University Record `POST /events`          | Player updates XP later; closing the shift must not wait for it                                            |
+| Session picks the ruleset for a new shift                               | REST `GET /rulesets/current`                | Session => GW => Server Rules                                      | The shift cannot start without knowing its `ruleset_version`                                               |
+| Session requests the next applicant                                     | REST                                        | Session => GW => Applicant                                         | Needs the `applicant_id` now                                                                               |
+| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized`               | the service contacted first => GW => the other two `POST /events`  | Two listeners, no waiting, no cross-service writes                                                         |
+| Session assigns record scopes to Junior Moderators                      | Event `session.started`                     | Session => GW => University Record `POST /events`                  | Membership and scopes travel together in one event                                                         |
+| Session supplies channel membership                                     | Events `session.started`, `session.ended`   | Session => GW => Discord DMs `POST /events`                        | Discord DMs creates and archives channels on its own                                                       |
+| Moderator submits a decision                                            | REST `POST /decisions`                      | client => GW => Moderation                                         | The verdict must come back now                                                                             |
+| Session supplies the current applicant                                  | REST `GET /sessions/{id}`                   | Moderation => GW => Session                                        | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
+| Moderation gathers data for the verdict                                 | REST, three calls in parallel               | Moderation => GW => Applicant, Credential, University Record       | All three answers are needed to know what is true about the applicant                                      |
+| Moderation checks the rules                                             | REST `POST /rulesets/{version}/evaluations` | Moderation => GW => Server Rules                                   | Needs the verified facts from the three calls above, so it comes after them                                |
+| Moderation reports the outcome                                          | Event `decision.recorded`                   | Moderation => GW => Session `POST /events`                         | Session updates score and counters; no reply needed                                                        |
+| A player opens the chat                                                 | REST `POST /ws-tickets`, then WebSocket     | client => GW => Discord DMs (ticket); client ↔ Discord DMs (socket) | The Gateway authorizes the connection but does not carry it                                                |
+| Players chat during a shift                                             | WebSocket (REST for history)                | client ↔ Discord DMs; history client => GW => Discord DMs           | Push in real time                                                                                          |
 
 ### Worked example: one applicant from start to finish
 
-1. The Moderator asks for the next applicant. Session calls Applicant over REST. Applicant Service creates the applicant and publishes `applicant.initialized`. Credential and University Record create their own records under the same `applicant_id`.
-2. Junior Moderators look up records. The client calls University Record over REST. Each player only sees the categories assigned to them in `session.started`.
-3. The team discusses in channels through Discord DMs over WebSocket.
-4. The Moderator submits a decision with `POST /api/v1/decisions`. Moderation Service calls Session (is this the current applicant, and which ruleset does the shift use?), then Applicant, Credential and University Record in parallel. From the records it builds the verified facts and sends them to Server Rules. All calls are REST. It computes the correct verdict, compares it with the Moderator's choice, stores the decision and replies.
-5. Moderation publishes `decision.recorded`. Session updates the score and counters.
-6. The shift ends. Session publishes `session.ended`. Player updates XP and history; Discord DMs archives the channels; University Record closes the juniors' access.
+Every request below passes through the Gateway, which checks the caller's credential before forwarding (see [Authentication](#authentication)).
 
-**Note on University Record access.** A player's request is limited to the categories assigned to that player in the session. Moderation Service needs all categories to compute the correct verdict, so it calls University Record with an internal service token that has full read access. That token never reaches a client.
+0. Each player logs in through Player Service and receives a JWT; the client sends it with every request.
+1. The Moderator asks for the next applicant. Session calls Applicant over REST. Applicant Service creates the applicant and pushes `applicant.initialized` to Credential and University Record, which create their own records under the same `applicant_id`.
+2. Junior Moderators look up records. The client calls University Record over REST. Each player only sees the categories assigned to them in `session.started`.
+3. The team discusses in channels: each client obtains a ticket through the Gateway and holds a WebSocket open directly to Discord DMs.
+4. The Moderator submits a decision with `POST /api/v1/decisions`. Moderation Service calls Session (is this the current applicant, and which ruleset does the shift use?), then Applicant, Credential and University Record in parallel. From the records it builds the verified facts and sends them to Server Rules. All calls are REST. It computes the correct verdict, compares it with the Moderator's choice, stores the decision and replies.
+5. Moderation pushes `decision.recorded` to Session. Session updates the score and counters.
+6. The shift ends. Session pushes `session.ended` to Player, Discord DMs and University Record. Player updates XP and history; Discord DMs archives the channels; University Record closes the juniors' access.
+
+**Note on University Record access.** A player's request is limited to the categories assigned to that player in the session. Moderation Service needs all categories to compute the correct verdict, so it calls University Record's service-only endpoint with the service token. The Gateway checks that token and strips it; University Record recognises the service call by the route and by the absence of `X-Player-Id` (see [Authentication](#authentication)). The token never reaches a client.
 
 ---
 
@@ -223,7 +234,7 @@ What it costs, and what we do about it:
 
 #### Event catalog
 
-Exchange `student-id.events`, type `topic`. Every event has the same envelope; only `payload` differs.
+Every event has the same envelope; only `payload` differs.
 
 ```json
 {
@@ -236,33 +247,188 @@ Exchange `student-id.events`, type `topic`. Every event has the same envelope; o
 }
 ```
 
-| Routing key             | Published by                                                          | Consumed by                            | Payload (key fields)                                                                                                                  |
-| ----------------------- | --------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `applicant.initialized` | the first of Applicant, Credential, University Record to be contacted | the other two                          | `applicant_id`, `session_id`, `initialized_by`, `difficulty`, `claimed { profile }`, `actual { profile }`                             |
-| `session.started`       | Server Moderation Session                                             | University Record, Discord DMs         | `session_id`, `moderator_id`, `junior_moderators[] { player_id, record_scopes[] }`, `ruleset_version`, `started_at`                   |
-| `session.ended`         | Server Moderation Session                                             | Player, Discord DMs, University Record | `session_id`, `score`, `penalties`, `applications_processed`, `players[] { player_id, xp_delta, disciplinary_actions[] }`, `ended_at` |
-| `decision.recorded`     | Moderation                                                            | Server Moderation Session              | `decision_id`, `session_id`, `applicant_id`, `moderator_id`, `action`, `is_correct`, `expected_action`, `violated_rules[]`, `penalty` |
+| `event_type`            | Produced by                                                           | Pushed to                              | Payload (key fields)                                                                                                                            |
+| ----------------------- | --------------------------------------------------------------------- | -------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `applicant.initialized` | the first of Applicant, Credential, University Record to be contacted | the other two                          | `applicant_id`, `session_id`, `initialized_by`, `difficulty`, `claimed { profile }`, `actual { profile }`                                       |
+| `session.started`       | Server Moderation Session                                             | University Record, Discord DMs         | `session_id`, `moderator_id`, `junior_moderators[] { player_id, record_scopes[] }`, `ruleset_version`, `started_at`                             |
+| `session.ended`         | Server Moderation Session                                             | Player, Discord DMs, University Record | `session_id`, `score`, `penalties`, `applications_processed`, `players[] { player_id, role, xp_delta, disciplinary_actions[] }`, `ended_at`     |
+| `decision.recorded`     | Moderation                                                            | Server Moderation Session              | `decision_id`, `session_id`, `applicant_id`, `moderator_id`, `action`, `is_correct`, `expected_action`, `violated_rules[]`, `penalty`           |
+
+`role` in `session.ended` is `moderator` or `junior_moderator`. A consumer that does not need it ignores it.
+
+#### Event delivery
+
+Events travel from the producer to each consumer over HTTP, through the Gateway like every other REST request. There is no broker.
+
+**Producer side.**
+
+1. The event is written to the producer's own outbox table **in the same database transaction** as the state change it announces, so an event never exists without its change, nor the reverse.
+2. A background relay sends the envelope, unchanged, to **every consumer listed in the catalog above** as `POST {gateway}/api/v1/<consumer>/events`, with the service token (see [Authentication](#authentication)). The producer is configured with each consumer's Gateway URL; the variable names are each service's own and are listed in its `docs/` reference.
+3. Delivery state is tracked per consumer: one consumer being down never holds back the others.
+4. The answer - the consumer's, or the Gateway's when it could not reach the consumer - decides what happens next:
+
+| Answer                                                                                    | Producer does                                                      |
+| ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| `2xx`                                                                                     | Marks the event delivered to that consumer                         |
+| `422 INVALID_EVENT`                                                                       | Parks it for that consumer and logs it - a retry cannot succeed    |
+| Any other `4xx` (`408`, `429`, `502` from the Gateway included), any `5xx`, a timeout or a refused connection | Retries later with backoff (capped at 30 s), until it gets a `2xx` |
+
+The Gateway forwards each push **once** and never retries it on the producer's behalf; retrying is the producer relay's job alone, so the two never multiply.
+
+**Consumer side - `POST /api/v1/events`.** Every service that consumes at least one event exposes this one endpoint (reached as `{gateway}/api/v1/<consumer>/events`).
+
+- **Payload:** the envelope. **Auth:** service token only, checked by the Gateway.
+- **Response:** `200 OK` with `{ "event_id": "...", "duplicate": false }`. A repeat of an `event_id` already applied answers `200` with `"duplicate": true` and changes nothing - a repeat is the dedup working, not an error.
+- The consumer records the `event_id` **in the same transaction** as the change the event causes, and answers `2xx` only after that transaction commits.
+- `422 INVALID_EVENT` when the envelope cannot be parsed, its `event_type` is not one this service consumes, its `version` is unknown to this service, or its payload fails validation.
+- `500` for a failure that may succeed later (its own database is down); the producer will retry.
+
+**Guarantees.** Delivery is at-least-once: a crash between a successful push and the outbox update sends the event again. There is **no ordering guarantee** between events, even from one producer: a consumer must cope, for example, with `session.ended` arriving before `session.started`.
+
+**Versions.** `version` in the envelope is bumped by one for a breaking payload change of that event. Consumers reject a version they do not know with `422 INVALID_EVENT`.
+
+#### Gateway
+
+The Gateway is the single entry point of the system (Lab 2). Clients **and services** send every REST request to it; nothing calls a service directly. It owns no data and produces no events. Its own reference is [`docs/GATEWAY.md`](docs/GATEWAY.md).
+
+**Address.** Container `gateway-service`, port `8080` inside `student-id-net` (`http://gateway-service:8080`), published on host port `8080`.
+
+**Route scheme.** `{gateway}/api/v1/<prefix>/<rest>` is forwarded to the service behind `<prefix>` as `/api/v1/<rest>` - the prefix segment is removed, so every service keeps the paths documented under [Endpoints](#endpoints). Example: `GET {gateway}/api/v1/server-rules/rulesets/current?difficulty=3` reaches `GET http://server-rules-service:8080/api/v1/rulesets/current?difficulty=3`. The prefix also tells apart paths that exist in several services (`POST /applicants/next`, `POST /events`, `/health`).
+
+| Prefix              | Service                           | Forwarded to                              |
+| ------------------- | --------------------------------- | ----------------------------------------- |
+| `player`            | Player Service                    | `http://player-service:8080`              |
+| `session`           | Server Moderation Session Service | `http://session-service:8080`             |
+| `applicant`         | Applicant Service                 | `http://applicant-service:8081`           |
+| `credential`        | Credential Service                | `http://credential-service:8082`          |
+| `server-rules`      | Server Rules Service              | `http://server-rules-service:8080`        |
+| `university-record` | University Record Service         | `http://university-record-service:8080`   |
+| `moderation`        | Moderation Service                | `http://moderation-service:8085`          |
+| `discord-dms`       | Discord DMs Service               | `http://discord-dms-service:8086`         |
+
+A service's own health check is `{gateway}/api/v1/<prefix>/health` (forwarded to `/health`). The Gateway's own is `GET {gateway}/health`.
+
+**Forwarding.** Method, path remainder, query string and body are forwarded unchanged. The status, headers and body of the service's answer are returned unchanged - a service's own errors reach the caller as the service wrote them. The Gateway changes only the credential headers (see [Authentication](#authentication)) and adds `X-Request-ID` when the caller sent none.
+
+**What the Gateway answers itself**, always in the shared error envelope:
+
+| Situation                                                    | Answer                                                    |
+| ------------------------------------------------------------ | --------------------------------------------------------- |
+| Unknown prefix                                               | `404 NOT_FOUND`                                           |
+| Missing or unusable credential, wrong service token          | `401` / `403` - see [Authentication](#authentication)     |
+| The service is unreachable (connection refused, DNS failure) | `502 BAD_GATEWAY`                                         |
+| The service did not answer within the Gateway's timeout      | `408 REQUEST_TIMEOUT`                                     |
+| The Gateway's own concurrent task limit is reached           | `429 TOO_MANY_REQUESTS`                                   |
+
+In all of these the request either never reached the service or its answer was lost; callers treat `408`, `429` and `502` as "may be retried", except for the non-idempotent `POST`s listed under [API conventions](#api-conventions).
+
+**No retries.** The Gateway forwards a request once. It never retries on its own, so a non-idempotent call such as `POST /applicants/next` is never duplicated by it.
+
+**Development and admin routes.** Paths under `/api/v1/<prefix>/dev/*` and `/api/v1/<prefix>/admin/*` are beyond the contract. The Gateway forwards them only with a valid service token, never on a player token alone.
 
 #### API conventions
 
 These apply to every endpoint listed in the next section.
 
-- Base path `/api/v1`. Resource names are plural nouns. JSON fields are `snake_case`. Timestamps are ISO 8601 in UTC. Identifiers are UUID strings.
-- Errors always look the same and use the matching HTTP status (400, 401, 403, 404, 409, 422, 500): `{ "error": { "code": "APPLICANT_NOT_FOUND", "message": "...", "details": {} } }`.
+- Base path `/api/v1` inside every service; through the Gateway, `/api/v1/<prefix>` (see [Gateway](#gateway)). Resource names are plural nouns. JSON fields are `snake_case`. Timestamps are ISO 8601 in UTC. Identifiers are UUID strings.
 - Lists are paginated with `?limit=&offset=` and return `{ "items": [], "total": 0 }`.
-- A request from a player carries the player's JWT. A request from another service carries a service token, so the receiver can tell the two apart (University Record relies on this).
-- Every service exposes `GET /health`.
+- A `POST` that creates something (`POST /applicants/next`, `POST /sessions`, `POST /decisions`) is not idempotent. Callers must not retry it automatically on a timeout, and the Gateway never does.
+- Every service exposes `GET /health`. It needs no credential.
+
+##### Authentication
+
+Credentials are checked **at the Gateway, and only there**. Services never see the caller's token.
+
+**What callers send to the Gateway** - each request carries exactly one credential:
+
+| Caller            | Header                         | Meaning                                                                                        |
+| ----------------- | ------------------------------ | ---------------------------------------------------------------------------------------------- |
+| A player (client) | `Authorization: Bearer <jwt>`  | A JWT issued by Player Service's [`POST /api/v1/auth/login`](#post-apiv1authlogin---consumed-by-client) |
+| Another service   | `X-Service-Token: <token>`     | One shared secret, the same value in every service and the Gateway (`SERVICE_TOKEN` in `.env`) |
+
+**The JWT.** Signed with HS256 using the shared secret `JWT_SECRET`, known only to Player Service (which signs) and the Gateway (which verifies). Claims: `sub` = the player's `player_id` (UUID), `iat`, `exp`. The Gateway rejects a token with a bad signature, an expired `exp` or a non-UUID `sub`.
+
+**What the Gateway does before forwarding:**
+
+1. A request to a public route (below) is forwarded without a credential check.
+2. Otherwise it validates the credential the route accepts (table below). Missing, unusable or expired player token: `401 UNAUTHENTICATED`. Wrong service token: `401 INVALID_SERVICE_TOKEN`. A service-only route without a service token: `403 SERVICE_TOKEN_REQUIRED`. In all three cases no service is called.
+3. It **removes** `Authorization` and `X-Service-Token`, and removes any `X-Player-Id` the caller sent.
+4. For a request authenticated with a player token, it sets **`X-Player-Id: <sub>`**. A request authenticated with the service token carries no `X-Player-Id`.
+
+**What services receive.** Only `X-Player-Id`. When an endpoint needs to know which player is calling, it reads that header and nothing else; a service validates no token. A request without `X-Player-Id` on a route that needs a calling player answers `401 UNAUTHENTICATED`. Services trust the header because nothing but the Gateway can reach them - their ports are not published (see [Deployments](#deployments)). The one connection that bypasses the Gateway, the Discord DMs WebSocket, is authorized with a one-time ticket instead (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)).
+
+**A service calling another service** sends `X-Service-Token`, never a player's token or a player's `X-Player-Id`.
+
+**Public routes** (no credential): `POST /api/v1/player/auth/login`, `POST /api/v1/player/players` (registration, beyond the contract), `GET /health` of the Gateway and `GET /api/v1/<prefix>/health`.
+
+Which credential each contract endpoint accepts, enforced by the Gateway:
+
+| Accepts                  | Endpoints                                                                                                                                                                                                                                                                  |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **None (public)**        | `POST /auth/login` (Player), the health checks                                                                                                                                                                                                                              |
+| **Service token only**   | `POST /applicants/next` (Applicant, Credential, University Record), `GET /applicants/{id}/documents/validation`, `GET /applicants/{id}/records`, `GET /rulesets/current`, `POST /rulesets/{version}/evaluations`, `POST /events` (every consumer)                      |
+| **Player or service**    | `GET /players/{id}`, `GET /sessions/{id}`, `GET /applicants/{id}` (Applicant)                                                                                                                                                                                              |
+| **Player only**          | every other contract endpoint: the session actions, `GET /applicants/{id}/documents`, `GET /rulesets/{version}`, `GET /records/{category}`, `POST`/`GET /decisions`, `GET /bans`, `POST /ws-tickets`, the Discord DMs channel and message endpoints                     |
+
+`GET /ws` (Discord DMs) is not reached through the Gateway at all; it takes a ticket.
+
+##### Errors
+
+Every error has the same body and uses the matching HTTP status - from a service and from the Gateway alike:
+
+```json
+{ "error": { "code": "APPLICANT_NOT_FOUND", "message": "...", "details": {} } }
+```
+
+`details` is always an object, never `null`. `message` is for humans; clients branch on `code` only.
+
+These codes are shared by every service and the Gateway, and mean the same everywhere. "Who" says who answers them:
+
+| Status | `code`                   | Who                  | When                                                                                                                          |
+| ------ | ------------------------ | -------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `400`  | `VALIDATION_ERROR`       | service, Gateway     | Anything malformed: a body that is not JSON or misses a field, a path id that is not a UUID, a bad query parameter. `details` names the field |
+| `401`  | `UNAUTHENTICATED`        | Gateway (service when `X-Player-Id` is missing) | A route that needs a calling player got no valid player token: missing, malformed, bad signature, expired         |
+| `401`  | `INVALID_SERVICE_TOKEN`  | Gateway              | `X-Service-Token` is present but wrong                                                                                        |
+| `401`  | `INVALID_CREDENTIALS`    | Player Service       | `POST /auth/login` only: unknown username or wrong password                                                                   |
+| `403`  | `SERVICE_TOKEN_REQUIRED` | Gateway              | A service-only route was called without `X-Service-Token`                                                                     |
+| `404`  | `NOT_FOUND`              | service, Gateway     | No such route, or (Gateway) no such prefix. A missing resource uses its own code (`SESSION_NOT_FOUND`, ...)                   |
+| `405`  | `METHOD_NOT_ALLOWED`     | service, Gateway     | Known path, wrong method                                                                                                      |
+| `408`  | `REQUEST_TIMEOUT`        | service, Gateway     | The task ran longer than the [task timeout](#task-timeout-and-concurrent-task-limit) and was stopped. **Nothing was changed** |
+| `422`  | `INVALID_EVENT`          | service              | `POST /events` only - see [Event delivery](#event-delivery)                                                                   |
+| `429`  | `TOO_MANY_REQUESTS`      | service, Gateway     | The [concurrent task limit](#task-timeout-and-concurrent-task-limit) is reached. **Nothing was changed.** Comes with `Retry-After` (seconds) |
+| `500`  | `DEPENDENCY_UNAVAILABLE` | service              | A service or database this endpoint needs did not answer, or answered `408`/`429`/`502`/`5xx`. **Nothing was changed.** `details.dependency` names it |
+| `500`  | `INTERNAL_ERROR`         | service, Gateway     | Anything else                                                                                                                 |
+| `502`  | `BAD_GATEWAY`            | Gateway              | The service behind the prefix is unreachable                                                                                  |
+
+- `422` is reserved for the endpoint-specific codes listed under each endpoint (`INVALID_DIFFICULTY`, `MODERATOR_NOT_IN_SESSION`, ...): the request is well-formed, but its content is not acceptable. A malformed request is always `400 VALIDATION_ERROR`, never `422`.
+- `409` is for a request that is valid but conflicts with the current state (`SESSION_NOT_IN_LOBBY`, `ALREADY_DECIDED`, ...).
+- A service that gets a contract error code from a peer it calls may pass it on unchanged (Session passes on `404 PLAYER_NOT_FOUND`). Any other failure of a peer - including the Gateway's `408`, `429` and `502` - becomes `500 DEPENDENCY_UNAVAILABLE`.
+
+##### Task timeout and concurrent task limit
+
+Every service and the Gateway bound how long one task may run and how many may run at once (Lab 2). A **task** is one inbound HTTP request, `POST /events` included. Background work (the outbox relay) is not counted; it already backs off on its own.
+
+| Setting                | Variable               | Default                     | When reached                                                                 |
+| ---------------------- | ---------------------- | --------------------------- | ---------------------------------------------------------------------------- |
+| Task timeout           | `HTTP_REQUEST_TIMEOUT` | `5s` in a service, `10s` in the Gateway | The task is cancelled, its transaction rolled back: `408 REQUEST_TIMEOUT` |
+| Concurrent task limit  | `MAX_CONCURRENT_TASKS` | chosen per service          | A new task is refused at once, before any work: `429 TOO_MANY_REQUESTS` + `Retry-After` |
+
+- **The outer layer never gives up first:** client timeout > Gateway timeout (`10s`) > service timeout (`5s`) > that service's timeout for its own outgoing calls. A service that calls peers sets its outgoing timeout below its own `HTTP_REQUEST_TIMEOUT`, so it can still answer `500 DEPENDENCY_UNAVAILABLE` before its own deadline.
+- **Health endpoints are exempt** from the concurrent limit, so a busy service is not restarted by its orchestrator.
+- The variable names are shared. The C# services read the same names from the environment, or map them to their own configuration keys and say so in their `docs/` reference.
 
 ### Endpoints
 
-For every service this section lists three things: the endpoints it **calls** in other services, the endpoints it **offers**, and the **events** it publishes or listens to. Paths, field names and errors follow the API conventions above.
+For every service this section lists three things: the endpoints it **calls** in other services, the endpoints it **offers**, and the **events** it produces or receives. Paths, field names and errors follow the API conventions above.
+
+**Paths are the service's own.** Every caller - client or service - reaches them through the Gateway with the service's prefix: `GET /api/v1/players/{player_id}` of Player Service is called as `GET {gateway}/api/v1/player/players/{player_id}`. See [Gateway](#gateway).
 
 How to read it:
 
-- **Client** means the player's game client. Only the client endpoints that start or feed a flow between services are listed here. Account features (register, login, friends, profile editing) will be added when the client is designed.
-- **Who is calling.** Authentication is out of scope for now. When an endpoint needs to know which player is calling (for example, "only the Moderator may do this"), it takes the `player_id` from the player's JWT, as the API conventions say. That player is called "the calling player" below.
-- **Errors.** Each endpoint lists only its own error codes. On top of those, any endpoint can answer `400 VALIDATION_ERROR` for a malformed request, or `500 DEPENDENCY_UNAVAILABLE` when a service it needs does not answer. In that second case nothing is changed.
-- **Events** always use the common envelope from the event catalog, so only the `payload` is shown.
+- **Client** means the player's game client. Only the client endpoints that start or feed a flow between services are listed here, plus login, which every flow needs. Other account features (register, friends, profile editing) are beyond the contract.
+- **Who is calling.** When an endpoint needs to know which player is calling (for example, "only the Moderator may do this"), it reads the `player_id` from the `X-Player-Id` header the Gateway sets after validating the player's JWT, as [Authentication](#authentication) says. That player is called "the calling player" below. Which credential each endpoint accepts is fixed in the same section.
+- **Errors.** Each endpoint lists only its own error codes. The shared codes in [Errors](#errors) (`400 VALIDATION_ERROR`, `401`, `403 SERVICE_TOKEN_REQUIRED`, `408`, `429`, `500 DEPENDENCY_UNAVAILABLE`, ...) can come from any endpoint and are not repeated.
+- **Events** always use the common envelope from the event catalog, so only the `payload` is shown. "Pushed to X" means the producer sends it to X's `POST /api/v1/events`, through the Gateway, as described in [Event delivery](#event-delivery); a consumer's `POST /api/v1/events` is not repeated under its exposed endpoints.
 - `GET /health` exists in every service and is not repeated below.
 
 #### Shared values
@@ -281,6 +447,8 @@ These values are used by more than one service, so they are defined once here.
 | server channels (what an accepted applicant may enter) | `general`, `dark-memes`, `groapa`, `teachers`, `alumni`; a ruleset may add more                                                                                                        |
 | moderator channels (in Discord DMs)                    | `general-mod-chat`, `enrollment-check`, `faculty-check`, `course-registration`                                                                                                         |
 | `difficulty`                                           | integer from `1` (easy) to `5` (hard)                                                                                                                                                  |
+| course `code`                                          | 2-4 uppercase letters, `^[A-Z]{2,4}$` (`POO`, `SDA`, `PAD`). The identifier of a course everywhere - see [Courses](#courses)                                                           |
+| email `groups`                                         | `{major}-students` (`faf-students`, `ia-students`, ...), the academic group `{major}-{yy}{g}` derived from the student ID (`faf-231`), `teaching-assistants`, `staff`, `alumni`         |
 
 **Applicant profile.** This is the shape of what an applicant says about themselves. It is used by Applicant Service and inside the `applicant.initialized` event (both `claimed` and `actual` have this shape):
 
@@ -292,7 +460,7 @@ These values are used by more than one service, so they are defined once here.
   "major": "FAF",
   "year": 4,
   "university_status": "faf_student",
-  "courses": ["PAD", "ELSE-NET"],
+  "courses": ["PAD", "SIS"],
   "role": "student"
 }
 ```
@@ -320,8 +488,9 @@ identifier. Parsers are deliberately tolerant: a service never rejects a peer's 
 its shape, it only declines to interpret it.
 
 **`REFERENCE_YEAR` is `2026`.** It is the calendar year the applicant-data services treat as
-"now", and all three must be configured with the same value, or perfectly honest applicants
-will look like liars. It matches the first component of `academic_year` (`"2026-2027"`).
+"now". Applicant, Credential, University Record and Moderation (which derives `years_enrolled`
+from it) must all be configured with the same value, or perfectly honest applicants will look
+like liars. It matches the first component of `academic_year` (`"2026-2027"`).
 
 **Admission year and study year are independent.** Neither is derived from the other: in the
 spring of 2026 someone admitted in 2025 is a first-year, and in the autumn of the same calendar
@@ -362,11 +531,36 @@ applicant it ingested from `applicant.initialized`, and registers the addresses 
 An alumnus is the case the old one-line rule got wrong: they carry a student ID and a major,
 but no current study year and no course registrations.
 
+##### Courses
+
+A course is identified by its `code` alone: 2-4 uppercase letters (`^[A-Z]{2,4}$`), the
+abbreviation of a lecture in the study programme (`POO`, `SDA`, `PAD`). Every service matches,
+stores and searches courses by `code`; `title` and any other descriptive data (description,
+professor, schedule) is informative only and may differ slightly between services.
+
+The catalog is [`shared/courses.json`](shared/courses.json) in this repository - one row per
+lecture of a programme:
+
+```json
+{ "code": "POO", "title": "Programarea Orientată pe Obiecte", "major": "FAF", "year": 2, "semester": "autumn" }
+```
+
+- The same `code` under several majors (`SDA` for FAF, IA and SC) is one course that belongs to
+  several curricula.
+- A `courses` list in a profile holds codes from the catalog rows of that person's own `major`
+  and `year`. A code outside them is a lie that the catalog alone can prove.
+- **Every service that generates or verifies courses - Applicant, Credential and University
+  Record - ships a byte-identical copy of this file.** A change to it is a contract change for all
+  three at once, like `REFERENCE_YEAR`.
+- A fabricated course (a liar claiming a lecture that does not exist) uses a code in the **same
+  format** (`QBIT`), so it is not visible at a glance, and never one that is in the catalog. Each
+  generating service keeps its own list of such codes; they are not shared.
+
 #### Player Service
 
 ##### Consumed API endpoints
 
-None. Player Service never calls other services; it only listens to `session.ended`.
+None. Player Service never calls other services; it only receives `session.ended`.
 
 ##### Exposed API endpoints
 
@@ -392,6 +586,35 @@ None. Player Service never calls other services; it only listens to `session.end
 
 **Usage.** Private data (email, password hash, friends list, disciplinary log) is never returned here.
 
+###### `POST /api/v1/auth/login` - consumed by Client
+
+**Description.** Exchanges a player's username and password for the JWT every other request needs. Player Service owns the credentials, so it is the token issuer. Public route: reached as `POST {gateway}/api/v1/player/auth/login` without any credential.
+
+**Payload.**
+
+```json
+{
+  "username": "dima_mod",
+  "password": "..."
+}
+```
+
+**Response.** `200 OK`
+
+```json
+{
+  "access_token": "<jwt>",
+  "token_type": "Bearer",
+  "expires_in": 3600
+}
+```
+
+**Usage.**
+
+- The token is signed with HS256 using `JWT_SECRET`, shared only with the Gateway. Claims: `sub` = `player_id`, `iat`, `exp` (`expires_in` seconds later). See [Authentication](#authentication).
+- The client sends it as `Authorization: Bearer <access_token>` on every later request. The Gateway validates it and passes the player on as `X-Player-Id`; no service ever sees the token.
+- Errors: `401 INVALID_CREDENTIALS` for an unknown username or a wrong password - the same code for both, so the answer does not reveal which usernames exist.
+
 ###### Level and XP
 
 `level` is derived from `xp`, never stored: `level = xp / 400 + 1`, capped at 10. The step and the
@@ -405,36 +628,44 @@ A total XP is floored at zero, so the minimum level is always 1.
 ###### Endpoints beyond this contract
 
 Player Service also exposes register, list, profile read/edit, delete, shift history, disciplinary
-log and friends endpoints, plus a development endpoint that applies a `session.ended` event without
-a broker. They are not part of this contract and may change without amending it - see
-[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md). No endpoint of the service requires
-authentication, and none returns a player's email.
+log and friends endpoints, plus a development endpoint that applies a `session.ended` event. They
+are not part of this contract and may change without amending it - see
+[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md). No endpoint returns a player's email.
 
-##### Message queue events
+**Not yet wired:** the published image has no `POST /api/v1/auth/login` and no task timeout or
+concurrent limit, and some of its validation errors use codes other than those in [Errors](#errors)
+(`INVALID_PLAYER_ID`, `MALFORMED_BODY`, `422 VALIDATION_ERROR`) - see the divergences in
+[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md).
 
-**Published:** none.
+##### Events
 
-**Consumed:**
+**Produced:** none.
 
-- `session.ended` - published by Server Moderation Session Service  
+**Received:**
+
+- `session.ended` - from Server Moderation Session Service  
   For every player in `players[]`, adds `xp_delta` to their XP, recalculates their level, adds the shift to their history and appends any `disciplinary_actions` to their log. The `event_id` is remembered, so the same shift is never counted twice.
 
   An id in `players[]` with no account here is skipped and logged - Session Service decides who was
   in a shift, and one unknown id must not cost the other players their XP.
 
-  **Not yet wired:** Player Service has no broker client, so this event currently reaches it only
-  through `POST /api/v1/dev/events/session-ended` - see [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md).
+  **Not yet wired:** the published image has no `POST /api/v1/events` yet; this event currently
+  reaches it only through `POST /api/v1/dev/events/session-ended` - see
+  [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md).
 
 #### Server Moderation Session Service
 
 ##### Consumed API endpoints
 
-- `GET /api/v1/players/{player_id}` - available in Player Service  
+- `GET /api/v1/players/{player_id}` - available in Player Service, via `{gateway}/api/v1/player`  
   Checks that the player exists and reads their level when they create or join a session.
-- `GET /api/v1/rulesets/current?difficulty={n}` - available in Server Rules Service  
+- `GET /api/v1/rulesets/current?difficulty={n}` - available in Server Rules Service, via `{gateway}/api/v1/server-rules`  
   Picks the ruleset when the shift starts. The returned `version` is stored in the session and used for the whole shift.
-- `POST /api/v1/applicants/next` - available in Applicant Service  
+- `POST /api/v1/applicants/next` - available in Applicant Service, via `{gateway}/api/v1/applicant`  
   Creates the next applicant. The returned `applicant_id` becomes the session's `current_applicant_id`.
+- `POST /api/v1/events` - available in University Record, Discord DMs and Player Service, via `{gateway}/api/v1/<consumer>`  
+  Pushes `session.started` (University Record, Discord DMs) and `session.ended` (Player, Discord DMs,
+  University Record), as described in [Event delivery](#event-delivery).
 
 ##### Exposed API endpoints
 
@@ -510,7 +741,7 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 
 ###### `POST /api/v1/sessions/{session_id}/start` - consumed by Client
 
-**Description.** The creator starts the shift. Session assigns the roles, splits the record categories between the Junior Moderators, picks the ruleset and publishes `session.started`.
+**Description.** The creator starts the shift. Session assigns the roles, splits the record categories between the Junior Moderators, picks the ruleset and produces `session.started`.
 
 **Payload.**
 
@@ -556,7 +787,7 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 
 ###### `POST /api/v1/sessions/{session_id}/end` - consumed by Client
 
-**Description.** The Moderator ends the shift. Session works out the result (final score, penalties, XP for every player, disciplinary actions), stores it and publishes `session.ended`.
+**Description.** The Moderator ends the shift. Session works out the result (final score, penalties, XP for every player, disciplinary actions), stores it and produces `session.ended`.
 
 **Payload.** None (empty body).
 
@@ -602,11 +833,11 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 
 **Response.** `200 OK` with the session object. `404 SESSION_NOT_FOUND` if the session does not exist.
 
-##### Message queue events
+##### Events
 
-**Published:**
+**Produced:**
 
-- `session.started` - consumed by University Record Service, Discord DMs Service  
+- `session.started` - pushed to University Record Service, Discord DMs Service  
   A shift has started. University Record learns which categories each junior may read, and Discord DMs learns who is in the session so it can create the channels.
 
   ```json
@@ -628,25 +859,34 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
   }
   ```
 
-- `session.ended` - consumed by Player Service, Discord DMs Service, University Record Service  
+- `session.ended` - pushed to Player Service, Discord DMs Service, University Record Service  
   The shift is over. Player Service updates progression, Discord DMs archives the channels and University Record closes the juniors' access. The payload is the same as the response of `POST /api/v1/sessions/{session_id}/end` above, without `status`.
 
-**Consumed:**
+**Received:**
 
-- `decision.recorded` - published by Moderation Service  
+- `decision.recorded` - from Moderation Service  
   Increases `applications_processed`, adds points to `score` when the decision was correct, adds `penalty` to `penalties`, and marks the current applicant as decided so the Moderator can ask for the next one.
+
+**Not yet wired:** the published image writes both events to its outbox but has no relay yet, and
+receives `decision.recorded` only through `POST /api/v1/dev/events/decision-recorded`, not
+`POST /api/v1/events`. It identifies the calling player from the Bearer token itself (the contract:
+from `X-Player-Id` only), calls Player, Server Rules and Applicant directly instead of through the
+Gateway, and answers some errors with codes other than those in [Errors](#errors) - see
+[`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md).
 
 #### Applicant Service
 
 ##### Consumed API endpoints
 
-None. Applicant Service never calls other services. It shares new applicants through the `applicant.initialized` event.
+- `POST /api/v1/events` - available in Credential Service and University Record Service, via `{gateway}/api/v1/<consumer>`  
+  Pushes `applicant.initialized` when Applicant Service met the applicant first, as described in
+  [Event delivery](#event-delivery). Applicant Service makes no other call.
 
 ##### Exposed API endpoints
 
 ###### `POST /api/v1/applicants/next` - consumed by Server Moderation Session Service
 
-**Description.** Creates a new applicant for a session. The service makes up two profiles: what the applicant will claim (`claimed`) and who they really are (`actual`). It stores both, publishes `applicant.initialized` so Credential and University Record can create their part, and returns the new `applicant_id`.
+**Description.** Creates a new applicant for a session. The service makes up two profiles: what the applicant will claim (`claimed`) and who they really are (`actual`). It stores both, pushes `applicant.initialized` to Credential and University Record so they can create their part, and returns the new `applicant_id`.
 
 **Payload.**
 
@@ -691,7 +931,7 @@ None. Applicant Service never calls other services. It shares new applicants thr
   "major": "FAF",
   "year": 4,
   "university_status": "faf_student",
-  "courses": ["PAD", "ELSE-NET"],
+  "courses": ["PAD", "QBIT"],
   "role": "student",
   "created_at": "2026-09-10T18:10:00Z"
 }
@@ -699,11 +939,11 @@ None. Applicant Service never calls other services. It shares new applicants thr
 
 `404 APPLICANT_NOT_FOUND` if the applicant does not exist. This can also happen for a moment if another service created the applicant and the event has not arrived yet.
 
-##### Message queue events
+##### Events
 
-**Published:**
+**Produced:**
 
-- `applicant.initialized` - consumed by Credential Service, University Record Service  
+- `applicant.initialized` - pushed to Credential Service, University Record Service  
   A new applicant exists. Sent only when Applicant Service is the first service contacted.
 
   ```json
@@ -719,7 +959,7 @@ None. Applicant Service never calls other services. It shares new applicants thr
       "major": "FAF",
       "year": 4,
       "university_status": "faf_student",
-      "courses": ["PAD", "ELSE-NET"],
+      "courses": ["PAD", "QBIT"],
       "role": "student"
     },
     "actual": {
@@ -735,24 +975,30 @@ None. Applicant Service never calls other services. It shares new applicants thr
   }
   ```
 
-  `claimed` and `actual` have the same fields. If they are equal, the applicant is honest. Every field where they differ is a lie. In this example an outsider pretends to be a second-year FAF student. Every receiver stores only what it needs, and `actual` must never be shown to players.
+  `claimed` and `actual` have the same fields. If they are equal, the applicant is honest. Every field where they differ is a lie. In this example an outsider pretends to be a fourth-year FAF student, and `QBIT` is a course that does not exist. Every receiver stores only what it needs, and `actual` must never be shown to players.
 
-**Consumed:**
+**Received:**
 
-- `applicant.initialized` - published by Credential Service or University Record Service  
-  When another service met the applicant first, Applicant Service stores the profile from `claimed` (and keeps `actual` hidden) under the same `applicant_id`. Events where `initialized_by` is `applicant-service` are its own and are ignored.
+- `applicant.initialized` - from Credential Service or University Record Service  
+  When another service met the applicant first, Applicant Service stores the profile from `claimed` (and keeps `actual` hidden) under the same `applicant_id`. An event whose `initialized_by` is `applicant-service` would be its own; it is never pushed back, and is ignored if it arrives.
+
+**Not yet wired:** the published image (`1.0.0`) neither relays events over HTTP nor exposes
+`POST /api/v1/events`, and has no task timeout or concurrent limit (its request deadline surfaces as
+`500 DEPENDENCY_UNAVAILABLE`, not `408`) - see [`docs/APPLICANT_SERVICE.md`](docs/APPLICANT_SERVICE.md).
 
 #### Credential Service
 
 ##### Consumed API endpoints
 
-None. Credential Service never calls other services. It learns about new applicants from the `applicant.initialized` event.
+- `POST /api/v1/events` - available in Applicant Service and University Record Service, via `{gateway}/api/v1/<consumer>`  
+  Pushes `applicant.initialized` when Credential Service met the applicant first, as described in
+  [Event delivery](#event-delivery). Credential Service makes no other call.
 
 ##### Exposed API endpoints
 
 ###### `POST /api/v1/applicants/next` - consumed by: no service yet
 
-**Description.** Creates a new applicant, starting from the documents they bring (for example, a student ID card that was found or copied). Credential stores the documents, publishes `applicant.initialized` and returns the new `applicant_id`.
+**Description.** Creates a new applicant, starting from the documents they bring (for example, a student ID card that was found or copied). Credential stores the documents, pushes `applicant.initialized` to Applicant and University Record and returns the new `applicant_id`.
 
 **Payload.** Same as in Applicant Service: `{ "session_id": "...", "difficulty": 3 }`.
 
@@ -791,6 +1037,7 @@ None. Credential Service never calls other services. It learns about new applica
         "student_id": "FAF23117",
         "academic_year": "2026-2027",
         "year": 4,
+        "confirmation_number": "FCIM-2026-04821",
         "issued_at": "2026-09-01"
       }
     },
@@ -808,7 +1055,22 @@ None. Credential Service never calls other services. It learns about new applica
 }
 ```
 
-**Usage.** The `fields` are different for every document type. When Applicant Service creates the applicant, the documents are created from the `applicant.initialized` event. That means that just after a new applicant appears, this endpoint may answer `404 APPLICANT_NOT_FOUND` for a moment. The client then tries again.
+**Document fields.** The `fields` are different for every document type. Every field listed is
+required; a document missing one is `incomplete`.
+
+| `type`                    | `fields`                                                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `student_id_card`         | `name`, `student_id`, `faculty`, `major`, `valid_until` (date)                                                                  |
+| `university_email`        | `name`, `email`, `groups[]` (values from the email `groups` shared value), `issued_at` (date)                                   |
+| `enrollment_confirmation` | `name`, `student_id`, `academic_year` (`"2026-2027"`), `year`, `confirmation_number` (the registry reference), `issued_at` (date) |
+| `course_registration`     | `name`, `student_id`, `academic_year`, `semester` (`autumn` or `spring`), `courses[] { code, title }`, `issued_at` (date)        |
+
+Which documents an applicant brings follows what they claim: a claimed student identifier brings a
+card, a claimed university address brings a mailbox printout, claimed current enrolment brings a
+confirmation, and claimed courses bring a registration. An honest outsider brings nothing
+(`"documents": []`).
+
+**Usage.** When Applicant Service creates the applicant, the documents are created from the `applicant.initialized` event. That means that just after a new applicant appears, this endpoint may answer `404 APPLICANT_NOT_FOUND` for a moment. The client then tries again.
 
 ###### `GET /api/v1/applicants/{applicant_id}/documents/validation` - consumed by Moderation Service
 
@@ -843,6 +1105,7 @@ None. Credential Service never calls other services. It learns about new applica
         "student_id": "FAF23117",
         "academic_year": "2026-2027",
         "year": 4,
+        "confirmation_number": "FCIM-2026-04821",
         "issued_at": "2026-09-01"
       },
       "validation_status": "forged",
@@ -866,17 +1129,24 @@ None. Credential Service never calls other services. It learns about new applica
 
 **Usage.** Only for services. Players must never get this, or the game would be trivial. `404 APPLICANT_NOT_FOUND` if the applicant does not exist.
 
-##### Message queue events
+##### Events
 
-**Published:**
+**Produced:**
 
-- `applicant.initialized` - consumed by Applicant Service, University Record Service  
+- `applicant.initialized` - pushed to Applicant Service, University Record Service  
   Same payload as in Applicant Service, with `"initialized_by": "credential-service"`. Sent only when Credential is the first service contacted, through its own `POST /api/v1/applicants/next`.
 
-**Consumed:**
+**Received:**
 
-- `applicant.initialized` - published by Applicant Service or University Record Service  
-  Creates the applicant's documents from `claimed`. Where `claimed` and `actual` differ, the documents that support the false claim are marked `forged`. Honest applicants never get forged documents, but depending on `difficulty`, some of their documents may be `expired`, `inconsistent` or `incomplete`. Events where `initialized_by` is `credential-service` are ignored.
+- `applicant.initialized` - from Applicant Service or University Record Service  
+  Creates the applicant's documents from `claimed`. Where `claimed` and `actual` differ, the documents that support the false claim are marked `forged`. Honest applicants never get forged documents, but depending on `difficulty`, some of their documents may be `expired`, `inconsistent` or `incomplete`. An event whose `initialized_by` is `credential-service` is ignored if it arrives.
+
+**Not yet wired:** the published image (`1.0.0`) neither relays events over HTTP nor exposes
+`POST /api/v1/events`, and documents no `408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS` (it has an
+`HTTP_REQUEST_TIMEOUT` deadline; what it answers when that fires is not documented).
+`GET .../documents/validation` is protected only once the
+Gateway enforces the service token and the service's port is no longer published - see
+[`docs/CREDENTIAL_SERVICE.md`](docs/CREDENTIAL_SERVICE.md).
 
 #### Server Rules Service
 
@@ -983,21 +1253,29 @@ An applicant who breaks an admission rule gets `"admitted": false`, the broken r
 - Server Rules stores nothing about the applicant. `applicant_id` is only used in logs.
 - Errors: `404 RULESET_NOT_FOUND`, `422 INVALID_FACTS`.
 
-##### Message queue events
+##### Events
 
-None. Server Rules neither publishes nor consumes events.
+None. Server Rules neither produces nor receives events.
+
+**Not yet wired:** the published image (`0.1.0`) checks `X-Service-Token` itself on its admin routes,
+which the Gateway strips before forwarding, so they cannot be reached through the Gateway until that
+check is removed. It has no task timeout or concurrent limit - see
+[`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVICE.md).
 
 #### University Record Service
 
 ##### Consumed API endpoints
 
-None. University Record never calls other services. It learns about applicants and sessions from events.
+- `POST /api/v1/events` - available in Applicant Service and Credential Service, via `{gateway}/api/v1/<consumer>`  
+  Pushes `applicant.initialized` when University Record met the applicant first, as described in
+  [Event delivery](#event-delivery). University Record makes no other call; it learns about
+  sessions from the events Session pushes to it.
 
 ##### Exposed API endpoints
 
 ###### `POST /api/v1/applicants/next` - consumed by: no service yet
 
-**Description.** Creates a new applicant, starting from the university's own records (for example, a real student taken from the enrollment list). University Record stores the records, publishes `applicant.initialized` and returns the new `applicant_id`.
+**Description.** Creates a new applicant, starting from the university's own records (for example, a real student taken from the enrollment list). University Record stores the records, pushes `applicant.initialized` to Applicant and Credential and returns the new `applicant_id`.
 
 **Payload.** Same as in Applicant Service: `{ "session_id": "...", "difficulty": 3 }`.
 
@@ -1045,8 +1323,8 @@ Fields of one record in each category:
 | Category       | Fields                                                                                                                                                  |
 | -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `enrollment`   | `student_id`, `name`, `major`, `group`, `year`, `enrolled_since`, `status` (`enrolled`, `graduated`, `expelled`); the response also has `academic_year` |
-| `email-groups` | `email`, `name`, `groups` (for example `faf-students`, `faf-231`, `teaching-assistants`, `staff`, `alumni`)                                             |
-| `courses`      | `course_code`, `title`, `semester`, `schedule[] { day, time, room }`, `registered_student_ids[]`                                                        |
+| `email-groups` | `email`, `name`, `groups` (values from the email `groups` [shared value](#shared-values))                                                                |
+| `courses`      | `code`, `title`, `semester`, `schedule[] { day, time, room }`, `registered_student_ids[]`; one record per course of the [catalog](#courses)               |
 | `fcim-logs`    | `message_id`, `author_name`, `author_email`, `channel`, `content`, `sent_at`                                                                            |
 
 `alumni` is a legal value inside `groups` even though the category is nominally "Outlook group lists" - without it an honest alumnus would be unverifiable in every category except `enrollment`.
@@ -1055,11 +1333,13 @@ Fields of one record in each category:
 
 **Usage.**
 
-- The calling player must have `category` in their `record_scopes` for this `session_id` (received with `session.started`). Otherwise the answer is `403 CATEGORY_NOT_ASSIGNED`. The Moderator has no categories.
+- The calling player (`X-Player-Id`) must have `category` in their `record_scopes` for this `session_id` (received with `session.started`). Otherwise the answer is `403 CATEGORY_NOT_ASSIGNED`. The Moderator has no categories.
 - After `session.ended`, every request for that session gets `403 SESSION_ENDED`.
 - An empty `items` list is a valid answer: it means the records know nothing about what was searched, which is often the clue.
 - `group` is derived from `student_id`, and `year` and `enrolled_since` must agree with the
   admission year encoded in it. See the [identity model](#identity-model).
+- In the `courses` category, `q` is matched against the course `code` (case-insensitive), the
+  identifier of a course everywhere. Matching the title as well is allowed but not required.
 - Errors: `403 CATEGORY_NOT_ASSIGNED`, `403 SESSION_ENDED`, `422 UNKNOWN_CATEGORY`.
 
 ###### `GET /api/v1/applicants/{applicant_id}/records` - consumed by Moderation Service
@@ -1078,13 +1358,13 @@ Fields of one record in each category:
   "email_groups": [],
   "courses": [
     {
-      "course_code": "PAD",
+      "code": "PAD",
       "title": "Distributed Applications Programming",
       "exists": true,
       "registered": false
     },
     {
-      "course_code": "ELSE-NET",
+      "code": "QBIT",
       "title": null,
       "exists": false,
       "registered": false
@@ -1096,40 +1376,51 @@ Fields of one record in each category:
 
 The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a junior would find by searching, but for every category at once. Empty lists mean the university knows nothing about the claimed identity. In this example, that is how Moderation sees that the "FAF student" is really an outsider.
 
-`courses` is different: it is one entry **per course the applicant claims**, in claimed order, saying whether that course exists in the catalog and whether the claimed student is registered for it - a course that does not exist has no catalog record to return, so `exists: false` with `title: null` is the only way to represent it. This is why its shape (`course_code`, `title`, `exists`, `registered`) differs from the `courses` category record returned by `GET /records/courses`.
+`courses` is different: it is one entry **per course the applicant claims**, in claimed order, saying whether that course exists in the catalog and whether the claimed student is registered for it - a course that does not exist has no catalog record to return, so `exists: false` with `title: null` is the only way to represent it. This is why its shape (`code`, `title`, `exists`, `registered`) differs from the `courses` category record returned by `GET /records/courses`.
 
-**Usage.** This endpoint gives full read access to all categories, so it is only for services (see the note on University Record access above). `404 APPLICANT_NOT_FOUND` if the applicant does not exist.
+**Usage.** This endpoint gives full read access to all categories, so it is only for services: the Gateway forwards it only with a valid service token, and the request arrives without `X-Player-Id` (see the note on University Record access above). University Record applies no scope check here. `404 APPLICANT_NOT_FOUND` if the applicant does not exist.
 
-##### Message queue events
+##### Events
 
-**Published:**
+**Produced:**
 
-- `applicant.initialized` - consumed by Applicant Service, Credential Service  
+- `applicant.initialized` - pushed to Applicant Service, Credential Service  
   Same payload as in Applicant Service, with `"initialized_by": "university-record-service"`. Sent only when University Record is the first service contacted.
 
-**Consumed:**
+**Received:**
 
-- `applicant.initialized` - published by Applicant Service or Credential Service  
-  Creates the university's records from `actual`, the truth. An outsider gets no enrollment record, and someone who lies about their year has their real year on record. This is how the juniors can find the lie. Events where `initialized_by` is `university-record-service` are ignored.
-- `session.started` - published by Server Moderation Session Service  
+- `applicant.initialized` - from Applicant Service or Credential Service  
+  Creates the university's records from `actual`, the truth. An outsider gets no enrollment record, and someone who lies about their year has their real year on record. This is how the juniors can find the lie. An event whose `initialized_by` is `university-record-service` is ignored if it arrives.
+- `session.started` - from Server Moderation Session Service  
   Stores the `record_scopes` of every junior for this session. From now on, their searches are checked against these scopes.
-- `session.ended` - published by Server Moderation Session Service  
+- `session.ended` - from Server Moderation Session Service  
   Closes access for that session, so players cannot read records after the shift.
+
+**Not yet wired:** the published image (`0.1.0`) neither relays events over HTTP nor exposes
+`POST /api/v1/events` (events reach it through `POST /api/v1/dev/events/*`), and still names the
+course identifier `course_code`. It identifies callers itself - a Bearer token for players,
+`X-Service-Token` for services - instead of trusting `X-Player-Id` and the Gateway, so its scope check
+and its service-only endpoint fail once the Gateway strips those headers - see
+[`docs/UNIVERSITY_RECORD_SERVICE.md`](docs/UNIVERSITY_RECORD_SERVICE.md).
 
 #### Moderation Service
 
 ##### Consumed API endpoints
 
-- `GET /api/v1/sessions/{session_id}` - available in Server Moderation Session Service  
+- `GET /api/v1/sessions/{session_id}` - available in Server Moderation Session Service, via `{gateway}/api/v1/session`  
   Checks that the session is active, that the calling player is its Moderator and that the applicant is the current one, and reads the shift's `ruleset_version`.
-- `GET /api/v1/applicants/{applicant_id}` - available in Applicant Service  
+- `GET /api/v1/applicants/{applicant_id}` - available in Applicant Service, via `{gateway}/api/v1/applicant`  
   Reads what the applicant claims about themselves.
-- `GET /api/v1/applicants/{applicant_id}/documents/validation` - available in Credential Service  
+- `GET /api/v1/applicants/{applicant_id}/documents/validation` - available in Credential Service, via `{gateway}/api/v1/credential`  
   Reads every document with its validation status.
-- `GET /api/v1/applicants/{applicant_id}/records` - available in University Record Service  
+- `GET /api/v1/applicants/{applicant_id}/records` - available in University Record Service, via `{gateway}/api/v1/university-record`  
   Reads what the university records say about the claimed identity, across all categories.
-- `POST /api/v1/rulesets/{version}/evaluations` - available in Server Rules Service  
+- `POST /api/v1/rulesets/{version}/evaluations` - available in Server Rules Service, via `{gateway}/api/v1/server-rules`  
   Checks the verified facts against the ruleset of the shift.
+- `POST /api/v1/events` - available in Server Moderation Session Service, via `{gateway}/api/v1/session`  
+  Pushes `decision.recorded`, as described in [Event delivery](#event-delivery).
+
+Every one of these calls goes through the Gateway and carries `X-Service-Token`, never the Moderator's own token or `X-Player-Id`.
 
 ##### Exposed API endpoints
 
@@ -1194,7 +1485,13 @@ The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a j
    | A document is `inconsistent` or `incomplete`, so the claims cannot be confirmed                                         | `flag`                                                        |
    | None of the above                                                                                                       | `accept`, with `granted_channels` equal to `allowed_channels` |
 
-6. Store the decision with a snapshot of the data behind it. If `action` is `ban`, add the claimed student ID and name to the ban list. Publish `decision.recorded` and reply.
+   **Known gap:** Credential marks `forged` every document that supports a claim contradicted by
+   `actual`, and `forged` is checked first. Read together, every lying applicant is expected to be
+   banned, and `reject` and `flag` are reachable only through difficulty-driven document defects.
+   If the game should use the full verdict range, the change belongs in this table or in
+   Credential's forgery rule; not resolved here.
+
+6. Store the decision with a snapshot of the data behind it. If `action` is `ban`, add the claimed student ID and name to the ban list. Write `decision.recorded` to the outbox in the same transaction, and reply. The relay then pushes it to Session.
 
 Further rules:
 
@@ -1252,11 +1549,11 @@ Further rules:
 
 **Usage.** The ban list is filled only by Moderation's own `ban` decisions, and entries are never removed. An empty `items` list means the person was never banned.
 
-##### Message queue events
+##### Events
 
-**Published:**
+**Produced:**
 
-- `decision.recorded` - consumed by Server Moderation Session Service  
+- `decision.recorded` - pushed to Server Moderation Session Service  
   A decision has been stored. Session uses it to update the score, the penalties and the counters.
 
   ```json
@@ -1278,25 +1575,58 @@ Further rules:
   }
   ```
 
-**Consumed:** none.
+**Received:** none.
+
+**Not yet wired:** the published image (`0.2.0`) keeps `decision.recorded` in its outbox, readable
+through `GET /api/v1/admin/events`, but has no relay to Session yet. It calls its five peers directly
+instead of through the Gateway, sends `X-Service-Token` only to University Record, and reads the
+calling player from the Bearer token instead of `X-Player-Id` - see
+[`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md).
 
 #### Discord DMs Service
 
 ##### Consumed API endpoints
 
-None. Discord DMs never calls other services. Everything it needs about a session arrives with `session.started` and `session.ended`.
+None. Discord DMs never calls other services. Everything it needs about a session arrives with `session.started` and `session.ended`, pushed through the Gateway.
 
 ##### Exposed API endpoints
 
+###### `POST /api/v1/ws-tickets` - consumed by Client
+
+**Description.** Negotiates a chat connection. The client calls it through the Gateway (`POST {gateway}/api/v1/discord-dms/ws-tickets`) with its JWT; the Gateway authorizes the player and forwards the request with `X-Player-Id`. Discord DMs answers with a WebSocket URL carrying a one-time ticket, and the client then connects to that URL **directly**, so the Gateway does not stay in the middle of the chat.
+
+**Payload.**
+
+```json
+{
+  "session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
+}
+```
+
+**Response.** `201 Created`
+
+```json
+{
+  "ws_url": "ws://localhost:8086/api/v1/ws?ticket=7f3c9a1e5b2d4c8f9a0e6b1d3c5f7a9e",
+  "expires_at": "2026-09-10T18:05:30Z"
+}
+```
+
+**Usage.**
+
+- The ticket is bound to the calling player and to `session_id`, is valid for **30 seconds**, and can be used **once**. A client that reconnects asks for a new ticket.
+- `ws_url` points at the address under which clients reach Discord DMs directly (host port `8086`), not at the Gateway; it is Discord DMs' own configuration.
+- Errors: `403 NOT_IN_SESSION` if the calling player is not a member of the session, `409 SESSION_NOT_ACTIVE` if the shift has not started or is already over.
+
 ###### `GET /api/v1/ws` - consumed by Client (WebSocket)
 
-**Description.** Opens the real-time chat connection of one player in one session. The HTTP request is upgraded to a WebSocket, and after that, JSON messages travel both ways.
+**Description.** Opens the real-time chat connection of one player in one session. The HTTP request is upgraded to a WebSocket, and after that, JSON messages travel both ways. This is the one endpoint the client calls **directly**, not through the Gateway, using the `ws_url` from [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client).
 
 **Query params.**
 
-| Name         | Type | Required | Meaning                                            |
-| ------------ | ---- | -------- | -------------------------------------------------- |
-| `session_id` | UUID | yes      | The session whose channels the player wants to use |
+| Name     | Type   | Required | Meaning                                                                                       |
+| -------- | ------ | -------- | --------------------------------------------------------------------------------------------- |
+| `ticket` | string | yes      | The one-time ticket from `POST /ws-tickets`. It identifies both the player and the session    |
 
 **Payload.** None for the upgrade request. After the connection is open, the messages look like this:
 
@@ -1333,7 +1663,7 @@ None. Discord DMs never calls other services. Everything it needs about a sessio
 
 The client sends `message.send`. The server stores the message and pushes `message.new` to every player who can see that channel, the sender included. It pushes `error` when a message is refused.
 
-**Response.** `101 Switching Protocols` when the connection is accepted. `403 NOT_IN_SESSION` if the calling player is not a member of the session, and `409 SESSION_NOT_ACTIVE` if the shift has not started or is already over.
+**Response.** `101 Switching Protocols` when the connection is accepted. `401 INVALID_TICKET` if the ticket is unknown, expired or already used - nothing about the player is accepted on this route except the ticket. `409 SESSION_NOT_ACTIVE` if the shift ended between issuing the ticket and connecting.
 
 **Usage.** Discord DMs only moves messages; it never checks whether what players write is true. When `session.ended` arrives, the server closes every connection of that session.
 
@@ -1391,16 +1721,22 @@ The client sends `message.send`. The server stores the message and pushes `messa
 
 **Usage.** History stays readable after the shift ends, because the channels are archived, not deleted.
 
-##### Message queue events
+##### Events
 
-**Published:** none.
+**Produced:** none.
 
-**Consumed:**
+**Received:**
 
-- `session.started` - published by Server Moderation Session Service  
+- `session.started` - from Server Moderation Session Service  
   Creates the four channels of the session and the access mapping of every player, using `moderator_id` and each junior's `record_scopes`.
-- `session.ended` - published by Server Moderation Session Service  
+- `session.ended` - from Server Moderation Session Service  
   Archives the channels of the session (they become read-only) and closes its WebSocket connections.
+
+**Not yet wired:** the published image (`0.2.0`) receives both events through
+`POST /api/v1/dev/events/session-started` and `/session-ended`, not `POST /api/v1/events`. It has no
+`POST /api/v1/ws-tickets`: `GET /api/v1/ws` still takes the player's JWT (`Authorization` or
+`?access_token=`) instead of a ticket, and its REST endpoints read the Bearer token instead of
+`X-Player-Id` - see [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md).
 
 ---
 
@@ -1411,15 +1747,46 @@ need to clone the (private) service repository to run one.
 
 | Service | Docker Hub image | Host port | Requires |
 | --- | --- | --- | --- |
-| Applicant Service | [`stewdh/applicant-service`](https://hub.docker.com/r/stewdh/applicant-service) | `8081` | `DATABASE_URL` (PostgreSQL 16), `REFERENCE_YEAR` (must match Credential/University Record Service), `RABBITMQ_URL` (shared broker) |
-| Credential Service | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service) | `8082` | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record Service), `RABBITMQ_URL` (shared broker) |
+| Applicant Service | [`stewdh/applicant-service`](https://hub.docker.com/r/stewdh/applicant-service) | `8081` | `DATABASE_URL` (PostgreSQL 16), `REFERENCE_YEAR` (must match Credential/University Record/Moderation Service) |
+| Credential Service | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service) | `8082` | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record/Moderation Service) |
 | Server Rules Service | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service) | `8083` | `ConnectionStrings__RulesDb` (PostgreSQL 17), `Auth__ServiceToken` |
-| University Record Service | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service) | `8084` | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential Service), `Auth__ServiceToken` |
-| Moderation Service | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service) | `8085` | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (each one falls back to a built-in mock when empty), `UPSTREAM_SERVICE_TOKEN` (must equal University Record's `Auth__ServiceToken`) |
+| University Record Service | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service) | `8084` | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential/Moderation Service), `Auth__ServiceToken` |
+| Moderation Service | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service) | `8085` | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (each one falls back to a built-in mock when empty), `UPSTREAM_SERVICE_TOKEN`, `REFERENCE_YEAR` |
 | Discord DMs Service | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service) | `8086` | `MONGODB_URI` (MongoDB 7), `SERVICE_TOKEN`; optional `REDIS_URL` (fan-out between instances) |
-| Player Service | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service) | `8087` | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), no broker and no auth - see below |
-| Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088` | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL` and `RULES_SERVICE_URL` to reach the real services instead of its stubs - see below |
 | Gateway Service | `d1vinexd/gateway-service` (Docker Hub image is published by CI on the first merge to `main`; not yet available) | `8080` | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md) |
+| Player Service | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service) | `8087` | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional); contract: `JWT_SECRET` (same value as the Gateway's) for login - not read by the published image yet, see below |
+| Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088` | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL` and `APPLICANT_SERVICE_URL` to reach the real services instead of its stubs - see below |
+
+**One service token for the whole stack.** Every variable above that holds a service token
+(`Auth__ServiceToken`, `SERVICE_TOKEN`, `UPSTREAM_SERVICE_TOKEN`) is set to the same value,
+`SERVICE_TOKEN` in `.env` - the `X-Service-Token` of [Authentication](#authentication).
+
+**Everything goes through the Gateway.** Every peer URL above (`APPLICANT_URL`, `PLAYER_SERVICE_URL`,
+`SESSION_URL`, ...) is set to the Gateway plus the peer's prefix, for example
+`APPLICANT_URL=http://gateway-service:8080/api/v1/applicant` - see [Gateway](#gateway). A service is
+never configured with another service's own address. The variable names stay each service's own.
+
+**Published host ports.** Once the Gateway is in place, only two ports are published: the Gateway
+(`8080`) and Discord DMs (`8086`, for the direct WebSocket connection the Gateway negotiates). Every
+other service is reachable only inside `student-id-net`, through the Gateway - which is what lets
+services trust `X-Player-Id` (see [Authentication](#authentication)). Database ports are not part of
+the contract.
+
+**`JWT_SECRET`** is shared by exactly two containers, Player Service (signs) and the Gateway
+(verifies), and lives in `.env` next to `SERVICE_TOKEN`.
+
+**Not yet wired: the Gateway.** The Gateway image is not published yet, so `docker-compose.yml`,
+`.env.example` and the Postman collections still address every service directly, and every service
+port in the table above stays published during Lab 2 development; they switch to the Gateway in the
+PR that adds its image. No published service image yet trusts `X-Player-Id`, answers
+`408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS`, or carries a Lab 2 version tag; the per-service
+notes under [Endpoints](#endpoints) and the `docs/` references list what each one still does instead.
+
+**Not yet wired: event delivery.** No published image implements [Event delivery](#event-delivery)
+yet - none exposes `POST /api/v1/events` or relays its outbox to its consumers. Until they do,
+events only move where a service offers its own interim route (`POST /api/v1/dev/events/*` in
+Player, Session, University Record and Discord DMs), and someone hands them over. Those routes are
+beyond this contract and disappear once `POST /api/v1/events` exists.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
 free number: `8080`-`8088` are taken above, and the database containers hold `5433`-`5438`, `6380`,
@@ -1445,17 +1812,15 @@ It is the one service that calls three others. Each of `PLAYER_SERVICE_URL`, `RU
 `APPLICANT_SERVICE_URL` selects the real HTTP client when set and a contract-shaped in-process stub
 when left empty, so it runs before its dependencies exist and each can be wired up independently as
 it lands. `GET /health/ready` reports every dependency as `configured` or `stub`, so a demo cannot
-look more integrated than it is. In the compose file below the first two point at the live Player
-Service and Server Rules containers; Applicant Service is left stubbed because it has not been
-written yet.
+look more integrated than it is. In the compose file below all three point at the live Player
+Service, Server Rules and Applicant Service containers.
 
 Two things differ from this contract and are worth knowing before integrating. It uses **PostgreSQL
 only** - the Databases table above also assigns it Redis for live shift state, which is not
-implemented. And because no token issuer exists yet, the endpoints that act for "the calling player"
-read that player's id from the `sub` claim of an **`Authorization: Bearer <jwt>`** token whose
-signature is never checked - the same arrangement University Record Service uses, so a client
-identifies a player to both services the same way. It is not authentication. (`X-Player-Id: <uuid>`
-is accepted as a fallback, for curl.)
+implemented. And the endpoints that act for "the calling player" read that player's id from the
+`sub` claim of an `Authorization: Bearer <jwt>` token, unverified, instead of from the Gateway's
+`X-Player-Id` alone. `X-Player-Id` is already accepted as a fallback, so the switch to
+[Authentication](#authentication) is a removal, not an addition.
 
 The root [`docker-compose.yml`](docker-compose.yml) in this repository runs all of the
 above (plus their own database containers) on the shared `student-id-net` network, referencing
@@ -1569,26 +1934,27 @@ Closes #(issue)
 
 ## Versioning Strategy
 
-We follow **Semantic Versioning (SemVer)**: `MAJOR.MINOR.PATCH`
+Every image - the eight services and the Gateway - is versioned `MAJOR.MINOR.PATCH`, where **MAJOR is the laboratory number** (Lab 2 grading requires the tag to follow the lab):
 
-### Version Types
+- **MAJOR** = the lab the release belongs to. Every image of Lab 2 is `2.x.y`, starting at `2.0.0`.
+- **MINOR** (e.g. `2.0.0` => `2.1.0`): a new feature within the lab.
+- **PATCH** (e.g. `2.1.0` => `2.1.1`): a bug fix within the lab.
 
-- **MAJOR** (e.g., 1.0.0 => 2.0.0): Breaking changes that require user action
-- **MINOR** (e.g., 1.0.0 => 1.1.0): New features that are backward compatible
-- **PATCH** (e.g., 1.0.0 => 1.0.1): Bug fixes and small improvements
+A breaking contract change therefore happens at a lab boundary (the next MAJOR), or within a lab only when the whole team agrees and every affected consumer ships in the same lab.
 
 ### Release Process
 
-1. Choose the new version number using the rules above
-2. Create release notes documenting changes
-3. Tag release in GitHub: `git tag v1.0.0`
-4. Create GitHub Release with changelog
-5. Deploy to production
+1. Set the new version in the repository's **`VERSION` file** (one line, e.g. `2.0.0`); it is the single source of the image tag.
+2. Merge to `main`. GitHub Actions runs the repository's tests and, only if they pass, publishes `<dockerhub-user>/<service>:<VERSION>` and moves `<dockerhub-user>/<service>:latest` to it. Images are never pushed by hand.
+3. Create release notes in the format below.
+4. Point `docker-compose.yml` and the [Deployments](#deployments) table at the new tag in the CPR PR that moves the submodule pointer.
+
+Example: merging `2.1.0` of Player Service publishes `dimapos/player-service:2.1.0` and updates `dimapos/player-service:latest`.
 
 ### Release Notes Format
 
 ```markdown
-## [1.2.0] - 2026-09-09
+## [2.1.0] - 2026-10-20
 
 ### Added
 

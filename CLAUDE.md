@@ -43,7 +43,7 @@ relevant at this level:
 git submodule update --init --recursive   # pull the submodules you have access to
 ```
 
-Running the stack (all 8 services, their databases and the shared RabbitMQ broker, from published
+Running the stack (all 8 services and their databases, from published
 Docker Hub images only — `docker-compose.yml` never uses `build:`; image tags and host ports are
 listed in the README "Deployments" table):
 
@@ -71,10 +71,10 @@ reasoning.
 `applicant-service`, `credential-service`, and `university-record-service` each own a distinct
 category of the same applicant (identity / documents / hidden institutional records). Any one of
 them may be the first to meet a new applicant; whichever is contacted first generates the shared
-`applicant_id` and publishes `applicant.initialized` (exchange `student-id.events`, routing key
-`applicant.initialized`). The other two subscribe and create their own record under that same
-`applicant_id`, populated only with the fields relevant to them. This is the pattern to follow for
-any change touching applicant creation — never add a direct call between these three services.
+`applicant_id` and pushes `applicant.initialized` to the other two (`POST /api/v1/events`), which
+create their own record under that same `applicant_id`, populated only with the fields relevant to
+them. This is the pattern to follow for any change touching applicant creation — the event push is
+the only call allowed between these three services; never add a REST read or write between them.
 
 ### Moderation Service is the only service that reads from everyone
 
@@ -85,9 +85,13 @@ Moderation's calling contract is the one most likely to be affected by a breakin
 
 ### Communication rules (pick the right one when adding an interaction)
 
+Every REST request — client→service and service→service, event pushes included — goes through the
+Gateway as `{gateway}/api/v1/<prefix>/...` (README "Gateway"). Never configure a service with
+another service's own address.
+
 1. **REST** when the caller needs an answer now (e.g. Session fetching the ruleset before a shift starts).
-2. **RabbitMQ event** (topic exchange `student-id.events`) when something happened and others should know, no reply needed (e.g. `session.ended`). Events may be delivered more than once — every consumer must dedupe by `event_id`.
-3. **WebSocket** only for pushing to a connected client — used exclusively by `discord-DMs-service`; no other service holds client connections.
+2. **Event** when something happened and others should know, no reply needed (e.g. `session.ended`). There is no broker: the producer writes the envelope to its outbox and relays it through the Gateway to every consumer's `POST /api/v1/events` (README "Event delivery"). Events may be delivered more than once — every consumer must dedupe by `event_id`.
+3. **WebSocket** only for pushing to a connected client — used exclusively by `discord-DMs-service`; no other service holds client connections. The Gateway only negotiates it (`POST /ws-tickets` returns a URL with a one-time ticket); the client then connects to Discord DMs directly.
 
 Full event catalog, envelope shape, and the complete "every arrow in the diagram" table are in
 `README.md` under "Communication Patterns" and "Communication Contract".
@@ -99,12 +103,17 @@ which profile fields each `university_status` carries are defined once in `READM
 model" section and apply identically across Applicant, Credential, and University Record. If you
 own one of these three services, don't reinvent these rules locally — a divergence here silently
 turns an honest applicant into an apparent liar in another service. `REFERENCE_YEAR` (currently
-`2026`) must be configured identically in all three.
+`2026`) must be configured identically in all three and in Moderation. The course catalog is
+`shared/courses.json` in this repo (courses are identified by `code`, `^[A-Z]{2,4}$`); the three
+services ship byte-identical copies of it.
 
 ### Per-service tech stack
 
 Six services (Player, Session, Applicant, Credential, Moderation, Discord DMs) are Go + Gin. Two
 (Server Rules, University Record) are C# + ASP.NET Core. All services expose the same contract
 shape regardless of language: REST + JSON under `/api/v1`, snake_case fields, the same error
-envelope, and RabbitMQ for events. Database-per-service, engine chosen per service (see the
+envelope, `408`/`429` for the task timeout and concurrent limit, and events pushed over HTTP. Auth
+lives in the Gateway: it validates `Authorization: Bearer <jwt>` (issued by Player Service) and the
+one shared `X-Service-Token`, strips both, and passes the player on as `X-Player-Id` — services
+validate no token. Images are versioned `<lab>.x.y` from a `VERSION` file (Lab 2 = `2.x.y`). Database-per-service, engine chosen per service (see the
 Databases table in `README.md` for which engine and why).

@@ -9,6 +9,7 @@ professors can read all.
 | IacovlevMaxim | `applicant-service`, `credential-service`             |
 | dmracovit     | `moderation-service`, `discord-DMs-service`           |
 | vvtttvv       | `server-rules-service`, `university-record-service`   |
+| IacovlevMaxim | `gateway-service` (shared: the repository is Maxim's, every member contributes through PRs) |
 
 The session owner is the git user; ask if it does not match a handle.
 

@@ -1753,6 +1753,7 @@ need to clone the (private) service repository to run one.
 | University Record Service | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service) | `8084` | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential/Moderation Service), `Auth__ServiceToken` |
 | Moderation Service | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service) | `8085` | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (each one falls back to a built-in mock when empty), `UPSTREAM_SERVICE_TOKEN`, `REFERENCE_YEAR` |
 | Discord DMs Service | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service) | `8086` | `MONGODB_URI` (MongoDB 7), `SERVICE_TOKEN`; optional `REDIS_URL` (fan-out between instances) |
+| Gateway Service | `d1vinexd/gateway-service` (Docker Hub image is published by CI on the first merge to `main`; not yet available) | `8080` | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md) |
 | Player Service | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service) | `8087` | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional); contract: `JWT_SECRET` (same value as the Gateway's) for login - not read by the published image yet, see below |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088` | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL` and `APPLICANT_SERVICE_URL` to reach the real services instead of its stubs - see below |
 
@@ -1788,7 +1789,7 @@ Player, Session, University Record and Discord DMs), and someone hands them over
 beyond this contract and disappear once `POST /api/v1/events` exists.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
-free number: `8081`-`8088` are taken above, and the database containers hold `5433`-`5438`, `6380`,
+free number: `8080`-`8088` are taken above, and the database containers hold `5433`-`5438`, `6380`,
 `27018` and `27019`. Every service listens on `8080` inside its own container except Applicant and
 Credential, which listen on `8081` and `8082`, and Moderation and Discord DMs, which listen on `8085`
 and `8086`.

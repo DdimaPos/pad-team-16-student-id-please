@@ -22,3 +22,7 @@
 [submodule "credential-service"]
 	path = credential-service
 	url = https://github.com/IacovlevMaxim/credential-service
+[submodule "gateway-service"]
+	path = gateway-service
+	url = https://github.com/IacovlevMaxim/gateway-service
+	branch = dev

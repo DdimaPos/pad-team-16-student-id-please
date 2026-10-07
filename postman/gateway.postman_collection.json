@@ -1,12 +1,21 @@
 {
   "info": {
     "name": "Gateway Service",
+    "description": "Routing and the Gateway's own errors, against the team stack (`docker compose up -d`) with the Gateway on `base_url`.\n\nCovers what is implemented: the route scheme, health forwarding, the pass-through of a service's answer, request ids and the 404/400/405 answers of the Gateway. 502 (a service is down) and 408 (a service is too slow) need a service to be stopped or slowed, so they are described in docs/GATEWAY.md; 401/403 (authorization) and 429 (concurrent task limit) are added together with those parts.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
       "value": "http://localhost:8080"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me_too"
+    },
+    {
+      "key": "session_id",
+      "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
     }
   ],
   "item": [
@@ -14,21 +23,734 @@
       "name": "health",
       "item": [
         {
-          "name": "GET /health (liveness)",
+          "name": "GET /health (the Gateway's own)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('it is the Gateway', () => { pm.expect(b.status).to.eql('ok'); pm.expect(b.service).to.eql('gateway-service'); });"
                 ]
               }
             }
           ],
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/health"
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "GET /api/v1/player/health (forwarded to the service's /health)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by the service, not by the Gateway', () => pm.expect(pm.response.json().service).to.not.eql('gateway-service'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/player/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "player",
+                "health"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "GET /api/v1/session/health (forwarded to the service's /health)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by the service, not by the Gateway', () => pm.expect(pm.response.json().service).to.not.eql('gateway-service'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/session/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "session",
+                "health"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "GET /api/v1/applicant/health (forwarded to the service's /health)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by the service, not by the Gateway', () => pm.expect(pm.response.json().service).to.not.eql('gateway-service'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "health"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "GET /api/v1/credential/health (forwarded to the service's /health)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by the service, not by the Gateway', () => pm.expect(pm.response.json().service).to.not.eql('gateway-service'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "health"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "GET /api/v1/server-rules/health (forwarded to the service's /health)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by the service, not by the Gateway', () => pm.expect(pm.response.json().service).to.not.eql('gateway-service'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/server-rules/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "server-rules",
+                "health"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "GET /api/v1/university-record/health (forwarded to the service's /health)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by the service, not by the Gateway', () => pm.expect(pm.response.json().service).to.not.eql('gateway-service'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/university-record/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "university-record",
+                "health"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "GET /api/v1/moderation/health (forwarded to the service's /health)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by the service, not by the Gateway', () => pm.expect(pm.response.json().service).to.not.eql('gateway-service'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/moderation/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "moderation",
+                "health"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "GET /api/v1/discord-dms/health (forwarded to the service's /health)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by the service, not by the Gateway', () => pm.expect(pm.response.json().service).to.not.eql('gateway-service'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "health"
+              ]
+            },
+            "header": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "routing (client and service calls through the Gateway)",
+      "item": [
+        {
+          "name": "server-rules: current ruleset, difficulty 3",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('the ruleset of difficulty 3', () => { pm.expect(b.difficulty).to.eql(3); pm.expect(b.version).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/server-rules/rulesets/current?difficulty=3",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "server-rules",
+                "rulesets",
+                "current"
+              ],
+              "query": [
+                {
+                  "key": "difficulty",
+                  "value": "3"
+                }
+              ]
+            },
+            "header": [],
+            "description": "The prefix is removed: forwarded to GET /api/v1/rulesets/current?difficulty=3 of Server Rules."
+          }
+        },
+        {
+          "name": "server-rules: the service's own 404 passes through unchanged",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code RULESET_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('RULESET_NOT_FOUND'));",
+                  "pm.test('the service wrote the message, not the Gateway', () => pm.expect(pm.response.json().error.message).to.include('9999'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/server-rules/rulesets/9999",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "server-rules",
+                "rulesets",
+                "9999"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "server-rules: POST with a body (evaluation)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('an honest first-year FAF student is admitted', () => { pm.expect(b.admitted).to.eql(true); pm.expect(b.allowed_channels).to.include('general'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/api/v1/server-rules/rulesets/3/evaluations",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "server-rules",
+                "rulesets",
+                "3",
+                "evaluations"
+              ]
+            },
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"faf_student\",\n    \"major\": \"FAF\",\n    \"year\": 1,\n    \"years_enrolled\": 1,\n    \"currently_enrolled\": true,\n    \"previously_banned\": false\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "POST /api/v1/applicant/applicants/next (same path, told apart by the prefix)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.test('this service created an applicant', () => pm.expect(pm.response.json().applicant_id).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "next"
+              ]
+            },
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 2\n}"
+            },
+            "description": "Applicant, Credential and University Record all expose POST /applicants/next; the prefix chooses one."
+          }
+        },
+        {
+          "name": "POST /api/v1/credential/applicants/next (same path, told apart by the prefix)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.test('this service created an applicant', () => pm.expect(pm.response.json().applicant_id).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "applicants",
+                "next"
+              ]
+            },
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 2\n}"
+            },
+            "description": "Applicant, Credential and University Record all expose POST /applicants/next; the prefix chooses one."
+          }
+        },
+        {
+          "name": "POST /api/v1/university-record/applicants/next (same path, told apart by the prefix)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "pm.test('this service created an applicant', () => pm.expect(pm.response.json().applicant_id).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/api/v1/university-record/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "university-record",
+                "applicants",
+                "next"
+              ]
+            },
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 2\n}"
+            },
+            "description": "Applicant, Credential and University Record all expose POST /applicants/next; the prefix chooses one."
+          }
+        },
+        {
+          "name": "X-Request-ID of the caller is kept",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('the same X-Request-ID comes back', () => pm.expect(pm.response.headers.get('X-Request-ID')).to.eql('postman-request-id-1'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/server-rules/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "server-rules",
+                "health"
+              ]
+            },
+            "header": [
+              {
+                "key": "X-Request-ID",
+                "value": "postman-request-id-1"
+              }
+            ]
+          }
+        },
+        {
+          "name": "X-Request-ID is generated when the caller sent none",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('a request id is returned', () => pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/server-rules/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "server-rules",
+                "health"
+              ]
+            },
+            "header": []
+          }
+        }
+      ]
+    },
+    {
+      "name": "the Gateway's own errors",
+      "item": [
+        {
+          "name": "unknown prefix -> 404 NOT_FOUND",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));",
+                  "pm.test('details name the prefix', () => pm.expect(pm.response.json().error.details.service).to.eql('nope'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/nope/anything",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "nope",
+                "anything"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "a path outside /api/v1 -> 404 NOT_FOUND",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('error code NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/nope",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "nope"
+              ]
+            },
+            "header": []
+          }
+        },
+        {
+          "name": "a path that climbs out of the service -> 400 VALIDATION_ERROR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('error code VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('nothing reached a service', () => pm.expect(pm.response.json().error.details).to.be.an('object'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": {
+              "raw": "{{base_url}}/api/v1/player/%2e%2e/session/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "player",
+                "%2e%2e",
+                "session",
+                "sessions"
+              ]
+            },
+            "header": [],
+            "description": "Percent-encoded dot segments are rejected before anything is forwarded."
+          }
+        },
+        {
+          "name": "wrong method on the Gateway's own route -> 405",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('405', () => pm.response.to.have.status(405));",
+                  "pm.test('error code METHOD_NOT_ALLOWED', () => pm.expect(pm.response.json().error.code).to.eql('METHOD_NOT_ALLOWED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "header": []
           }
         }
       ]

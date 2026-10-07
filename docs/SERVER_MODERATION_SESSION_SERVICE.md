@@ -43,10 +43,13 @@ two, publishes two events and consumes one.
   identity, XP totals or levels either; it snapshots a username and level from Player Service when
   someone joins, and Player Service remains the source of truth.
 - **Calls:** Player Service (`GET /players/{player_id}`), Server Rules Service
-  (`GET /rulesets/current?difficulty={n}`), Applicant Service (`POST /applicants/next`).
+  (`GET /rulesets/current?difficulty={n}`), Applicant Service (`POST /applicants/next`) - all
+  through the Gateway (`/api/v1/player`, `/api/v1/server-rules`, `/api/v1/applicant`), with
+  `X-Service-Token`.
 - **Is called by:** Moderation Service (`GET /sessions/{session_id}`, before recording every
-  decision) and the game client.
-- **Publishes:** `session.started`, `session.ended`. **Consumes:** `decision.recorded`.
+  decision) and the game client - both through the Gateway.
+- **Produces:** `session.started`, `session.ended`, pushed through the Gateway. **Receives:**
+  `decision.recorded`.
 
 ---
 
@@ -545,6 +548,13 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 ---
 
 ## 11. Mocking strategy (grade 9) and testing recipes
+
+> **Direct port.** The recipes below call the service's own port (`8088`), which is published
+> only during Lab 2 development. Through the Gateway, replace `localhost:8088/api/v1/` with
+> `localhost:8080/api/v1/session/`, send a JWT from `POST /api/v1/player/auth/login` instead of
+> a self-minted token, and send `X-Service-Token` on service-only and `/dev/*` routes.
+> The `jwt()` helper and the `X-Player-Id` header below work only against image `0.1.0`'s direct
+> port; under the contract the Gateway sets `X-Player-Id` and a client-sent value is discarded.
 
 Every cross-service dependency has a real HTTP client written against the contract **and** an
 in-process stub with the same interface. Which one runs is decided by whether that dependency's base

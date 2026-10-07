@@ -430,6 +430,11 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 
 ## 11. Mocking strategy (grade 9) and testing recipes
 
+> **Direct port.** The recipes below call the service's own port (`8087`), which is published
+> only during Lab 2 development. Through the Gateway, replace `localhost:8087/api/v1/` with
+> `localhost:8080/api/v1/player/`, send a JWT from `POST /api/v1/player/auth/login` instead of
+> a self-minted token, and send `X-Service-Token` on service-only and `/dev/*` routes.
+
 Two things this service needs do not exist yet: the `session.ended` event, which Server Moderation
 Session Service will push to `POST /api/v1/events`, and that endpoint itself. Nothing else is mocked - there
 is no outbound call to stub, because this service calls nobody.

@@ -818,6 +818,9 @@ change would silently never apply.
 
 ## 11. Use cases and interaction flows
 
+Every arrow below passes through the Gateway: the caller sends `{gateway}/api/v1/<prefix>/...`, and
+the paths shown are the service's own (see the CPR README "Gateway").
+
 ### 11.1 Server Moderation Session Service — "give me the next applicant"
 
 ```
@@ -844,6 +847,8 @@ Client → Credential Service: GET /api/v1/applicants/{applicant_id}/documents
 Both may answer `404` for a moment right after creation. The client should retry briefly.
 
 ### 11.3 Moderation Service — "check this decision"
+
+All five calls go through the Gateway with `X-Service-Token`, never with the Moderator's token.
 
 ```
 Moderation → Session Service:          GET /api/v1/sessions/{id}        (current applicant, ruleset_version)

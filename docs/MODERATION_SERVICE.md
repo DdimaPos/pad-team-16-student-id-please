@@ -139,7 +139,8 @@ ships with eight applicants, one per scenario, and one active session whose Mode
 The mock Server Rules implements the example ruleset of the contract (`only-faf-or-teachers`,
 `no-previously-banned`, `first-years-general-only`, `teachers-channel`). Mixed mode works: point
 `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL` and `SESSION_URL` at the real
-services one by one; the root compose file points all five at them.
+services one by one, through the Gateway (`http://gateway-service:8080/api/v1/<prefix>`). Until the
+Gateway image is published, the root compose file points all five at the service containers directly.
 
 The Postman collection in `postman/` of this repository runs every scenario with assertions: set `base_url` and
 `service_token`, run the folders in order.

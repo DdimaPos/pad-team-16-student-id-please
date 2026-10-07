@@ -256,6 +256,12 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 
 ## 11. Mocking strategy (grade 9) and testing recipes
 
+> **Direct port.** The recipes below call the service's own port (`8084`), which is published
+> only during Lab 2 development. Through the Gateway, replace `localhost:8084/api/v1/` with
+> `localhost:8080/api/v1/university-record/`, send a JWT from `POST /api/v1/player/auth/login` instead of
+> a self-minted token, and send `X-Service-Token` on service-only and `/dev/*` routes.
+> The `/dev/tokens` JWTs below work only against image `0.1.0`'s direct port.
+
 Three peers were missing when `0.1.0` was built (the event producers, the session service, a
 JWT issuer) - all three are mocked the same way, through code paths that are otherwise real:
 

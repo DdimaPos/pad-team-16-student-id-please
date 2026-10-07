@@ -553,6 +553,9 @@ removes them.
 
 ## 10. Interaction flows
 
+Every arrow below passes through the Gateway: the caller sends `{gateway}/api/v1/<prefix>/...`, and
+the paths shown are the service's own (see the CPR README "Gateway").
+
 ### 10.1 Session Service asks Applicant Service for the next applicant
 
 ```
@@ -573,6 +576,8 @@ Client → Credential:   GET /api/v1/applicants/{id}/documents ← the papers, n
 ```
 
 ### 10.3 Moderation Service checks a decision
+
+All five calls go through the Gateway with `X-Service-Token`, never with the Moderator's token.
 
 ```
 Moderation → Session:            GET /api/v1/sessions/{id}

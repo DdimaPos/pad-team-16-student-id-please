@@ -95,13 +95,19 @@ Every interaction listed below passes through the [Gateway](#gateway): no servic
 
 ## Architecture Diagram
 
-The diagram below visualizes the communication paths described above: the Session Layer (Player, Server Moderation Session, Discord DMs) coordinates around an active shift; the Applicant Data group (Applicant, Credential, University Record) stays loosely coupled through a shared `ApplicantInitialized` event instead of direct service-to-service calls; and Moderation Service sits at the center as the only consumer that reads from every data-owning service to produce a decision, which then flows back into the session.
+![Architecture Diagram](img/ArchitecturalDiagram.png)
 
-Since Lab 2 a **Gateway** sits in front of all eight services: every REST request - from a client or from another service, events included - enters through it, and it forwards the request to the service that owns the path. The one exception is the chat WebSocket, which the Gateway only negotiates; the client then connects to Discord DMs Service directly. See [Gateway](#gateway).
+The diagram shows the system as it runs since Lab 2. A client reaches the system only through the **Gateway** (REST requests carrying the player's JWT), and the Gateway is connected to each of the eight services, which sit in three groups:
 
-![Architecture Diagram](img/Architecture_2.drawio.png)
+- **Session Layer:** Discord DMs, Server Moderation Session and Player.
+- **Moderation:** Moderation Service and Server Rules Service.
+- **Applicant Data:** Applicant, Credential and University Record.
 
-> **Not yet updated:** the diagram above predates the Gateway and still draws direct arrows between services. It has to be redrawn with the Gateway between the clients and the services, and between the services themselves.
+Each blue line between the Gateway and a service is two-way and stands for both kinds of traffic: the REST calls a service receives or makes, and the events pushed as `POST /api/v1/<service>/events`. No service has a line to another service, because none addresses another directly; a call from one service to another leaves through the Gateway and comes back through it. Which service calls which, and with which rule, is listed in [Every arrow in the diagram](#every-arrow-in-the-diagram-and-the-rule-it-follows).
+
+The green dashed line is the one path that does not run through the Gateway: the chat WebSocket. The client first asks the Gateway for a one-time ticket and a WebSocket URL (see [Gateway](#gateway)), then connects to Discord DMs Service directly, so the Gateway is not kept busy carrying the chat.
+
+Each service owns its database, drawn beneath it, and no database is shared: Player, Session, Moderation, Server Rules, Applicant and University Record use PostgreSQL, Credential uses MongoDB, Session adds a Redis cache, and Discord DMs uses MongoDB for messages and Redis for Pub/Sub. There is no message broker.
 
 ---
 

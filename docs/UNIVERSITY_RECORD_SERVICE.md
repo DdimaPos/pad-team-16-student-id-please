@@ -256,8 +256,8 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 
 ## 11. Testing recipes and mocks
 
-> **Direct port.** The recipes call the service's own port (`8084`), which is published only until the
-> Gateway is in the team compose. Through the Gateway, replace `localhost:8084/api/v1/` with
+> **Direct port.** The recipes call the service's own port (`8084`), which the team compose does not
+> publish: run the image alone with `-p 8084:8080`. On the team stack, through the Gateway, replace `localhost:8084/api/v1/` with
 > `localhost:8080/api/v1/university-record/`, send a JWT from `POST /api/v1/player/auth/login` as
 > `Authorization: Bearer` on the player route, and `X-Service-Token` on every service-only route and `/dev/*`.
 > The service itself reads neither: on the direct port, send `X-Player-Id: <uuid>` to play a player.

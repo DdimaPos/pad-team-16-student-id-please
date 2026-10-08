@@ -542,12 +542,14 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 
 ## 11. Mocking strategy (grade 9) and testing recipes
 
-> **Direct port.** The recipes below call the service's own port (`8088`), which is published
-> only during Lab 2 development, and send `X-Player-Id` themselves, as the Gateway would. Through
-> the Gateway, replace `localhost:8088/api/v1/` with `localhost:8080/api/v1/session/`, send
-> `Authorization: Bearer` with a JWT from `POST /api/v1/player/auth/login` instead of
-> `X-Player-Id` (the Gateway discards a client-sent one), and send `X-Service-Token` on
-> service-only and `/dev/*` routes.
+> **Direct port.** The first two recipes run the service alone, on its stubs, with its port
+> published (`docker run -p 8088:8080 -e SEED_ON_START=false ...`; the team compose does not publish
+> it), and send `X-Player-Id` themselves, as the Gateway would. `SEED_ON_START=false` because the
+> seeded active session already holds the three players they use. Through the Gateway, replace
+> `localhost:8088/api/v1/` with `localhost:8080/api/v1/session/`, send `Authorization: Bearer` with
+> a JWT from `POST /api/v1/player/auth/login` instead of `X-Player-Id` (the Gateway discards a
+> client-sent one), and send `X-Service-Token` on service-only and `/dev/*` routes - as the last
+> recipe does.
 
 Every cross-service dependency has a real HTTP client written against the contract **and** an
 in-process stub with the same interface. Which one runs is decided by whether that dependency's base
@@ -601,16 +603,24 @@ curl -sS localhost:8088/api/v1/sessions/$S | jq '.score, .applications_processed
 
 ### Recipe: the end-to-end path across both of Dev's services
 
-With `PLAYER_SERVICE_URL` and `SERVICE_TOKEN` set, end the shift and the relay pushes
-`session.ended` to Player Service within `RELAY_INTERVAL`:
+On the team stack (`docker compose up -d`, everything through the Gateway), the Moderator of the
+seeded active session ends it, and the relay pushes `session.ended` to Player Service within
+`RELAY_INTERVAL`:
 
 ```bash
-curl -sS -X POST localhost:8088/api/v1/sessions/$S/end -H "X-Player-Id: $M" | jq .
+G=localhost:8080/api/v1
+S=3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e   # the seeded active session, dima_mod is its Moderator
+M=8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11
+T=$(curl -sS -X POST $G/player/auth/login -H 'Content-Type: application/json' \
+      -d '{"username":"dima_mod","password":"seed-password"}' | jq -r .access_token)
 
-curl -sS localhost:8088/api/v1/sessions/$S/deliveries | jq '.items[] | {consumer, status, last_error}'
-# player-service: delivered (the others too, or pending while their URL is empty)
+curl -sS -X POST $G/session/sessions/$S/end -H "Authorization: Bearer $T" | jq .
 
-curl -sS localhost:8080/api/v1/player/players/$M -H "X-Service-Token: $SERVICE_TOKEN" | jq .
+curl -sS $G/session/sessions/$S/deliveries -H "Authorization: Bearer $T" \
+  | jq '.items[] | {consumer, status, last_error}'
+# player-service, university-record-service, discord-dms-service: delivered
+
+curl -sS $G/player/players/$M -H "X-Service-Token: $SERVICE_TOKEN" | jq .
 # the XP, the shift count and the level have moved
 ```
 
@@ -620,8 +630,9 @@ curl -sS localhost:8080/api/v1/player/players/$M -H "X-Service-Token: $SERVICE_T
 Every request name carries the status code it expects, so the collection can be checked mechanically.
 It goes through the Gateway: `base_url` is `http://localhost:8080/api/v1` (Session routes under
 `/session`, login under `/player`) and `service_token` must equal `SERVICE_TOKEN` in `.env`. The
-player ids are pre-filled with the ones Player Service seeds; the `auth` folder logs them in and
-stores their tokens. Run the folders in order - the flow folder captures the `session_id` into a
+`auth` folder registers four fresh players through Player Service and stores their ids and tokens,
+so the run does not depend on the seed (the seeded `dima_mod`, `maxim_jr` and `vlad_jr` are in the
+seeded active session) or on the other collections; the cleanup folder deletes them. Run the folders in order - the flow folder captures the `session_id` into a
 collection variable, and the cleanup folder is destructive.
 
 ### Test suite

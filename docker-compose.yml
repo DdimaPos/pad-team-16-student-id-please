@@ -1,14 +1,9 @@
 # Team-wide compose - references PUBLISHED Docker Hub images only, never `build:`. Any
-# teammate can run this without cloning anyone's (private) service repository. So far it
-# covers Server Rules, University Record, Moderation, Discord DMs, Player, Server
-# Moderation Session, Applicant and Credential. There is no message broker: services call
-# each other and push events over HTTP through the Gateway (README "Event delivery"); the
-# Lab 1 images still call each other directly until their Lab 2 images land. Applicant,
-# Credential and Moderation reach their peers through the Gateway (`gateway-service`), which
-# this file does not run yet; until its block lands, their events wait in their outboxes and
-# each service's /health/ready shows the backlog per consumer. Other services should add
-# their own blocks here the same way, referencing their own published image and joining the
-# same `student-id-net` network.
+# teammate can run this without cloning anyone's (private) service repository. It covers
+# the Gateway and all 8 services. There is no message broker: services call each other and
+# push events over HTTP through the Gateway (`gateway-service`, README "Event delivery").
+# New blocks follow the same pattern, referencing a published image and joining the same
+# `student-id-net` network.
 #
 # Every service token below is the same value, SERVICE_TOKEN in .env - the contract's one
 # X-Service-Token for the whole stack.
@@ -24,6 +19,22 @@ name: student-id-please
 x-reference-year: &reference_year "2026"
 
 services:
+  gateway-service:
+    image: stewdh/gateway-service:2.2.0
+    restart: unless-stopped
+    environment:
+      # Verifies the player JWT signed by Player Service (same value) and the one service token.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      # Above the services' 5s, so the outer layer never gives up first.
+      HTTP_REQUEST_TIMEOUT: 10s
+      MAX_CONCURRENT_TASKS: "64"
+      # Peer base URLs default to the container names in this file (PLAYER_URL, SESSION_URL, ...).
+    ports:
+      - "8080:8080"
+    networks:
+      - student-id-net
+
   rules-postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -56,8 +67,6 @@ services:
       # mounts GET /api/v1/dev/slow?ms=, which demonstrates both. The service checks no token: the Gateway does.
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
-    ports:
-      - "8083:8080"
     networks:
       - student-id-net
 
@@ -97,8 +106,6 @@ services:
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
       Dev__EnableTestEndpoints: ${UNIVERSITY_RECORD_ENABLE_DEV_ENDPOINTS:-true}
-    ports:
-      - "8084:8080"
     networks:
       - student-id-net
 
@@ -135,16 +142,13 @@ services:
       SEED_ON_START: "true"
       REFERENCE_YEAR: *reference_year
       # Each peer is reached through the Gateway (README "Deployments"): the Gateway's address plus the
-      # peer's prefix. The gateway-service block arrives with the Gateway image (#39); until then these
-      # calls fail as DEPENDENCY_UNAVAILABLE and the relay keeps retrying, as the contract says.
-      # Clearing a variable in .env (MODERATION_SESSION_URL=) selects the built-in mock of that peer.
+      # peer's prefix. Clearing a variable in .env (MODERATION_SESSION_URL=) selects the built-in mock
+      # of that peer.
       SESSION_URL: ${MODERATION_SESSION_URL-http://gateway-service:8080/api/v1/session}
       APPLICANT_URL: ${MODERATION_APPLICANT_URL-http://gateway-service:8080/api/v1/applicant}
       CREDENTIAL_URL: ${MODERATION_CREDENTIAL_URL-http://gateway-service:8080/api/v1/credential}
       UNIVERSITY_RECORD_URL: ${MODERATION_UNIVERSITY_RECORD_URL-http://gateway-service:8080/api/v1/university-record}
       RULES_URL: ${MODERATION_RULES_URL-http://gateway-service:8080/api/v1/server-rules}
-    ports:
-      - "8085:8085"
     networks:
       - student-id-net
 
@@ -242,8 +246,6 @@ services:
       SEED_ON_START: ${PLAYER_SEED_ON_START:-true}
       # Mounts GET /api/v1/dev/slow?ms=, which demonstrates the 408 and the 429.
       ENABLE_DEV_ENDPOINTS: ${PLAYER_ENABLE_DEV_ENDPOINTS:-true}
-    ports:
-      - "8087:8080"
     networks:
       - student-id-net
 
@@ -295,8 +297,6 @@ services:
       SEED_ON_START: ${SESSION_SEED_ON_START:-true}
       # Mounts GET /api/v1/dev/slow?ms=, which demonstrates the 408 and the 429.
       ENABLE_DEV_ENDPOINTS: ${SESSION_ENABLE_DEV_ENDPOINTS:-true}
-    ports:
-      - "8088:8080"
     networks:
       - student-id-net
 
@@ -345,8 +345,6 @@ services:
       CREDENTIAL_URL: http://gateway-service:8080/api/v1/credential
       UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
       REFERENCE_YEAR: *reference_year
-    ports:
-      - "8081:8081"
     healthcheck:
       test: ["CMD", "/applicantd", "healthcheck"]
       interval: 10s
@@ -398,8 +396,6 @@ services:
       APPLICANT_URL: http://gateway-service:8080/api/v1/applicant
       UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
       REFERENCE_YEAR: *reference_year
-    ports:
-      - "8082:8082"
     healthcheck:
       test: ["CMD", "/credentiald", "healthcheck"]
       interval: 10s

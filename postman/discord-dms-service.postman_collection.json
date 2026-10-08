@@ -1723,8 +1723,8 @@
         "exec": [
           "// Through the Gateway a player is identified by a JWT (HS256, JWT_SECRET shared with Player Service),",
           "// never by X-Player-Id: the Gateway checks the token, discards any client-sent X-Player-Id and sets",
-          "// its own from the token's sub. Player Service's POST /api/v1/auth/login is not published yet, so",
-          "// this script signs the token itself: every request that names a player in X-Player-Id gets",
+          "// its own from the token's sub. Rather than logging in through Player Service, this script signs",
+          "// the token itself: every request that names a player in X-Player-Id gets",
           "// Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id header is dropped.",
           "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
           "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",

@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Server Moderation Session Service",
-    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder logs the seeded players in through Player Service (password `seed-password`) and stores their tokens, so run it first. The Gateway validates the token and forwards only `X-Player-Id`. Service-only routes (POST /events, /dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env.\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are pre-filled with the ones Player Service seeds.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
+    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`. Service-only routes (POST /events, /dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env.\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -17,18 +17,18 @@
     },
     {
       "key": "moderator_id",
-      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
-      "description": "dima_mod, level 4. Seeded by Player Service and known to the stub."
+      "value": "",
+      "description": "Captured when the 'auth' folder registers the moderator (level 1)."
     },
     {
       "key": "junior_a_id",
-      "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
-      "description": "maxim_jr, level 2."
+      "value": "",
+      "description": "Captured when the 'auth' folder registers the first junior (level 1)."
     },
     {
       "key": "junior_b_id",
-      "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
-      "description": "vlad_jr, level 3. Levels 4, 2 and 3 average 3 - the contract's own example difficulty."
+      "value": "",
+      "description": "Captured when the 'auth' folder registers the second junior (level 1)."
     },
     {
       "key": "absent_session_id",
@@ -47,13 +47,13 @@
     },
     {
       "key": "decision_id",
-      "value": "e4f5a6b7-c8d9-4e0f-a1b2-c3d4e5f6a7b8",
-      "description": "Fixed so the replay request re-sends the same decision."
+      "value": "",
+      "description": "Regenerated before the first decision of every run, so the replay request re-sends the same decision."
     },
     {
       "key": "replay_event_id",
-      "value": "4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23",
-      "description": "Unused on its own - the replay request reuses the first event's id instead. Kept for a manual replay."
+      "value": "",
+      "description": "Regenerated before the first decision of every run; the replay request re-sends this event id."
     },
     {
       "key": "session_id",
@@ -77,8 +77,8 @@
     },
     {
       "key": "solo_player_id",
-      "value": "d4f6a8c1-3e5a-4d7c-9f1a-2b4c6d8e0f32",
-      "description": "rookie_one, seeded by Player Service: a player who can log in and open a lobby alone."
+      "value": "",
+      "description": "Captured when the 'auth' folder registers the solo player, who opens a lobby alone."
     },
     {
       "key": "solo_session_id",
@@ -104,6 +104,31 @@
       "key": "jwt_solo",
       "value": "",
       "description": "Minted from solo_player_id."
+    },
+    {
+      "key": "moderator_username",
+      "value": "",
+      "description": "Generated per run by the 'auth' folder."
+    },
+    {
+      "key": "junior_a_username",
+      "value": "",
+      "description": "Generated per run by the 'auth' folder."
+    },
+    {
+      "key": "junior_b_username",
+      "value": "",
+      "description": "Generated per run by the 'auth' folder."
+    },
+    {
+      "key": "solo_username",
+      "value": "",
+      "description": "Generated per run by the 'auth' folder."
+    },
+    {
+      "key": "player_password",
+      "value": "session-test-password",
+      "description": "Password of the players the 'auth' folder registers."
     }
   ],
   "item": [
@@ -188,10 +213,60 @@
       ]
     },
     {
-      "name": "auth - run first (logs in through Player Service, stores the tokens)",
+      "name": "auth - run first (registers four fresh players through Player Service, stores their ids and tokens)",
       "item": [
         {
-          "name": "POST /player/auth/login as dima_mod -> 200 (stores jwt_moderator)",
+          "name": "POST /player/players -> 201 (registers the moderator, stores moderator_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{moderator_username}}\",\n  \"email\": \"{{moderator_username}}@example.test\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new username every run, so the collection never collides with an earlier run.",
+                  "pm.collectionVariables.set('moderator_username', 'sess_mod_' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('moderator_id', b.player_id);",
+                  "pm.test('a new player starts at level 1', () => pm.expect(b.level).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/auth/login as the moderator -> 200 (stores jwt_moderator)",
           "request": {
             "method": "POST",
             "header": [
@@ -213,7 +288,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"username\": \"dima_mod\",\n  \"password\": \"seed-password\"\n}"
+              "raw": "{\n  \"username\": \"{{moderator_username}}\",\n  \"password\": \"{{player_password}}\"\n}"
             }
           },
           "event": [
@@ -230,7 +305,57 @@
           ]
         },
         {
-          "name": "POST /player/auth/login as maxim_jr -> 200 (stores jwt_junior_a)",
+          "name": "POST /player/players -> 201 (registers the first junior, stores junior_a_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{junior_a_username}}\",\n  \"email\": \"{{junior_a_username}}@example.test\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new username every run, so the collection never collides with an earlier run.",
+                  "pm.collectionVariables.set('junior_a_username', 'sess_jra_' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('junior_a_id', b.player_id);",
+                  "pm.test('a new player starts at level 1', () => pm.expect(b.level).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/auth/login as the first junior -> 200 (stores jwt_junior_a)",
           "request": {
             "method": "POST",
             "header": [
@@ -252,7 +377,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"username\": \"maxim_jr\",\n  \"password\": \"seed-password\"\n}"
+              "raw": "{\n  \"username\": \"{{junior_a_username}}\",\n  \"password\": \"{{player_password}}\"\n}"
             }
           },
           "event": [
@@ -269,7 +394,57 @@
           ]
         },
         {
-          "name": "POST /player/auth/login as vlad_jr -> 200 (stores jwt_junior_b)",
+          "name": "POST /player/players -> 201 (registers the second junior, stores junior_b_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{junior_b_username}}\",\n  \"email\": \"{{junior_b_username}}@example.test\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new username every run, so the collection never collides with an earlier run.",
+                  "pm.collectionVariables.set('junior_b_username', 'sess_jrb_' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('junior_b_id', b.player_id);",
+                  "pm.test('a new player starts at level 1', () => pm.expect(b.level).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/auth/login as the second junior -> 200 (stores jwt_junior_b)",
           "request": {
             "method": "POST",
             "header": [
@@ -291,7 +466,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"username\": \"vlad_jr\",\n  \"password\": \"seed-password\"\n}"
+              "raw": "{\n  \"username\": \"{{junior_b_username}}\",\n  \"password\": \"{{player_password}}\"\n}"
             }
           },
           "event": [
@@ -308,7 +483,57 @@
           ]
         },
         {
-          "name": "POST /player/auth/login as rookie_one -> 200 (stores jwt_solo)",
+          "name": "POST /player/players -> 201 (registers the solo player, stores solo_player_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{solo_username}}\",\n  \"email\": \"{{solo_username}}@example.test\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new username every run, so the collection never collides with an earlier run.",
+                  "pm.collectionVariables.set('solo_username', 'sess_solo_' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('solo_player_id', b.player_id);",
+                  "pm.test('a new player starts at level 1', () => pm.expect(b.level).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/auth/login as the solo player -> 200 (stores jwt_solo)",
           "request": {
             "method": "POST",
             "header": [
@@ -330,7 +555,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"username\": \"rookie_one\",\n  \"password\": \"seed-password\"\n}"
+              "raw": "{\n  \"username\": \"{{solo_username}}\",\n  \"password\": \"{{player_password}}\"\n}"
             }
           },
           "event": [
@@ -640,8 +865,8 @@
                   "const b = pm.response.json();",
                   "pm.test('active', () => pm.expect(b.status).to.eql('active'));",
                   "// difficulty is the mean level rounded and clamped to 1-5.",
-                  "// The seeded players are level 4, 2 and 3, so: 3 - the contract's own example.",
-                  "pm.test('difficulty is the rounded mean level', () => pm.expect(b.difficulty).to.eql(3));",
+                  "// The registered players are all level 1, so: 1. The contract's own example (3) is checked on the seeded session, in 'sessions (beyond contract)'.",
+                  "pm.test('difficulty is the rounded mean level', () => pm.expect(b.difficulty).to.eql(1));",
                   "pm.test('a ruleset version was stored', () => pm.expect(b.ruleset_version).to.be.a('number'));",
                   "pm.test('the Moderator is the one that was named', () =>",
                   "  pm.expect(b.moderator_id).to.eql(pm.collectionVariables.get('moderator_id')));",
@@ -833,6 +1058,18 @@
           "response": [],
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh ids every run: request 2 replays this exact event, and a fixed id would already be",
+                  "// recorded by an earlier run against the same database.",
+                  "pm.collectionVariables.set('replay_event_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('decision_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -930,7 +1167,8 @@
                   "const b = pm.response.json();",
                   "pm.test('exactly one application was processed', () =>",
                   "  pm.expect(b.applications_processed).to.eql(1));",
-                  "pm.test('the score moved once', () => pm.expect(b.score).to.eql(30));",
+                  "// ScorePerCorrect (10) times the shift's difficulty (1).",
+                  "pm.test('the score moved once', () => pm.expect(b.score).to.eql(10));",
                   "pm.test('the applicant is now decided', () =>",
                   "  pm.expect(b.current_applicant_decided).to.eql(true));"
                 ]
@@ -2472,6 +2710,142 @@
             }
           ],
           "response": []
+        },
+        {
+          "name": "DELETE /player/players/{id} -> 204 (removes the registered moderator)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players/{{moderator_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players",
+                "{{moderator_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /player/players/{id} -> 204 (removes the registered first junior)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_a}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players/{{junior_a_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players",
+                "{{junior_a_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /player/players/{id} -> 204 (removes the registered second junior)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_b}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players/{{junior_b_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players",
+                "{{junior_b_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /player/players/{id} -> 204 (removes the registered solo player)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_solo}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players/{{solo_player_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players",
+                "{{solo_player_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

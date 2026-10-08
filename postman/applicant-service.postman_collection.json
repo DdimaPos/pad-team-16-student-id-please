@@ -2,13 +2,13 @@
   "info": {
     "name": "Applicant Service",
     "_postman_id": "a1c0f7e2-6b3d-4f8a-9e51-7c2d4b6a8e01",
-    "description": "Applicant Service — Team 16, \"Student ID, please\" (FAF.PAD21.1).\n\nThe service owns the identity of the people trying to get into the university Discord server. Every applicant exists twice: the profile they claim, which this API serves, and the profile that is true, which never leaves the service except inside the applicant.initialized event.\n\nRun the requests top to bottom: \"Next applicant\" stores the new applicant_id in a collection variable, and the requests after it reuse it.\n\nSet `base_url` to where the service is listening (http://localhost:8081 by default).",
+    "description": "Applicant Service — Team 16, \"Student ID, please\" (FAF.PAD21.1).\n\nThe service owns the identity of the people trying to get into the university Discord server. Every applicant exists twice: the profile they claim, which this API serves, and the profile that is true, which never leaves the service except inside the applicant.initialized event.\n\nRun the requests top to bottom: \"Next applicant\" stores the new applicant_id in a collection variable, and the requests after it reuse it.\n\nEvery request goes through the Gateway: `base_url` is the Gateway plus the service prefix (http://localhost:8080/api/v1/applicant by default). Set `service_token` and `jwt_secret` to the stack's SERVICE_TOKEN and JWT_SECRET.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
-      "value": "http://localhost:8081",
+      "value": "http://localhost:8080/api/v1/applicant",
       "type": "string"
     },
     {
@@ -65,6 +65,32 @@
       "type": "string"
     }
   ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Player tokens, signed the way Player Service signs them: HS256 with JWT_SECRET, `sub` = the",
+          "// player's id, `iat` and `exp`. The Gateway verifies the signature, so `jwt_secret` must be the",
+          "// JWT_SECRET of the Gateway being called (the stack's .env).",
+          "function b64url(words) {",
+          "  return CryptoJS.enc.Base64.stringify(words)",
+          "    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+          "}",
+          "function mint(claims, secret) {",
+          "  const header = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));",
+          "  const payload = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(claims)));",
+          "  return header + '.' + payload + '.' + b64url(CryptoJS.HmacSHA256(header + '.' + payload, secret));",
+          "}",
+          "const now = Math.floor(Date.now() / 1000);",
+          "const sub = pm.variables.get('player_id');",
+          "const secret = pm.variables.get('jwt_secret');",
+          "pm.collectionVariables.set('player_token', mint({ sub: sub, iat: now, exp: now + 3600 }, secret));"
+        ]
+      }
+    }
+  ],
   "item": [
     {
       "name": "Health",
@@ -105,7 +131,12 @@
           "name": "Readiness",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/health/ready",
               "host": [
@@ -150,16 +181,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/next",
+              "raw": "{{base_url}}/applicants/next",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "next"
               ]
@@ -202,15 +235,18 @@
           "name": "Get applicant",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/{{applicant_id}}",
+              "raw": "{{base_url}}/applicants/{{applicant_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "{{applicant_id}}"
               ]
@@ -268,16 +304,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/events",
+              "raw": "{{base_url}}/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "events"
               ]
             },
@@ -330,16 +368,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/events",
+              "raw": "{{base_url}}/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "events"
               ]
             },
@@ -374,15 +414,18 @@
           "name": "Get the applicant created from the event",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/{{event_applicant_id}}",
+              "raw": "{{base_url}}/applicants/{{event_applicant_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "{{event_applicant_id}}"
               ]
@@ -417,15 +460,18 @@
           "name": "List applicants",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants?limit=5&offset=0",
+              "raw": "{{base_url}}/applicants?limit=5&offset=0",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants"
               ],
               "query": [
@@ -466,15 +512,18 @@
           "name": "List by session",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants?session_id={{session_id}}&limit=20",
+              "raw": "{{base_url}}/applicants?session_id={{session_id}}&limit=20",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants"
               ],
               "query": [
@@ -516,16 +565,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants",
+              "raw": "{{base_url}}/applicants",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants"
               ]
             },
@@ -563,16 +614,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/{{created_applicant_id}}",
+              "raw": "{{base_url}}/applicants/{{created_applicant_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "{{created_applicant_id}}"
               ]
@@ -624,15 +677,18 @@
           "name": "Delete applicant",
           "request": {
             "method": "DELETE",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/{{created_applicant_id}}",
+              "raw": "{{base_url}}/applicants/{{created_applicant_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "{{created_applicant_id}}"
               ]
@@ -668,15 +724,18 @@
           "name": "Get a deleted applicant",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/{{created_applicant_id}}",
+              "raw": "{{base_url}}/applicants/{{created_applicant_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "{{created_applicant_id}}"
               ]
@@ -724,16 +783,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/next",
+              "raw": "{{base_url}}/applicants/next",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "next"
               ]
@@ -775,16 +836,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/next",
+              "raw": "{{base_url}}/applicants/next",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "next"
               ]
@@ -817,15 +880,18 @@
           "name": "Unknown applicant",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/00000000-0000-4000-8000-000000000000",
+              "raw": "{{base_url}}/applicants/00000000-0000-4000-8000-000000000000",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "00000000-0000-4000-8000-000000000000"
               ]
@@ -855,15 +921,18 @@
           "name": "Malformed identifier",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/not-a-uuid",
+              "raw": "{{base_url}}/applicants/not-a-uuid",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "not-a-uuid"
               ]
@@ -890,15 +959,18 @@
           "name": "Page size out of range",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants?limit=500",
+              "raw": "{{base_url}}/applicants?limit=500",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants"
               ],
               "query": [
@@ -931,16 +1003,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants",
+              "raw": "{{base_url}}/applicants",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants"
               ]
             },
@@ -981,16 +1055,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/{{applicant_id}}",
+              "raw": "{{base_url}}/applicants/{{applicant_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "applicants",
                 "{{applicant_id}}"
               ]
@@ -1034,15 +1110,18 @@
           "name": "Unknown route",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/nonsense",
+              "raw": "{{base_url}}/nonsense",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "nonsense"
               ]
             },
@@ -1072,16 +1151,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/events",
+              "raw": "{{base_url}}/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "events"
               ]
             },
@@ -1133,16 +1214,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/events",
+              "raw": "{{base_url}}/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "events"
               ]
             },
@@ -1192,16 +1275,18 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/events",
+              "raw": "{{base_url}}/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "events"
               ]
             },
@@ -1236,33 +1321,7 @@
     },
     {
       "name": "Through the Gateway",
-      "description": "In the running system nothing calls Applicant Service directly: every request enters at the Gateway as `{{gateway_url}}/api/v1/applicant/...`, which checks the credential, removes it and forwards the rest to the service's `/api/v1/...` (CPR README, Gateway and Authentication). A service call carries `X-Service-Token`; a player's carries `Authorization: Bearer <jwt>`, which this folder's pre-request script mints for `player_id` with `jwt_secret`. `service_token` and `jwt_secret` must match the Gateway's SERVICE_TOKEN and JWT_SECRET, and the Gateway must reach the service as APPLICANT_URL. The policy per route is the Gateway's; the service itself checks no credential and reads only `X-Player-Id`.",
-      "event": [
-        {
-          "listen": "prerequest",
-          "script": {
-            "type": "text/javascript",
-            "exec": [
-              "// Player tokens, signed the way Player Service signs them: HS256 with JWT_SECRET, `sub` = the",
-              "// player's id, `iat` and `exp`. The Gateway verifies the signature, so `jwt_secret` must be the",
-              "// JWT_SECRET of the Gateway being called (gateway-service/.env).",
-              "function b64url(words) {",
-              "  return CryptoJS.enc.Base64.stringify(words)",
-              "    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
-              "}",
-              "function mint(claims, secret) {",
-              "  const header = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));",
-              "  const payload = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(claims)));",
-              "  return header + '.' + payload + '.' + b64url(CryptoJS.HmacSHA256(header + '.' + payload, secret));",
-              "}",
-              "const now = Math.floor(Date.now() / 1000);",
-              "const sub = pm.variables.get('player_id');",
-              "const secret = pm.variables.get('jwt_secret');",
-              "pm.collectionVariables.set('player_token', mint({ sub: sub, iat: now, exp: now + 3600 }, secret));"
-            ]
-          }
-        }
-      ],
+      "description": "In the running system nothing calls Applicant Service directly: every request enters at the Gateway as `{{gateway_url}}/api/v1/applicant/...`, which checks the credential, removes it and forwards the rest to the service's `/api/v1/...` (CPR README, Gateway and Authentication). A service call carries `X-Service-Token`; a player's carries `Authorization: Bearer <jwt>`, which the collection's pre-request script mints for `player_id` with `jwt_secret`. `service_token` and `jwt_secret` must match the Gateway's SERVICE_TOKEN and JWT_SECRET, and the Gateway must reach the service as APPLICANT_URL. The policy per route is the Gateway's; the service itself checks no credential and reads only `X-Player-Id`.",
       "item": [
         {
           "name": "Service health (public)",
@@ -2015,15 +2074,18 @@
           "name": "Task timeout (408)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/slow?ms={{slow_ms}}",
+              "raw": "{{base_url}}/dev/slow?ms={{slow_ms}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "dev",
                 "slow"
               ],
@@ -2074,7 +2136,7 @@
                 "health"
               ]
             },
-            "description": "The pre-request script opens `max_concurrent_tasks` (64) slow requests at once. While they are in progress it sends one more request under /api/v1, which must be refused with 429 TOO_MANY_REQUESTS and Retry-After, and the readiness probe, which must still answer because health endpoints are exempt. Needs DEV_ENDPOINTS=true and `max_concurrent_tasks` equal to the service's MAX_CONCURRENT_TASKS; the tests are skipped when the dev endpoint is not mounted."
+            "description": "The pre-request script opens `max_concurrent_tasks` (64) slow requests at once. While they are in progress it sends one more request, which must be refused with 429 TOO_MANY_REQUESTS and Retry-After, and the liveness check, which must still answer because it is exempt. Through the Gateway the extra request is refused by the Gateway itself: its MAX_CONCURRENT_TASKS is also 64 and it counts the slow requests first. Needs DEV_ENDPOINTS=true and `max_concurrent_tasks` equal to the Gateway's MAX_CONCURRENT_TASKS; the tests are skipped when the dev endpoint is not mounted."
           },
           "response": [],
           "event": [
@@ -2084,27 +2146,28 @@
                 "type": "text/javascript",
                 "exec": [
                   "const base = pm.variables.get('base_url');",
+                  "const svc = (path) => ({ url: base + path, method: 'GET', header: { 'X-Service-Token': pm.variables.get('service_token') } });",
                   "const limit = Number(pm.variables.get('max_concurrent_tasks'));",
                   "const seen = {};",
                   "const save = () => pm.variables.set('limit_seen', JSON.stringify(seen));",
                   "save();",
                   "",
-                  "pm.sendRequest(base + '/api/v1/dev/slow?ms=0', (err, res) => {",
+                  "pm.sendRequest(svc('/dev/slow?ms=0'), (err, res) => {",
                   "  seen.dev = err ? 0 : res.code;",
                   "  save();",
                   "  if (seen.dev !== 200) { return; }",
                   "",
                   "  // Fill every slot. These are still running when the two requests below are sent.",
                   "  for (let i = 0; i < limit; i++) {",
-                  "    pm.sendRequest(base + '/api/v1/dev/slow?ms=3000', () => {});",
+                  "    pm.sendRequest(svc('/dev/slow?ms=3000'), () => {});",
                   "  }",
                   "  setTimeout(() => {",
-                  "    pm.sendRequest(base + '/api/v1/applicants?limit=1', (err, res) => {",
+                  "    pm.sendRequest(svc('/applicants?limit=1'), (err, res) => {",
                   "      if (!err) { seen.extra = { status: res.code, retryAfter: res.headers.get('Retry-After'), body: res.text() }; }",
                   "      save();",
                   "    });",
-                  "    pm.sendRequest(base + '/health/ready', (err, res) => {",
-                  "      if (!err) { seen.ready = res.code; }",
+                  "    pm.sendRequest(base + '/health', (err, res) => {",
+                  "      if (!err) { seen.live = res.code; }",
                   "      save();",
                   "    });",
                   "  }, 1000);",
@@ -2127,8 +2190,8 @@
                   "  pm.expect(JSON.parse(seen.extra.body).error.code).to.eql('TOO_MANY_REQUESTS');",
                   "  pm.expect(seen.extra.retryAfter).to.be.a('string').and.not.empty;",
                   "});",
-                  "check('/health/ready still answers while the limit is reached', () => {",
-                  "  pm.expect(seen.ready).to.eql(200);",
+                  "check('/health still answers while the limit is reached', () => {",
+                  "  pm.expect(seen.live).to.eql(200);",
                   "});",
                   "pm.test('200 OK', () => pm.response.to.have.status(200));"
                 ]

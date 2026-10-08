@@ -700,6 +700,27 @@
           }
         },
         {
+          "name": "patch profile - password back to seed-password (200, other collections log in as dima_mod)",
+          "request": {
+            "method": "PATCH",
+            "url": "{{base_url}}/players/{{dima_id}}",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{dima_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"password\": \"seed-password\"\n}"
+            }
+          }
+        },
+        {
           "name": "patch profile - email taken by another player (409 EMAIL_TAKEN)",
           "request": {
             "method": "PATCH",

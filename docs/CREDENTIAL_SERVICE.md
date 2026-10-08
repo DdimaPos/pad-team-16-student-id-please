@@ -324,8 +324,8 @@ never retried and somebody has to look at them (`last_error` on the delivery say
 
 A consumer that does not answer is **not** a readiness failure: every endpoint still works and
 the events wait in the outbox. A `pending` that keeps climbing is the signal that the Gateway,
-or that consumer behind it, has been away for a while, or does not serve `POST /events` yet
-(University Record `0.1.0` answers `404`, which is retried).
+or that consumer behind it, has been away for a while, or does not serve `POST /events` (a
+`404`, which is retried).
 
 ### 5.7 Error codes
 
@@ -752,8 +752,7 @@ to the consumer that cannot be reached wait in the outbox and go out when it ans
 oldest first; the other consumer is served all along. `/health/ready` stays `200 ok` with a
 climbing `consumers.<name>.pending`, and the relay retries with a backoff that doubles up to
 30 s, so a consumer down for a minute sees a handful of attempts rather than hundreds. A
-consumer that answers `404` because it does not serve `POST /events` yet (University Record
-`0.1.0`) is treated the same.
+consumer that answers `404` because it does not serve `POST /events` is treated the same.
 
 No peer events arrive while the Gateway is away; they wait in the producers' outboxes.
 

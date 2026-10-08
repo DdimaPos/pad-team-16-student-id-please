@@ -15,6 +15,38 @@
     {
       "key": "max_concurrent_tasks",
       "value": "64"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me_too"
+    },
+    {
+      "key": "jwt_secret",
+      "value": "change_me_to_a_random_string_of_32_chars_or_more"
+    },
+    {
+      "key": "player_id",
+      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
+    },
+    {
+      "key": "player_token",
+      "value": ""
+    },
+    {
+      "key": "expired_token",
+      "value": ""
+    },
+    {
+      "key": "foreign_token",
+      "value": ""
+    },
+    {
+      "key": "session_id",
+      "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
+    },
+    {
+      "key": "applicant_id",
+      "value": ""
     }
   ],
   "item": [
@@ -29,7 +61,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('names the gateway', () => pm.expect(pm.response.json().service).to.eql('gateway-service'));"
                 ]
               }
             }
@@ -42,14 +75,963 @@
       ]
     },
     {
+      "name": "Routing",
+      "description": "`{{base_url}}/api/v1/<prefix>/<rest>` is forwarded to the service behind `<prefix>` as `/api/v1/<rest>`, and `/api/v1/<prefix>/health` as the service's own `/health` (CPR README, Gateway). Method, query, body and the service's answer pass through unchanged; the Gateway only handles the credential (next folder), the limits (last folder) and `X-Request-ID`. Applicant and Credential Service are the examples; the mechanics are the same for every prefix of the route table.",
+      "item": [
+        {
+          "name": "A contract call through its prefix: POST /api/v1/applicant/applicants/next",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "Forwarded to Applicant Service as `POST /api/v1/applicants/next`. The same path exists in Credential and University Record Service; the prefix is what tells them apart. Service-only route, hence the token.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('the service answered: an applicant was created', () => {",
+                  "  pm.expect(body.applicant_id).to.be.a('string');",
+                  "});",
+                  "pm.collectionVariables.set('applicant_id', body.applicant_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A service's health: /api/v1/applicant/health -> /health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "health"
+              ]
+            },
+            "description": "Health checks live outside the service's `/api/v1` tree, so this is the one path the Gateway rewrites differently. Public, and exempt from the concurrent task limit."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by Applicant Service, not the Gateway', () => {",
+                  "  pm.expect(pm.response.json().service).to.eql('applicant-service');",
+                  "});",
+                  "pm.test('the Gateway added X-Request-ID', () => {",
+                  "  pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The same path behind another prefix: /api/v1/credential/health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "health"
+              ]
+            },
+            "description": "Only the prefix differs; the request reaches a different service."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by Credential Service', () => {",
+                  "  pm.expect(pm.response.json().service).to.eql('credential-service');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Forgotten prefix (404 NOT_FOUND)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/{{applicant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "`/api/v1/applicants/...` is the service's own path; through the Gateway it needs `/api/v1/applicant/` in front. No service is registered as `applicants`, so the Gateway answers itself, before any credential check, and `details.service` names the segment it did not recognise."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});",
+                  "pm.test('details name the unknown prefix', () => {",
+                  "  pm.expect(pm.response.json().error.details.service).to.eql('applicants');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "A path that climbs out of the service (400 VALIDATION_ERROR)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/%2e%2e/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "%2e%2e",
+                "health"
+              ]
+            },
+            "description": "`..`, plain or percent-encoded, never reaches a service: the Gateway refuses the path itself."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('VALIDATION_ERROR');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The service's own error passes through unchanged",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/applicants/00000000-0000-4000-8000-000000000000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "00000000-0000-4000-8000-000000000000"
+              ]
+            },
+            "description": "A 404 from Applicant Service, not from the Gateway: the code is the service's own (`APPLICANT_NOT_FOUND`), and status, headers and body arrive as the service wrote them. Compare with the Gateway's own 404 two requests up, whose code is `NOT_FOUND`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
+                  "pm.test('the code is the service\\'s, APPLICANT_NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('APPLICANT_NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "X-Request-ID is kept when the caller sends one",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-ID",
+                "value": "{{request_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "health"
+              ]
+            },
+            "description": "The Gateway generates `X-Request-ID` only when the caller sent none; a caller's own id is forwarded to the service and returned, so one id follows a request through the logs of every hop."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('request_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the id sent is the id returned', () => {",
+                  "  pm.expect(pm.response.headers.get('X-Request-ID')).to.eql(pm.variables.get('request_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Authorization",
+      "description": "Credentials are checked at the Gateway and only there (CPR README, Authentication). A player sends `Authorization: Bearer <jwt>` (HS256 with JWT_SECRET, `sub` = the player's id, `iat`, `exp`); a service sends `X-Service-Token`. The Gateway checks the credential the route accepts, removes `Authorization`, `X-Service-Token` and any `X-Player-Id` of the caller, and sets `X-Player-Id: <sub>` for a player. A refusal uses the shared envelope and reaches no service. The collection's pre-request script mints the player tokens with `jwt_secret`; `service_token` and `jwt_secret` must match the Gateway's SERVICE_TOKEN and JWT_SECRET. The first two requests need the applicant created in the Routing folder.",
+      "item": [
+        {
+          "name": "Player-or-service route as a player (200, forwarded with X-Player-Id)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "`GET /applicants/{id}` on Applicant Service accepts either credential. With a player token the service receives `X-Player-Id: <sub>` and no token."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the applicant asked for', () => {",
+                  "  pm.expect(pm.response.json().applicant_id).to.eql(pm.collectionVariables.get('applicant_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Player-or-service route as a service (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "The same route with the service token, as Moderation Service calls it. The service receives no `X-Player-Id` at all."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Player route without a credential (401 UNAUTHENTICATED)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/applicants/00000000-0000-4000-8000-000000000000/documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "applicants",
+                "00000000-0000-4000-8000-000000000000",
+                "documents"
+              ]
+            },
+            "description": "`GET /applicants/{id}/documents` is player only. No token: refused before the service is called, so the applicant id does not even have to exist."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('UNAUTHENTICATED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Player route with only a service token (401)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/applicants/00000000-0000-4000-8000-000000000000/documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "applicants",
+                "00000000-0000-4000-8000-000000000000",
+                "documents"
+              ]
+            },
+            "description": "On a player-only route the service token is ignored: it does not identify a player."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('UNAUTHENTICATED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Player token signed with another secret (401)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{foreign_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/applicants/00000000-0000-4000-8000-000000000000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "00000000-0000-4000-8000-000000000000"
+              ]
+            },
+            "description": "Well-formed, unexpired, but not signed with the Gateway's JWT_SECRET. Only Player Service holds that secret."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('UNAUTHENTICATED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Expired player token (401)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{expired_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/applicants/00000000-0000-4000-8000-000000000000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "00000000-0000-4000-8000-000000000000"
+              ]
+            },
+            "description": "Correctly signed, `exp` an hour ago. The Gateway tolerates JWT_LEEWAY_SECONDS (5) of clock skew, no more."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('UNAUTHENTICATED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Malformed Authorization header (401)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Token {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/applicants/00000000-0000-4000-8000-000000000000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "00000000-0000-4000-8000-000000000000"
+              ]
+            },
+            "description": "The header must be `Bearer <token>`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('UNAUTHENTICATED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Service-only route without a token (403 SERVICE_TOKEN_REQUIRED)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Readiness leaks dependency state and is a service-only route (docs/APPLICANT_SERVICE.md §14)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Service-only route with a player token (403)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "`POST /applicants/next` takes the service token only. A player token, however valid, is the wrong kind of credential: 403, not 401, and nothing is created.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Wrong service token (401 INVALID_SERVICE_TOKEN)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "not-the-token"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Present but not the stack's SERVICE_TOKEN."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('INVALID_SERVICE_TOKEN');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Service-only route with the service token (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Forwarded; the service receives neither the token nor an `X-Player-Id`."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('answered by Credential Service', () => {",
+                  "  pm.expect(pm.response.json().service).to.eql('credential-service');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Public route ignores credentials (200)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer garbage"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "11111111-1111-4111-8111-111111111111"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "health"
+              ]
+            },
+            "description": "Public routes need no credential and get none: the Gateway forwards them without a check, and strips `Authorization`, `X-Service-Token` and any `X-Player-Id` the caller sent, so nobody can pose as a player by setting the header themselves."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Dev route with a player token (403)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/dev/slow?ms=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "`/dev/*` and `/admin/*` are beyond the contract and forwarded with the service token only, whatever the service behind them does - the rule the Limits folder relies on."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Dev route with the service token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/dev/slow?ms=0",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "0"
+                }
+              ]
+            },
+            "description": "Forwarded. Answers 200 when Applicant Service runs with DEV_ENDPOINTS=true, its own 404 otherwise."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The dev endpoint answers 404 when the service runs without DEV_ENDPOINTS=true.",
+                  "const check = pm.response.code === 404 ? pm.test.skip : pm.test;",
+                  "check('200 OK, the service did nothing for 0 ms', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().slept_ms).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "Limits (needs DEV_ENDPOINTS=true)",
-      "description": "Task timeout and concurrent task limit, demonstrated with GET /api/v1/dev/slow.",
+      "description": "Task timeout and concurrent task limit, demonstrated with Applicant Service's GET /api/v1/dev/slow through the Gateway. `/dev/*` is forwarded with the service token only, so every request here carries `service_token`.",
       "item": [
         {
           "name": "Task timeout (408)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
               "raw": "{{base_url}}/api/v1/applicant/dev/slow?ms={{slow_ms}}",
               "host": [
@@ -69,7 +1051,7 @@
                 }
               ]
             },
-            "description": "Asks Applicant Service, through the Gateway, to do nothing for `slow_ms` (6000 ms). With the defaults the service stops the task at its own 5s and the Gateway passes that 408 through unchanged; the Gateway's own 408 (details.service) appears when it runs with a timeout below the service's, e.g. HTTP_REQUEST_TIMEOUT=2. Needs DEV_ENDPOINTS=true in Applicant Service."
+            "description": "Asks Applicant Service, through the Gateway, to do nothing for `slow_ms` (6000 ms). With the defaults the service stops the task at its own 5s and the Gateway passes that 408 through unchanged; the Gateway's own 408 (details.service) appears when it runs with a timeout below the service's, e.g. HTTP_REQUEST_TIMEOUT=2. Needs DEV_ENDPOINTS=true in Applicant Service and the service token, which /dev routes require."
           },
           "response": [],
           "event": [
@@ -109,7 +1091,7 @@
                 "health"
               ]
             },
-            "description": "The pre-request script opens `max_concurrent_tasks` (64) slow requests through the Gateway at once. While they are in progress one more proxied request must be refused with 429 TOO_MANY_REQUESTS and Retry-After, and the Gateway's own GET /health must still answer. Needs DEV_ENDPOINTS=true in Applicant Service and `max_concurrent_tasks` equal to the Gateway's MAX_CONCURRENT_TASKS."
+            "description": "The pre-request script opens `max_concurrent_tasks` (64) slow requests through the Gateway at once. While they are in progress one more proxied request must be refused with 429 TOO_MANY_REQUESTS and Retry-After, and the Gateway's own GET /health must still answer. Needs DEV_ENDPOINTS=true in Applicant Service, the service token (/dev routes require it) and `max_concurrent_tasks` equal to the Gateway's MAX_CONCURRENT_TASKS."
           },
           "response": [],
           "event": [
@@ -120,21 +1102,22 @@
                 "exec": [
                   "const base = pm.variables.get('base_url');",
                   "const limit = Number(pm.variables.get('max_concurrent_tasks'));",
+                  "const service = { 'X-Service-Token': pm.variables.get('service_token') };",
                   "const seen = {};",
                   "const save = () => pm.variables.set('limit_seen', JSON.stringify(seen));",
                   "save();",
                   "",
-                  "pm.sendRequest(base + '/api/v1/applicant/dev/slow?ms=0', (err, res) => {",
+                  "pm.sendRequest({ url: base + '/api/v1/applicant/dev/slow?ms=0', method: 'GET', header: service }, (err, res) => {",
                   "  seen.dev = err ? 0 : res.code;",
                   "  save();",
                   "  if (seen.dev !== 200) { return; }",
                   "",
                   "  // Fill every slot. These are still running when the two requests below are sent.",
                   "  for (let i = 0; i < limit; i++) {",
-                  "    pm.sendRequest(base + '/api/v1/applicant/dev/slow?ms=3000', () => {});",
+                  "    pm.sendRequest({ url: base + '/api/v1/applicant/dev/slow?ms=3000', method: 'GET', header: service }, () => {});",
                   "  }",
                   "  setTimeout(() => {",
-                  "    pm.sendRequest(base + '/api/v1/applicant/applicants?limit=1', (err, res) => {",
+                  "    pm.sendRequest({ url: base + '/api/v1/applicant/applicants?limit=1', method: 'GET', header: service }, (err, res) => {",
                   "      if (!err) { seen.extra = { status: res.code, retryAfter: res.headers.get('Retry-After'), body: res.text() }; }",
                   "      save();",
                   "    });",
@@ -172,6 +1155,34 @@
           ]
         }
       ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Player tokens, signed the way Player Service signs them: HS256 with JWT_SECRET, `sub` = the",
+          "// player's id, `iat` and `exp`. The Gateway verifies the signature, so `jwt_secret` must be the",
+          "// JWT_SECRET of the Gateway being called (gateway-service/.env).",
+          "function b64url(words) {",
+          "  return CryptoJS.enc.Base64.stringify(words)",
+          "    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+          "}",
+          "function mint(claims, secret) {",
+          "  const header = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));",
+          "  const payload = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(claims)));",
+          "  return header + '.' + payload + '.' + b64url(CryptoJS.HmacSHA256(header + '.' + payload, secret));",
+          "}",
+          "const now = Math.floor(Date.now() / 1000);",
+          "const sub = pm.variables.get('player_id');",
+          "const secret = pm.variables.get('jwt_secret');",
+          "pm.collectionVariables.set('player_token', mint({ sub: sub, iat: now, exp: now + 3600 }, secret));",
+          "pm.collectionVariables.set('expired_token', mint({ sub: sub, iat: now - 7200, exp: now - 3600 }, secret));",
+          "pm.collectionVariables.set('foreign_token', mint({ sub: sub, iat: now, exp: now + 3600 }, 'not-the-secret-of-this-gateway-at-all'));"
+        ]
+      }
     }
   ]
 }

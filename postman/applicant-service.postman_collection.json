@@ -33,6 +33,26 @@
     {
       "key": "max_concurrent_tasks",
       "value": "64"
+    },
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me_too"
+    },
+    {
+      "key": "jwt_secret",
+      "value": "change_me_to_a_random_string_of_32_chars_or_more"
+    },
+    {
+      "key": "player_id",
+      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
+    },
+    {
+      "key": "player_token",
+      "value": ""
     }
   ],
   "item": [
@@ -86,7 +106,7 @@
                 "ready"
               ]
             },
-            "description": "Reports whether the service can do useful work. Postgres is the only hard dependency; events wait in the outbox while a consumer is unreachable."
+            "description": "Reports whether the service can do useful work. Postgres is the only hard dependency; without RabbitMQ the status is \"degraded\" and events queue in the outbox until it returns."
           },
           "response": [],
           "event": [
@@ -99,7 +119,8 @@
                   "const body = pm.response.json();",
                   "pm.test('postgres is up', () => {",
                   "  pm.expect(body.components.postgres.status).to.eql('up');",
-                  "});"
+                  "});",
+                  "console.log('broker:', body.components.rabbitmq.status);"
                 ]
               }
             }
@@ -879,6 +900,593 @@
                 "exec": [
                   "pm.test('404 Not Found', () => pm.response.to.have.status(404));",
                   "pm.test('NOT_FOUND', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Through the Gateway",
+      "description": "In the running system nothing calls Applicant Service directly: every request enters at the Gateway as `{{gateway_url}}/api/v1/applicant/...`, which checks the credential, removes it and forwards the rest to the service's `/api/v1/...` (CPR README, Gateway and Authentication). A service call carries `X-Service-Token`; a player's carries `Authorization: Bearer <jwt>`, which this folder's pre-request script mints for `player_id` with `jwt_secret`. `service_token` and `jwt_secret` must match the Gateway's SERVICE_TOKEN and JWT_SECRET, and the Gateway must reach the service as APPLICANT_URL. The policy per route is the Gateway's; the service itself checks no credential and reads only `X-Player-Id`.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Player tokens, signed the way Player Service signs them: HS256 with JWT_SECRET, `sub` = the",
+              "// player's id, `iat` and `exp`. The Gateway verifies the signature, so `jwt_secret` must be the",
+              "// JWT_SECRET of the Gateway being called (gateway-service/.env).",
+              "function b64url(words) {",
+              "  return CryptoJS.enc.Base64.stringify(words)",
+              "    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+              "}",
+              "function mint(claims, secret) {",
+              "  const header = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));",
+              "  const payload = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(claims)));",
+              "  return header + '.' + payload + '.' + b64url(CryptoJS.HmacSHA256(header + '.' + payload, secret));",
+              "}",
+              "const now = Math.floor(Date.now() / 1000);",
+              "const sub = pm.variables.get('player_id');",
+              "const secret = pm.variables.get('jwt_secret');",
+              "pm.collectionVariables.set('player_token', mint({ sub: sub, iat: now, exp: now + 3600 }, secret));"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Service health (public)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/health",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "health"
+              ]
+            },
+            "description": "`/api/v1/applicant/health` is forwarded to the service's `/health`: a public route, no credential, not counted as a task. The Gateway adds `X-Request-ID` when the caller sent none."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('reports the service', () => {",
+                  "  pm.expect(pm.response.json().service).to.eql('applicant-service');",
+                  "});",
+                  "pm.test('the Gateway added X-Request-ID', () => {",
+                  "  pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness (service token)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/health/ready",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Readiness leaks dependency state, so the Gateway forwards it only with the service token; without one it answers 403 SERVICE_TOKEN_REQUIRED."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('postgres is up', () => {",
+                  "  pm.expect(pm.response.json().components.postgres.status).to.eql('up');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Next applicant - Session Service's call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/next",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "How Server Moderation Session Service calls it: `POST {gateway}/api/v1/applicant/applicants/next` with the shared `X-Service-Token`. The Gateway forwards it as `POST /api/v1/applicants/next` without the token, and never retries it, so an applicant is never created twice.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns the identifiers only', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql(",
+                  "    ['applicant_id', 'created_at', 'session_id']);",
+                  "});",
+                  "pm.collectionVariables.set('applicant_id', body.applicant_id);",
+                  "console.log('applicant_id =', body.applicant_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Next applicant without the service token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/next",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "A service-only route: no service token, no forwarding. The service is not called, so nothing was created.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Next applicant with a player token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/next",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "A player cannot create applicants and desynchronise sessions, whatever token they hold: a service-only route takes the service token and nothing else.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get applicant as a player - the game client",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "What the game shows the Moderator. The route accepts a player or a service; for a player the Gateway forwards `X-Player-Id: <sub>` and nothing else - the service never sees the token."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('exactly the eleven contract fields', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql([",
+                  "    'applicant_id', 'courses', 'created_at', 'email', 'major', 'name',",
+                  "    'role', 'session_id', 'student_id', 'university_status', 'year']);",
+                  "});",
+                  "pm.test('the truth never leaks', () => {",
+                  "  const raw = pm.response.text().toLowerCase();",
+                  "  ['actual', 'lie_archetype', 'is_honest'].forEach(",
+                  "    f => pm.expect(raw).to.not.include(f));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get applicant as a service - Moderation Service's call",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "Moderation Service reads the claimed profile with the service token, never with the Moderator's token."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the applicant asked for', () => {",
+                  "  pm.expect(pm.response.json().applicant_id).to.eql(pm.collectionVariables.get('applicant_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get applicant without a credential",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "A route that needs a calling player or a service got neither. Refused at the Gateway; the service is not called."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('UNAUTHENTICATED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List applicants as a player",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants?limit=5",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "The CRUD extensions are administrative (docs/APPLICANT_SERVICE.md §14): a player could pre-read applicants they have not met. The Gateway admits them with the service token only."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List applicants with the service token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants?limit=5",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "The same extension, as an administrator or a test would call it."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('paginated shape', () => {",
+                  "  pm.expect(body.items).to.be.an('array');",
+                  "  pm.expect(body.total).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /events - contract endpoint, not in image 2.0.0",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/events",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "events"
+              ]
+            },
+            "description": "The contract's event endpoint (CPR README, Event delivery), through which the other two applicant-data services push `applicant.initialized`. The Gateway admits it with the service token and forwards it; image 2.0.0 does not serve it, so the service's own `404 NOT_FOUND` comes back unchanged - see docs/APPLICANT_SERVICE.md §12. The tests pin that until the endpoint ships.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"aaaa1111-2222-4333-8444-555566667777\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-13T11:00:00Z\",\n  \"producer\": \"credential-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"7c1e4a90-1111-4222-8333-444455556666\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"credential-service\",\n    \"difficulty\": 2,\n    \"claimed\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    },\n    \"actual\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('image 2.0.0 does not serve it yet: the service\\'s own 404 passes through', () => {",
+                  "  pm.response.to.have.status(404);",
                   "  pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND');",
                   "});"
                 ]

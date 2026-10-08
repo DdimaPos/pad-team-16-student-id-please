@@ -1792,9 +1792,10 @@ the contract.
 **Not yet wired: the Gateway.** The Gateway image is not published yet, so `docker-compose.yml`,
 `.env.example` and the Postman collections still address every service directly, and every service
 port in the table above stays published during Lab 2 development; they switch to the Gateway in the
-PR that adds its image. No published service image yet trusts `X-Player-Id`; only Applicant and
-Credential (`2.0.0`) answer `408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS` and carry a Lab 2
-version tag. The per-service
+PR that adds its image. The Applicant, Credential and Gateway collections already carry the calls
+through the Gateway, for a Gateway run from its repository (`postman/`, "Through the Gateway"). No
+published service image yet trusts `X-Player-Id`; only Applicant and Credential (`2.0.0`) answer
+`408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS` and carry a Lab 2 version tag. The per-service
 notes under [Endpoints](#endpoints) and the `docs/` references list what each one still does instead.
 
 **Not yet wired: event delivery.** No published image implements [Event delivery](#event-delivery)

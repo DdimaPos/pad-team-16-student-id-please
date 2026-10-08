@@ -62,14 +62,15 @@ two, publishes two events and consumes one.
 | **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/session/...` |
 | **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres plus each of the three dependencies, and says which are stubbed) |
 | **Database** | PostgreSQL 17, `session_db` (own container, host port `5438`). Schema applied at startup by GORM `AutoMigrate`. **No Redis** - see [§8](#8-divergences-from-the-cpr-contract) |
-| **Events** | Direct HTTP push (contract): produced events are relayed from the outbox to the consumers' `POST /api/v1/events`; `decision.recorded` arrives on its own `POST /api/v1/events`. **`0.1.0` has the outbox but neither the relay nor the endpoint** - see [§6](#6-events) |
-| **Caller identity** | Contract: `X-Player-Id`, set by the Gateway after it validated the player's JWT; the service validates no token. `0.1.0` reads the player id from an unverified `Authorization: Bearer <jwt>` and accepts `X-Player-Id` as a fallback. Outbound calls go through the Gateway with `X-Service-Token`; `0.1.0` calls peers directly and sends none - see [§8](#8-divergences-from-the-cpr-contract) |
-| **Docker image** | `dimapos/server-moderation-session-service:0.1.0` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64` |
+| **Events** | Direct HTTP push (contract): produced events are relayed from the outbox to the consumers' `POST /api/v1/events`, tracked per consumer; `decision.recorded` arrives on its own `POST /api/v1/events` - see [§6](#6-events) |
+| **Caller identity** | `X-Player-Id`, set by the Gateway after it validated the player's JWT; the service validates no token. Outbound calls go through the Gateway with `X-Service-Token` |
+| **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health` and `/health/ready` are exempt |
+| **Docker image** | `dimapos/server-moderation-session-service:2.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64`, published by GitHub Actions on merge to `main` |
 | **Producer name** | `server-moderation-session-service` - the value in the `producer` member of every event it publishes |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`; `details` is always an object, never `null` |
 | **Timestamps** | ISO-8601, UTC |
 | **Identifiers** | UUID v4 strings |
-| **Architecture** | Layered: `domain` (entities, the session rules, sentinel errors, event wire types), `clients` (the three outbound clients + their stubs), `repository` (interfaces; `postgres` on GORM, `memory` fake for tests), `service` (use cases), `httpapi` (router, middleware, handlers), `seed`, `logging` |
+| **Architecture** | Layered: `domain` (entities, the session rules, sentinel errors, event wire types), `clients` (the three outbound clients + their stubs), `relay` (pushes the outbox to the consumers), `repository` (interfaces; `postgres` on GORM, `memory` fake for tests), `service` (use cases), `httpapi` (router, middleware, handlers), `seed`, `logging` |
 
 ---
 
@@ -88,7 +89,7 @@ docker run -d --name session-postgres --network student-id-net \
 
 docker run -d --name session-service --network student-id-net -p 8088:8080 \
   -e POSTGRES_HOST=session-postgres -e POSTGRES_PASSWORD=change_me \
-  dimapos/server-moderation-session-service:0.1.0
+  dimapos/server-moderation-session-service:2.0.0
 ```
 
 Simpler: the root [`docker-compose.yml`](../docker-compose.yml) already carries both blocks.
@@ -101,12 +102,14 @@ peer's prefix:
 ```bash
 -e PLAYER_SERVICE_URL=http://gateway-service:8080/api/v1/player \
 -e RULES_SERVICE_URL=http://gateway-service:8080/api/v1/server-rules \
--e APPLICANT_SERVICE_URL=http://gateway-service:8080/api/v1/applicant
+-e APPLICANT_SERVICE_URL=http://gateway-service:8080/api/v1/applicant \
+-e UNIVERSITY_RECORD_SERVICE_URL=http://gateway-service:8080/api/v1/university-record \
+-e DISCORD_DMS_SERVICE_URL=http://gateway-service:8080/api/v1/discord-dms \
+-e SERVICE_TOKEN=<the stack's SERVICE_TOKEN>
 ```
 
-Until the Gateway image is published, the root compose file points them at the services directly
-(`http://player-service:8080`, `http://server-rules-service:8080`, `http://applicant-service:8081`).
-Doing either is worth it: it is the difference between a demonstration and a stub answering itself.
+The root compose file sets exactly these. The last two are event consumers only; `PLAYER_SERVICE_URL`
+also receives `session.ended`. `SERVICE_TOKEN` is required as soon as any URL is set.
 
 ### From source (development)
 
@@ -132,30 +135,34 @@ once.
 | `APP_PORT` | `8080` | Port inside the container. The team convention is 8080 for every service |
 | `APP_ENV` | `local` | `local` \| `docker` \| `production`. Anything but `local` puts Gin in release mode and the logs in JSON |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
-| `SERVICE_VERSION` | `0.1.0` | Reported by `GET /health`. Keep in sync with the image tag |
+| `SERVICE_VERSION` | the image's `VERSION` | Reported by `GET /health`; overrides the version stamped into the image at build time |
 | `HTTP_READ_TIMEOUT` / `HTTP_WRITE_TIMEOUT` / `SHUTDOWN_TIMEOUT` | `10s` / `10s` / `15s` | |
 | `POSTGRES_HOST` / `PORT` / `USER` / `DB` / `SSLMODE` | `localhost` / `5432` / `session_user` / `session_db` / `disable` | |
 | **`POSTGRES_PASSWORD`** | **none** | **Required.** The service refuses to start without it |
 | `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` / `DB_CONN_MAX_LIFETIME` | `25` / `5` / `30m` | Connection pool |
 | `DB_AUTO_MIGRATE` | `true` | Applies the schema at startup |
-| `PLAYER_SERVICE_URL` | `""` | Gateway URL of Player Service (`.../api/v1/player`). Empty selects the built-in stub |
+| `PLAYER_SERVICE_URL` | `""` | Gateway URL of Player Service (`.../api/v1/player`), for the player lookup and the `session.ended` push. Empty selects the built-in stub and leaves Player's deliveries pending |
 | `RULES_SERVICE_URL` | `""` | Gateway URL of Server Rules (`.../api/v1/server-rules`). Empty selects the built-in stub |
 | `APPLICANT_SERVICE_URL` | `""` | Gateway URL of Applicant Service (`.../api/v1/applicant`). Empty selects the built-in stub |
-| `DEPENDENCY_TIMEOUT` | `5s` | Applies to every outbound call. Contract: must be below `HTTP_REQUEST_TIMEOUT` |
-| `SERVICE_TOKEN` | - | Contract: sent as `X-Service-Token` on every outbound call. **Not read by `0.1.0`** |
-| `HTTP_REQUEST_TIMEOUT` | `5s` | Contract: task timeout; reached = `408 REQUEST_TIMEOUT`. **Not in `0.1.0`** |
-| `MAX_CONCURRENT_TASKS` | per deployment | Contract: concurrent task limit; reached = `429 TOO_MANY_REQUESTS`. **Not in `0.1.0`** |
+| `UNIVERSITY_RECORD_SERVICE_URL` | `""` | Gateway URL of University Record (`.../api/v1/university-record`), for the event pushes. Empty leaves its deliveries pending |
+| `DISCORD_DMS_SERVICE_URL` | `""` | Gateway URL of Discord DMs (`.../api/v1/discord-dms`), for the event pushes. Empty leaves its deliveries pending |
+| `SERVICE_TOKEN` | - | Sent as `X-Service-Token` on every outbound call and event push. **Required** as soon as any URL above is set |
+| `DEPENDENCY_TIMEOUT` | `3s` | Applies to every outbound call and push. Must be below `HTTP_REQUEST_TIMEOUT` |
+| `HTTP_REQUEST_TIMEOUT` | `5s` | Task timeout; reached = `408 REQUEST_TIMEOUT`. Must be below `HTTP_WRITE_TIMEOUT` |
+| `MAX_CONCURRENT_TASKS` | `50` | Concurrent task limit; reached = `429 TOO_MANY_REQUESTS` with `Retry-After: 1` |
+| `RELAY_INTERVAL` | `1s` | How often the relay looks for deliveries that are due |
+| `RELAY_BATCH` | `50` | The most deliveries one relay pass sends |
 | `MAX_PLAYERS_PER_SESSION` | `5` | The contract's cap: 1 Moderator + up to 4 Junior Moderators |
 | `SCORE_PER_CORRECT` | `10` | Multiplied by the difficulty on a correct decision |
 | `XP_BASE` | `20` | What every player earns for working the shift at all |
 | `MODERATOR_MULTIPLIER` | `1.25` | Scales the Moderator's XP |
 | `WARNING_PENALTY_THRESHOLD` | `25` | Penalty share above which a player is warned |
 | `SEED_ON_START` | `true` | Seeds three sessions, but only when the table is empty |
-| `ENABLE_DEV_ENDPOINTS` | `true` | Mounts `POST /api/v1/dev/events/decision-recorded` |
+| `ENABLE_DEV_ENDPOINTS` | `true` | Mounts `GET /api/v1/dev/slow?ms=` |
 
 Two switches matter in a shared stack. `SEED_ON_START` is harmless - it is a no-op once the table
-has rows. `ENABLE_DEV_ENDPOINTS` mounts an endpoint that moves a session's score and penalties with
-no credential at all, and should be off outside the demo.
+has rows. `ENABLE_DEV_ENDPOINTS` mounts an endpoint that only waits, to demonstrate the `408` and the
+`429`; the Gateway forwards `/dev/*` only with the service token.
 
 ---
 
@@ -168,11 +175,6 @@ All paths are under `/api/v1`; callers reach them through the Gateway as
 forwards the player id as `X-Player-Id`. Requests that act for "the calling player" read that header
 and nothing else; a request without it answers `401 UNAUTHENTICATED`.
 
-**Image `0.1.0`** predates the Gateway. It reads the player id from the `sub` claim of an
-`Authorization: Bearer <jwt>` token whose signature is never checked, and accepts `X-Player-Id:
-<uuid>` as a fallback. A request with neither answers `401 MISSING_PLAYER_IDENTITY`; so does one whose
-token is present but unusable. Moving to the contract means deleting the Bearer branch of
-`internal/httpapi/identity.go` and renaming the error code.
 
 ### 5.1 Contract endpoints
 
@@ -252,7 +254,7 @@ defines the relationship:
 
 None of these are in the CPR contract. Nothing else in the system calls them; they exist so a client
 and a grader can work with sessions without already knowing an id, and so the events this service
-produces can be inspected while the relay does not exist.
+produces and their delivery can be inspected.
 
 | Method | Path | Identity | Notes |
 | --- | --- | --- | --- |
@@ -261,7 +263,8 @@ produces can be inspected while the relay does not exist.
 | `DELETE` | `/sessions/{session_id}/players/{player_id}` | required | `204`. Leave a lobby. The creator leaving deletes the session |
 | `GET` | `/sessions/{session_id}/decisions?limit=&offset=` | no | The decision log, newest first |
 | `GET` | `/sessions/{session_id}/events?limit=&offset=` | no | The outbox, **oldest first** - the order they happened in |
-| `POST` | `/dev/events/decision-recorded` | no | Flag-gated. Delivers a `decision.recorded` envelope |
+| `GET` | `/sessions/{session_id}/deliveries` | no | `{ items, total }`: per event and consumer, `status` (`pending` \| `delivered` \| `parked`), `attempts`, `next_attempt_at`, `last_error`, `delivered_at` |
+| `GET` | `/dev/slow?ms=` | no | Flag-gated. Waits `ms` (at most `60000`); demonstrates `408` and `429` |
 
 A session that started cannot be deleted: a shift that ran is history, and other services hold
 copies of it.
@@ -270,8 +273,7 @@ Pagination defaults to `limit=20` and caps at `100`, everywhere.
 
 ### 5.3 Error codes
 
-The eleven the contract lists for this service, plus the universal two, plus three this
-implementation introduces.
+The eleven the contract lists for this service, plus the contract's shared codes.
 
 | Code | Status | When |
 | --- | --- | --- |
@@ -286,13 +288,13 @@ implementation introduces.
 | `NOT_SESSION_CREATOR` | 403 | Starting, deleting, or removing somebody else |
 | `NOT_MODERATOR` | 403 | Asking for an applicant or ending, as anyone but the Moderator |
 | `MODERATOR_NOT_IN_SESSION` | 422 | `moderator_id` is not one of the session's players |
-| `VALIDATION_ERROR` | 422 | A field or query parameter is unusable. `details` names it. **Contract: `400`** |
-| `DEPENDENCY_UNAVAILABLE` | 500 | One of the three services did not answer. **Nothing was changed** |
-| `INVALID_SESSION_ID` | 400 | A path id that is not a UUID. **Contract: `400 VALIDATION_ERROR`** |
-| `MISSING_PLAYER_IDENTITY` | 401 | No bearer token and no `X-Player-Id`; or a token that is not JWT-shaped, carries no `sub`, or whose `sub` is not a UUID. **Contract: `401 UNAUTHENTICATED`** |
-| `MALFORMED_BODY` | 400 | The body is not JSON. **Contract: `400 VALIDATION_ERROR`** |
-| `REQUEST_TIMEOUT` | 408 | Contract: the task timeout was reached. **Not in `0.1.0`** |
-| `TOO_MANY_REQUESTS` | 429 | Contract: the concurrent task limit was reached, with `Retry-After`. **Not in `0.1.0`** |
+| `VALIDATION_ERROR` | 400 | Anything malformed: a body that is not JSON or misses a field, a path id that is not a UUID, a bad query parameter. `details` names it |
+| `UNAUTHENTICATED` | 401 | A route that acts for a player got no usable `X-Player-Id` |
+| `INVALID_EVENT` | 422 | `POST /events` only - see [§6](#6-events) |
+| `DEPENDENCY_UNAVAILABLE` | 500 | One of the three services did not answer, or the Gateway answered `502`/`408`/`429` for it. `details.dependency` names it. **Nothing was changed** |
+| `REQUEST_TIMEOUT` | 408 | The task timeout was reached; the transaction was rolled back |
+| `TOO_MANY_REQUESTS` | 429 | The concurrent task limit was reached, with `Retry-After` |
+| `PLAYER_NOT_IN_SESSION` | 404 | Beyond contract: leaving a lobby the player is not in |
 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` / `INTERNAL_ERROR` | 404 / 405 / 500 | Routing and unexpected failures |
 
 ---
@@ -304,12 +306,11 @@ produced events are relayed from the outbox to each consumer's `{gateway}/api/v1
 with `X-Service-Token`, and `decision.recorded` is pushed by Moderation Service to this service's own
 `POST /api/v1/events` (reached as `{gateway}/api/v1/session/events`).
 
-**Image `0.1.0` implements the outbox, but not the relay and not `POST /api/v1/events`.**
-
 The **outbox**: Every published event is written to the `outbox_events` table
-**inside the same database transaction as the state change that produced it**, so an event can never
-exist without the state it announces, nor the reverse. `GET /sessions/{id}/events` returns those rows
-rendered as full envelopes.
+**inside the same database transaction as the state change that produced it**, together with one
+pending row per consumer in `outbox_deliveries`, so an event can never exist without the state it
+announces, nor the reverse. `GET /sessions/{id}/events` returns those rows rendered as full
+envelopes, `GET /sessions/{id}/deliveries` their delivery state.
 
 ### Published
 
@@ -357,24 +358,33 @@ than once. This service does, in two layers, both inside one transaction:
 2. `session_decisions` is keyed by `decision_id`. So even a redelivery under a *fresh* `event_id`
    cannot count the same decision twice.
 
-A replay is a **success**, not an error. The dev endpoint reports `"duplicate": true` so a caller can
-see the deduplication fire.
+A replay is a **success**, not an error. `POST /api/v1/events` reports `"duplicate": true` so a
+caller can see the deduplication fire.
 
-### Wiring the contract's delivery
+### The relay (producer side)
 
-Two hooks, and no changes to anything above:
+Every `RELAY_INTERVAL` the relay reads the pending deliveries that are due and `POST`s each envelope,
+unchanged, to `{consumer URL}/events` with `X-Service-Token` - one goroutine per consumer, so a
+consumer that hangs until `DEPENDENCY_TIMEOUT` delays only its own deliveries:
 
-1. **Relay.** Drain `outbox_events` and `POST` each envelope, unchanged, through the Gateway to
-   `{gateway}/api/v1/<consumer>/events` for every consumer of its type (`session.started`:
-   `university-record`, `discord-dms`; `session.ended`: `player`, `discord-dms`,
-   `university-record`), with `X-Service-Token`. Delivery has to be tracked per
-   consumer, not by the single `published_at` column: `2xx` = delivered, `422 INVALID_EVENT` =
-   parked, anything else (the Gateway's `408`/`429`/`502` included) = retried with backoff capped at
-   30 s.
-2. **`POST /api/v1/events`.** The Gateway has already checked the service token; decode the envelope, call
-   `service.SessionService.ApplyDecisionRecorded` - the same method the dev endpoint calls - and
-   answer `200` (`"duplicate"` as today), `422 INVALID_EVENT` for an unusable event, `500` for a
-   transient failure.
+| Consumer answers | Delivery becomes |
+| --- | --- |
+| `2xx` | `delivered` |
+| `422 INVALID_EVENT` | `parked`, logged as an error; never retried |
+| Anything else (the Gateway's `408`/`429`/`502`, any `5xx`, another `4xx`), a timeout or a refused connection | stays `pending`, retried after 1 s, 2 s, 4 s … capped at 30 s |
+
+A consumer whose URL is empty is not sent to; its deliveries stay `pending` and go out once it is
+configured. Seeded sessions get no delivery rows, so a fresh boot never pushes fixture history.
+
+### `POST /api/v1/events` (consumer side)
+
+| Situation | Answer |
+| --- | --- |
+| Applied | `200 { "event_id", "duplicate": false }` |
+| An `event_id` already applied | `200 { "event_id", "duplicate": true }`, nothing changes |
+| A decision for a session that has already ended | `200`, nothing changes, logged - see [§9](#9-edge-cases) |
+| Unparseable envelope, an `event_type` other than `decision.recorded`, a `version` other than `1`, an invalid payload, or an unknown session | `422 INVALID_EVENT`, `details.reason` says which |
+| The database fails | `500`; the producer retries |
 
 ---
 
@@ -457,40 +467,21 @@ service issues; the contract defines no enum and shows no other value.
    performance argument that does not apply at this scale, and a second store is a second failure
    mode and a cache-invalidation policy to get wrong. Adding it later changes no API.
 
-2. **Identity is read from the token, not from the Gateway.** The contract has the Gateway
-   validate the JWT and forward only `X-Player-Id`; this service should read that header alone.
-   `0.1.0` parses the Bearer token itself (signature unchecked) and treats `X-Player-Id` as a
-   fallback. Moving to the contract is a deletion in one function (`internal/httpapi/identity.go`);
-   no route, handler or request shape changes. Also: an unusable or missing identity answers
-   `401 MISSING_PLAYER_IDENTITY` instead of `UNAUTHENTICATED`.
-
-3. **Peers are called directly, without `X-Service-Token`.** The contract routes every outbound
-   call through the Gateway with the service token: the three URL variables become Gateway URLs
-   (§3), and the HTTP clients must add `X-Service-Token` from `SERVICE_TOKEN`, which `0.1.0` does not
-   read. Until the clients send it, pointing the URLs at the Gateway gets `403 SERVICE_TOKEN_REQUIRED`
-   from the service-only `GET /rulesets/current` and `POST /applicants/next`.
-
-4. **No task timeout or concurrent task limit** (`408` / `429`), and the image is tagged `0.1.0`, not
-   a Lab 2 `2.x.y`.
-
-5. **No event delivery.** `session.started` and `session.ended` are written to the outbox but not
-   relayed, and `decision.recorded` arrives through a dev endpoint, not `POST /api/v1/events`. See
-   [§6](#6-events).
-
-6. **Error codes differ from the contract's Errors convention:** `INVALID_SESSION_ID` and
-   `MALFORMED_BODY` should be `400 VALIDATION_ERROR`, `422 VALIDATION_ERROR` should be `400`, and
-   `MISSING_PLAYER_IDENTITY` should be `401 UNAUTHENTICATED` ([§5.3](#53-error-codes)).
-
-7. **The scoring formula is this service's own invention.** The contract defines none. See
+2. **The scoring formula is this service's own invention.** The contract defines none. See
    [§7](#7-the-session-lifecycle-and-the-rules-this-service-owns).
 
-8. **The three-junior scope tie-break is this service's own.** The contract fixes the shape of the
+3. **The three-junior scope tie-break is this service's own.** The contract fixes the shape of the
    split but not who gets the extra category.
 
-9. **Six endpoints beyond the contract**, all labelled as such in [§5.2](#52-extension-endpoints-beyond-contract---lab-1-crud-requirement). They exist for the Lab 1 CRUD
-   requirement and to make the outbox inspectable. Nothing else in the system calls them.
+4. **Seven endpoints beyond the contract**, all labelled as such in [§5.2](#52-extension-endpoints-beyond-contract---lab-1-crud-requirement). They exist for the Lab 1 CRUD
+   requirement and to make the outbox and its delivery inspectable. Nothing else in the system calls them.
 
-10. **`username` and `level` in the session object are a snapshot**, taken when the player joined and
+5. **A `decision.recorded` for a session that has already ended is acknowledged** (`200`, nothing
+   changes) rather than refused. The contract does not say; a `422` would only park it in
+   Moderation Service's outbox, and the contract already drops an applicant still undecided when
+   the shift ends.
+
+6. **`username` and `level` in the session object are a snapshot**, taken when the player joined and
    never refreshed. See [§5.1](#51-contract-endpoints).
 
 ---
@@ -511,8 +502,10 @@ service issues; the contract defines no enum and shows no other value.
   apply to it.
 - **The shift ends with an applicant still undecided.** That applicant is dropped and does not count.
   This needs no code: `applications_processed` only ever moves when a `decision.recorded` arrives.
-- **A decision arrives after the shift ended.** Refused with `409 SESSION_NOT_ACTIVE` and nothing
-  changes. Not hypothetical - Moderation Service does not wait for the Moderator.
+- **A decision arrives after the shift ended.** Acknowledged with `200` on `POST /api/v1/events`
+  and nothing changes. Not hypothetical - Moderation Service does not wait for the Moderator.
+- **A peer call is never retried.** One attempt, bounded by `DEPENDENCY_TIMEOUT`: `POST
+  /applicants/next` is not idempotent, and a second attempt would also eat the task's time budget.
 - **Ending twice.** The second answers `409 SESSION_NOT_ACTIVE`. The results are frozen in
   `session_results`, so the event stays reproducible.
 - **The creator leaves the lobby.** The session is deleted: nobody would be left who is allowed to
@@ -550,11 +543,11 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 ## 11. Mocking strategy (grade 9) and testing recipes
 
 > **Direct port.** The recipes below call the service's own port (`8088`), which is published
-> only during Lab 2 development. Through the Gateway, replace `localhost:8088/api/v1/` with
-> `localhost:8080/api/v1/session/`, send a JWT from `POST /api/v1/player/auth/login` instead of
-> a self-minted token, and send `X-Service-Token` on service-only and `/dev/*` routes.
-> The `jwt()` helper and the `X-Player-Id` header below work only against image `0.1.0`'s direct
-> port; under the contract the Gateway sets `X-Player-Id` and a client-sent value is discarded.
+> only during Lab 2 development, and send `X-Player-Id` themselves, as the Gateway would. Through
+> the Gateway, replace `localhost:8088/api/v1/` with `localhost:8080/api/v1/session/`, send
+> `Authorization: Bearer` with a JWT from `POST /api/v1/player/auth/login` instead of
+> `X-Player-Id` (the Gateway discards a client-sent one), and send `X-Service-Token` on
+> service-only and `/dev/*` routes.
 
 Every cross-service dependency has a real HTTP client written against the contract **and** an
 in-process stub with the same interface. Which one runs is decided by whether that dependency's base
@@ -574,21 +567,14 @@ M=8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11   # dima_mod,  level 4
 A=b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10   # maxim_jr,  level 2
 B=c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21   # vlad_jr,   level 3
 
-# Mint an unsigned, JWT-shaped token: base64url(header).base64url({"sub": id}).
-jwt() { printf '%s.%s.' \
-  "$(printf '{"alg":"none","typ":"JWT"}' | base64 | tr '+/' '-_' | tr -d '=\n')" \
-  "$(printf '{"sub":"%s"}' "$1"     | base64 | tr '+/' '-_' | tr -d '=\n')"; }
-
 S=$(curl -sS -X POST localhost:8088/api/v1/sessions \
-      -H "Authorization: Bearer $(jwt $M)" | jq -r .session_id)
-curl -sS -X POST localhost:8088/api/v1/sessions/$S/players -H "Authorization: Bearer $(jwt $A)" >/dev/null
-curl -sS -X POST localhost:8088/api/v1/sessions/$S/players -H "Authorization: Bearer $(jwt $B)" >/dev/null
+      -H "X-Player-Id: $M" | jq -r .session_id)
+curl -sS -X POST localhost:8088/api/v1/sessions/$S/players -H "X-Player-Id: $A" >/dev/null
+curl -sS -X POST localhost:8088/api/v1/sessions/$S/players -H "X-Player-Id: $B" >/dev/null
 
-curl -sS -X POST localhost:8088/api/v1/sessions/$S/start -H "Authorization: Bearer $(jwt $M)" \
+curl -sS -X POST localhost:8088/api/v1/sessions/$S/start -H "X-Player-Id: $M" \
   -H 'Content-Type: application/json' -d "{\"moderator_id\":\"$M\"}" | jq '.difficulty, .ruleset_version'
 
-# Or, with the fallback, which is all most manual testing needs:
-#   curl -sS -X POST localhost:8088/api/v1/sessions -H "X-Player-Id: $M'
 # 3   <- round(mean(4, 2, 3)), the contract's own example
 # 7   <- from Server Rules
 ```
@@ -604,10 +590,10 @@ BODY="{\"event_id\":\"$E\",\"event_type\":\"decision.recorded\",\"occurred_at\":
        \"payload\":{\"decision_id\":\"$D\",\"session_id\":\"$S\",\"applicant_id\":\"$(uuidgen)\",
                     \"moderator_id\":\"$M\",\"action\":\"accept\",\"is_correct\":true,\"penalty\":0}}"
 
-curl -sS -X POST localhost:8088/api/v1/dev/events/decision-recorded -d "$BODY"
-# {"duplicate":false,"score_delta":30,...}
-curl -sS -X POST localhost:8088/api/v1/dev/events/decision-recorded -d "$BODY"
-# {"duplicate":true,"score_delta":0,...}
+curl -sS -X POST localhost:8088/api/v1/events -d "$BODY"
+# {"duplicate":false,"event_id":"..."}
+curl -sS -X POST localhost:8088/api/v1/events -d "$BODY"
+# {"duplicate":true,"event_id":"..."}
 
 curl -sS localhost:8088/api/v1/sessions/$S | jq '.score, .applications_processed'
 # 30   1   <- moved once
@@ -615,34 +601,28 @@ curl -sS localhost:8088/api/v1/sessions/$S | jq '.score, .applications_processed
 
 ### Recipe: the end-to-end path across both of Dev's services
 
-This is the only complete flow the team can demonstrate today. End the shift, then hand the event to
-Player Service by hand, because the relay does not exist yet:
+With `PLAYER_SERVICE_URL` and `SERVICE_TOKEN` set, end the shift and the relay pushes
+`session.ended` to Player Service within `RELAY_INTERVAL`:
 
 ```bash
-curl -sS -X POST localhost:8088/api/v1/sessions/$S/end -H "Authorization: Bearer $(jwt $M)" | jq .
+curl -sS -X POST localhost:8088/api/v1/sessions/$S/end -H "X-Player-Id: $M" | jq .
 
-# the outbox row IS the envelope - push it unchanged, as the relay will
-curl -sS localhost:8088/api/v1/sessions/$S/events \
-  | jq -c '.items[] | select(.event_type=="session.ended")' \
-  | curl -sS -X POST localhost:8080/api/v1/player/events \
-      -H "X-Service-Token: $SERVICE_TOKEN" -H 'Content-Type: application/json' -d @-
-# {"duplicate":false,"event_id":"..."}
+curl -sS localhost:8088/api/v1/sessions/$S/deliveries | jq '.items[] | {consumer, status, last_error}'
+# player-service: delivered (the others too, or pending while their URL is empty)
 
 curl -sS localhost:8080/api/v1/player/players/$M -H "X-Service-Token: $SERVICE_TOKEN" | jq .
 # the XP, the shift count and the level have moved
 ```
 
-Push it twice - Player Service must report `"duplicate": true` and nothing must move.
-`./scripts/handoff.sh` in the Session repository still targets Player's removed
-`/dev/events/session-ended` route (Player `2.0.0` takes events only on `POST /api/v1/events`).
-
 ### Postman
 
 [`postman/server-moderation-session-service.postman_collection.json`](../postman/server-moderation-session-service.postman_collection.json).
 Every request name carries the status code it expects, so the collection can be checked mechanically.
-Set the `base_url` variable (default `http://localhost:8088`); the player ids are pre-filled with the
-ones Player Service seeds. Run the folders in order - the flow folder captures the `session_id` into
-a collection variable, and the cleanup folder is destructive.
+It goes through the Gateway: `base_url` is `http://localhost:8080/api/v1` (Session routes under
+`/session`, login under `/player`) and `service_token` must equal `SERVICE_TOKEN` in `.env`. The
+player ids are pre-filled with the ones Player Service seeds; the `auth` folder logs them in and
+stores their tokens. Run the folders in order - the flow folder captures the `session_id` into a
+collection variable, and the cleanup folder is destructive.
 
 ### Test suite
 

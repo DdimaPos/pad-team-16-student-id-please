@@ -880,13 +880,6 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 - `decision.recorded` - from Moderation Service  
   Increases `applications_processed`, adds points to `score` when the decision was correct, adds `penalty` to `penalties`, and marks the current applicant as decided so the Moderator can ask for the next one.
 
-**Not yet wired:** the published image writes both events to its outbox but has no relay yet, and
-receives `decision.recorded` only through `POST /api/v1/dev/events/decision-recorded`, not
-`POST /api/v1/events`. It identifies the calling player from the Bearer token itself (the contract:
-from `X-Player-Id` only), calls Player, Server Rules and Applicant directly instead of through the
-Gateway, and answers some errors with codes other than those in [Errors](#errors) - see
-[`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md).
-
 #### Applicant Service
 
 ##### Consumed API endpoints
@@ -1757,7 +1750,7 @@ need to clone the (private) service repository to run one.
 | Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `WS_PUBLIC_URL` (the address clients reach port `8086` at, the base of a ticket's `ws_url`); optional `REDIS_URL` (fan-out between instances), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). Reads no service token: credentials are checked at the Gateway                                 |
 | Gateway Service                   | `stewdh/gateway-service` (Docker Hub image is published by CI on the first merge to `main`; not yet available)    | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md)                                                                                                                                                          |
 | Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | `8087`    | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS` - see below                                                 |
-| Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088`    | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL` and `APPLICANT_SERVICE_URL` to reach the real services instead of its stubs - see below                                                       |
+| Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088`    | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; peer URLs `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL` (each falls back to a stub when empty), `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` (event consumers) - see below |
 
 **One service token for the whole stack.** Every variable above that holds a service token
 (`SERVICE_TOKEN`) is set to the same value,
@@ -1818,7 +1811,8 @@ response; every seeded account logs in with `seed-password`). `ENABLE_DEV_ENDPOI
 `GET /api/v1/dev/slow`, which the Gateway forwards only with the service token.
 
 `dimapos/server-moderation-session-service` is published for `linux/amd64` and `linux/arm64`.
-`POSTGRES_PASSWORD` is its only required variable. The schema is applied at startup, and an empty
+`POSTGRES_PASSWORD` is its only required variable, plus `SERVICE_TOKEN` as soon as any peer URL is
+set. The schema is applied at startup, and an empty
 database is seeded with three sessions - one in each state - including the session id this contract
 uses in its own example (`3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e`), so the published session object
 above is reproducible against a fresh pair of services.
@@ -1827,15 +1821,14 @@ It is the one service that calls three others. Each of `PLAYER_SERVICE_URL`, `RU
 `APPLICANT_SERVICE_URL` selects the real HTTP client when set and a contract-shaped in-process stub
 when left empty, so it runs before its dependencies exist and each can be wired up independently as
 it lands. `GET /health/ready` reports every dependency as `configured` or `stub`, so a demo cannot
-look more integrated than it is. In the compose file below all three point at the live Player
-Service, Server Rules and Applicant Service containers.
+look more integrated than it is. In the compose file below all three point at the Gateway.
+`UNIVERSITY_RECORD_SERVICE_URL` and `DISCORD_DMS_SERVICE_URL` (and `PLAYER_SERVICE_URL`) are where
+its relay pushes `session.started` and `session.ended`; a consumer left empty keeps its deliveries
+pending until it is set.
 
-Two things differ from this contract and are worth knowing before integrating. It uses **PostgreSQL
+One thing differs from this contract and is worth knowing before integrating. It uses **PostgreSQL
 only** - the Databases table above also assigns it Redis for live shift state, which is not
-implemented. And the endpoints that act for "the calling player" read that player's id from the
-`sub` claim of an `Authorization: Bearer <jwt>` token, unverified, instead of from the Gateway's
-`X-Player-Id` alone. `X-Player-Id` is already accepted as a fallback, so the switch to
-[Authentication](#authentication) is a removal, not an addition.
+implemented.
 
 The root [`docker-compose.yml`](docker-compose.yml) in this repository runs all of the
 above (plus their own database containers) on the shared `student-id-net` network, referencing

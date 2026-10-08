@@ -267,7 +267,7 @@ services:
       - student-id-net
 
   session-service:
-    image: dimapos/server-moderation-session-service:0.1.0
+    image: dimapos/server-moderation-session-service:2.0.0
     restart: unless-stopped
     depends_on:
       session-postgres:
@@ -279,17 +279,21 @@ services:
       POSTGRES_USER: ${SESSION_POSTGRES_USER:-session_user}
       POSTGRES_PASSWORD: ${SESSION_POSTGRES_PASSWORD:?set SESSION_POSTGRES_PASSWORD}
       POSTGRES_DB: ${SESSION_POSTGRES_DB:-session_db}
-      # Wired to the three services in this file that it calls. An empty url
-      # selects a built-in stub instead; GET /health/ready says which are real.
-      PLAYER_SERVICE_URL: http://player-service:8080
-      RULES_SERVICE_URL: http://server-rules-service:8080
-      APPLICANT_SERVICE_URL: http://applicant-service:8081
+      # Every peer is reached through the Gateway, with the service token. An
+      # empty url selects a built-in stub instead (an event consumer's
+      # deliveries wait); GET /health/ready says which are real.
+      PLAYER_SERVICE_URL: http://gateway-service:8080/api/v1/player
+      RULES_SERVICE_URL: http://gateway-service:8080/api/v1/server-rules
+      APPLICANT_SERVICE_URL: http://gateway-service:8080/api/v1/applicant
+      UNIVERSITY_RECORD_SERVICE_URL: http://gateway-service:8080/api/v1/university-record
+      DISCORD_DMS_SERVICE_URL: http://gateway-service:8080/api/v1/discord-dms
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      HTTP_REQUEST_TIMEOUT: ${SESSION_HTTP_REQUEST_TIMEOUT:-5s}
+      MAX_CONCURRENT_TASKS: ${SESSION_MAX_CONCURRENT_TASKS:-50}
       # Seeds three sessions on an empty database - one in each state - so every
       # endpoint answers on the first request.
       SEED_ON_START: ${SESSION_SEED_ON_START:-true}
-      # Mounts POST /api/v1/dev/events/decision-recorded, the only way to deliver
-      # a decision.recorded event until POST /api/v1/events exists. It moves a
-      # session's score with no credential, so turn it off outside the demo.
+      # Mounts GET /api/v1/dev/slow?ms=, which demonstrates the 408 and the 429.
       ENABLE_DEV_ENDPOINTS: ${SESSION_ENABLE_DEV_ENDPOINTS:-true}
     ports:
       - "8088:8080"

@@ -81,13 +81,13 @@ non-negotiable for anyone integrating:
 | **Health (liveness)** | `GET /health` |
 | **Health (readiness)** | `GET /health/ready` |
 | **Database** | PostgreSQL 16, `applicant_db` (private — no other service may connect) |
-| **Broker** | RabbitMQ, topic exchange `student-id.events`. The contract dropped the broker on 2026-10-05 in favour of HTTP push through the Gateway; image `2.0.0` has not followed - see [§12](#12-divergences-from-the-cpr-contract) |
+| **Broker** | AMQP topic exchange `student-id.events`. The contract dropped the broker on 2026-10-05 in favour of HTTP push through the Gateway; image `2.0.0` has not followed - see [§12](#12-divergences-from-the-cpr-contract) |
 | **Publishes** | `applicant.initialized` |
 | **Consumes** | `applicant.initialized` (from Credential / University Record only) |
 | **Authentication** | Checked by the Gateway, not here: callers send `Authorization: Bearer <jwt>` or `X-Service-Token` to the Gateway, which forwards only `X-Player-Id`. The service validates no token - see [§14](#14-gateway-requirements) |
 | **Outbound HTTP calls** | None |
 | **Docker image** | `stewdh/applicant-service:2.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
-| **Hard dependency** | PostgreSQL only. RabbitMQ is soft — the service runs fully without it |
+| **Hard dependency** | PostgreSQL only. The broker is soft — the service runs fully without it |
 
 ---
 
@@ -105,7 +105,7 @@ non-negotiable for anyone integrating:
 ### Start it
 
 ```bash
-./scripts/run.sh                # build image, start postgres + rabbitmq + service, wait for ready
+./scripts/run.sh                # build image, start postgres + broker + service, wait for ready
 ./scripts/run.sh --local        # run from source against the containerised dependencies
 ./scripts/run.sh --down         # stop (add --volumes to drop data)
 ./scripts/run.sh --logs         # follow logs
@@ -123,11 +123,11 @@ into the team-wide compose file; it lets anyone run Applicant Service without cl
 
 ### Minimum viable configuration
 
-The only required variable is `DATABASE_URL`. Everything else has a working default.
+The only required variable is `DATABASE_URL`. Everything else has a working default; with no
+broker URL set (the default), messaging is off and events accumulate in the outbox.
 
 ```bash
 DATABASE_URL=postgres://user:pass@host:5432/applicant_db?sslmode=disable \
-RABBITMQ_URL=amqp://user:pass@rabbit:5672/ \
   ./applicantd
 ```
 
@@ -138,7 +138,7 @@ RABBITMQ_URL=amqp://user:pass@rabbit:5672/ \
 2. Connect to PostgreSQL, retrying with backoff for up to `DB_CONNECT_TIMEOUT` (30s default).
    **If the database is not reachable within that window, the process exits non-zero.**
 3. Apply embedded migrations under a PostgreSQL advisory lock (safe with concurrent replicas).
-4. Start the background workers: dial RabbitMQ with capped backoff, and start the consumer
+4. Start the background workers: dial the broker with capped backoff, and start the consumer
    and the outbox relay. Failure here never blocks or fails startup.
 5. Start the HTTP server — **the service is now serving**.
 
@@ -152,8 +152,8 @@ Typical cold start against a warm database is well under a second.
 | --- | --- | --- |
 | `8081` | Applicant Service HTTP | Set by `APP_PORT` (default `8081`); the shipped compose file pins the container to `8081` and maps it with `APP_HOST_PORT` |
 | `5433` → `5432` | PostgreSQL | **Host port is 5433 on purpose.** During integration several teammates' databases run on one laptop and 5432 is taken first |
-| `5672` | RabbitMQ AMQP | Started by the service's own compose file. The team's `docker-compose.yml` has no broker |
-| `15672` | RabbitMQ management UI | Useful for inspecting the exchange and queues |
+| `5672` | Broker (AMQP) | Started by the service's own compose file. The team's `docker-compose.yml` has no broker |
+| `15672` | Broker management UI and HTTP API | Useful for inspecting the exchange and queues |
 
 The compose network is named **`student-id-net`** so other teams' stacks can join it. Inside
 that network the service is reachable as `http://applicant-service:8081`.
@@ -184,22 +184,21 @@ A misconfiguration fails fast with the offending variable named.
 | `DB_MAX_CONNS` | `10` | no | pgx pool size. Must be ≥ 1 |
 | `DB_CONNECT_TIMEOUT` | `30s` | no | How long to retry the database at boot before giving up |
 | `MIGRATE_ON_START` | `true` | no | Apply embedded migrations at startup |
-| `RABBITMQ_URL` | *(empty)* | no | **Empty disables messaging entirely** — events accumulate in the outbox and none are consumed |
-| `RABBITMQ_EXCHANGE` | `student-id.events` | no | Shared topic exchange |
-| `RABBITMQ_QUEUE` | `applicant-service.applicant-initialized` | no | This service's queue |
-| `RABBITMQ_DLX` | `student-id.dlx` | no | Dead-letter exchange |
-| `RABBITMQ_DLQ` | `applicant-service.dlq` | no | Dead-letter queue |
-| `RABBITMQ_PREFETCH` | `10` | no | Unacknowledged messages in flight. Must be ≥ 1 |
 | `PUBLISH_CONFIRM_TIMEOUT` | `2s` | no | How long to wait for a publisher confirm |
 | `OUTBOX_POLL_INTERVAL` | `500ms` | no | How often the relay drains the outbox |
 | `OUTBOX_BATCH_SIZE` | `50` | no | Events per drain batch. Must be ≥ 1 |
-| `RABBITMQ_RECONNECT_MAX_BACKOFF` | `30s` | no | Cap on reconnect backoff |
 | `REFERENCE_YEAR` | `2026` | no | The calendar year the generator treats as "now". Must be 1900–2999. **Must match across all three applicant-data services** — see [§7.3](#73-admission-year-and-study-year) |
 | `GENERATOR_SEED` | `0` | no | `0` = a fresh random sequence per boot. Non-zero = reproducible applicants. **See the replica warning in [§15](#15-scaling-concurrency-and-statefulness)** |
 
-**An empty string counts as unset** for every variable, so `RABBITMQ_EXCHANGE=""` silently
-falls back to the default rather than failing. The one place this is load-bearing is
-`RABBITMQ_URL`, where empty deliberately means "messaging off".
+The broker variables - URL, exchange (which must match every other service exactly), queue,
+dead-letter exchange and queue, prefetch, reconnect backoff cap - are off the contract since
+2026-10-05 and are documented in the service's own README only. The broker URL is empty by
+default, and **empty disables messaging entirely**: events accumulate in the outbox and none
+are consumed.
+
+**An empty string counts as unset** for every variable, so an empty value silently falls back
+to the default rather than failing. The one place this is load-bearing is the broker URL, where
+empty deliberately means "messaging off".
 
 The contract instead requires the Gateway URLs of the two consumers
 (`http://gateway-service:8080/api/v1/credential` and `.../university-record`) and the shared
@@ -395,32 +394,32 @@ container because somebody else is having a bad day.
   "version": "2.0.0",
   "components": {
     "postgres": { "status": "up" },
-    "rabbitmq": { "status": "up" }
+    "<broker>": { "status": "up" }
   },
   "pending_events": 0
 }
 ```
 
-| Condition | HTTP | `status` | `components.rabbitmq.status` |
+| Condition | HTTP | `status` | `components.<broker>.status` |
 | --- | --- | --- | --- |
 | Everything up | `200` | `ok` | `up` |
-| **RabbitMQ down** | **`200`** | `degraded` | `down` |
-| **`RABBITMQ_URL` unset** | **`200`** | **`ok`** | `disabled` |
+| **Broker down** | **`200`** | `degraded` | `down` |
+| **Broker URL unset** | **`200`** | **`ok`** | `disabled` |
 | **PostgreSQL down** | **`503`** | `unavailable` | *(unchanged)* |
 
-`components.rabbitmq.status` is one of `up`, `down`, `disabled`. Note the third row: messaging
+The broker component's `status` is one of `up`, `down`, `disabled`. Note the third row: messaging
 being *switched off* is treated as a deliberate configuration, not a fault, so the overall
-status stays `ok`. Watch for `disabled` explicitly if you want to catch a missing
-`RABBITMQ_URL` — otherwise events accumulate in the outbox indefinitely and nothing says so.
+status stays `ok`. Watch for `disabled` explicitly if you want to catch a missing broker
+URL — otherwise events accumulate in the outbox indefinitely and nothing says so.
 
 `components.<name>.details` carries the last error. `pending_events` is the outbox backlog —
 a number that keeps climbing means the broker has been away for a while. **It is omitted from
 the body when the count cannot be taken**, which is precisely when PostgreSQL is down.
 
 > **Do not remove an instance from the load-balancer pool on `degraded`.** The REST surface is
-> fully functional without RabbitMQ; events simply queue until it returns.
+> fully functional without the broker; events simply queue until it returns.
 
-The team's `docker-compose.yml` runs no broker and sets no `RABBITMQ_URL`, so in that stack the
+The team's `docker-compose.yml` runs no broker and sets no broker URL, so in that stack the
 component reads `disabled`, the status stays `ok`, and `pending_events` only grows.
 
 ### 6.8b What the API deliberately does not expose
@@ -793,7 +792,7 @@ database transaction, and a relay publishes from the outbox afterwards.
 So: **at-least-once, never at-most-once.** Every consumer must deduplicate on `event_id`.
 
 **Consequences you can build on:** `POST /api/v1/applicants/next` returns `201` whether or not
-RabbitMQ is reachable, and the backlog drains automatically on reconnect. `/health/ready`
+the broker is reachable, and the backlog drains automatically on reconnect. `/health/ready`
 reports `pending_events` so you can watch the backlog.
 
 ---
@@ -864,7 +863,7 @@ change would silently never apply.
 
 ## 11. Use cases and interaction flows
 
-Every REST call below passes through the Gateway (events travel through RabbitMQ): the caller sends `{gateway}/api/v1/<prefix>/...`, and
+Every REST call below passes through the Gateway (events travel through the broker): the caller sends `{gateway}/api/v1/<prefix>/...`, and
 the paths shown are the service's own (see the CPR README "Gateway").
 
 ### 11.1 Server Moderation Session Service — "give me the next applicant"
@@ -938,7 +937,7 @@ Raise these in the CPR before integration; they are the parts other services mus
 
 | # | Divergence | Who is affected |
 | --- | --- | --- |
-| 1 | **No HTTP event delivery in image `2.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Credential and University Record, and no `POST /api/v1/events` of its own; it still publishes to and consumes from RabbitMQ ([§9](#9-events)), which the contract dropped on 2026-10-05. The team's `docker-compose.yml` runs no broker, so until the service is reworked no peer receives its applicants and it receives none of theirs | Credential and University Record Service, and through them Moderation |
+| 1 | **No HTTP event delivery in image `2.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Credential and University Record, and no `POST /api/v1/events` of its own; it still publishes to and consumes from an AMQP broker ([§9](#9-events)), which the contract dropped on 2026-10-05. The team's `docker-compose.yml` runs no broker, so until the service is reworked no peer receives its applicants and it receives none of theirs | Credential and University Record Service, and through them Moderation |
 | 2 | **`422 VALIDATION_ERROR`** for an incoherent profile. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | Generic clients |
 | 3 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, and the fake codes must follow `^[A-Z]{2,4}$`. Image `2.0.0` does not match: its catalog has 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format - and none of its eight fake codes (`ELSE-NET`, `QBIT-101`, `WEB5`, …) follow the format. Credential Service ships the same two files | University Record and Credential Service, Moderation |
 | 5 | **Four CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `PATCH`, `DELETE`) | Gateway and auth — see [§14](#14-gateway-requirements) |
@@ -971,7 +970,7 @@ on `claimed.student_id`.
 - `/health/ready` returns `200` with `status: "degraded"` and a rising `pending_events`.
 - Peers receive nothing until the broker returns; their view of applicants goes stale.
 - On reconnect the backlog publishes automatically. Confirmed by hand against the running
-  stack — three applicants created with RabbitMQ stopped, backlog of three, drained to zero on
+  stack — three applicants created with the broker stopped, backlog of three, drained to zero on
   restart with no intervention. **No automated integration test covers this**; the unit tests
   use fakes.
 
@@ -1107,7 +1106,7 @@ is a few hundred bytes.
 | Liveness / restart | `GET /health` | The process is wedged. Restart |
 | Readiness / pool membership | `GET /health/ready` | `503` = PostgreSQL unreachable. Remove from pool |
 
-**Treat `200` + `status: "degraded"` as healthy.** It means only RabbitMQ is away, and the
+**Treat `200` + `status: "degraded"` as healthy.** It means only the broker is away, and the
 REST surface is fully functional.
 
 ### Graceful shutdown
@@ -1160,7 +1159,7 @@ Events worth alerting on:
 
 | Log message | Meaning |
 | --- | --- |
-| `broker unreachable, retrying` | RabbitMQ down; outbox is filling |
+| `broker unreachable, retrying` | Broker down; outbox is filling |
 | `broker unavailable, events are queued in the outbox` | Same, throttled to once a minute |
 | `parking message …` | A message went to the DLQ — investigate |
 | `archetype could not be applied, retrying` | A rare generator sampling edge; harmless unless frequent |
@@ -1219,7 +1218,7 @@ curl -sS $BASE/api/v1/applicants/$ID | jq
 Bind a spy queue to the exchange, then create an applicant:
 
 ```bash
-RU=<rabbit-user>; RP=<rabbit-pass>
+RU=<broker-user>; RP=<broker-pass>
 curl -sS -u "$RU:$RP" -X PUT http://localhost:15672/api/queues/%2F/spy.peer \
   -H 'content-type: application/json' -d '{"durable":true}'
 curl -sS -u "$RU:$RP" -X POST http://localhost:15672/api/bindings/%2F/e/student-id.events/q/spy.peer \

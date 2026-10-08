@@ -86,7 +86,7 @@ Rules Service's ruleset.
 run on one laptop.
 
 The compose network is named **`student-id-net`**, the same one Applicant Service declares, so
-the two stacks see each other. RabbitMQ sits behind the `broker` profile of the service's own
+the two stacks see each other. The broker sits behind the `broker` profile of the service's own
 compose file and is off by default. The team's `docker-compose.yml` runs no broker at all.
 
 Inside the network the service is reachable as `credential-service:8082`.
@@ -105,15 +105,9 @@ a message naming the variable rather than at the first request that happens to n
 | `DB_MAX_POOL_SIZE` | `20` | driver connection pool |
 | `DB_CONNECT_TIMEOUT` | `30s` | also the server-selection timeout |
 | `ENSURE_INDEXES_ON_START` | `true` | idempotent; the document store's equivalent of migrations |
-| `RABBITMQ_URL` | *(empty)* | **empty disables messaging entirely** and the service still serves every endpoint |
-| `RABBITMQ_EXCHANGE` | `student-id.events` | must match every other service exactly |
-| `RABBITMQ_QUEUE` | `credential-service.applicant-initialized` | |
-| `RABBITMQ_DLX` / `RABBITMQ_DLQ` | `student-id.dlx` / `credential-service.dlq` | |
-| `RABBITMQ_PREFETCH` | `10` | |
 | `PUBLISH_CONFIRM_TIMEOUT` | `2s` | |
 | `OUTBOX_POLL_INTERVAL` | `500ms` | how often the relay looks for unpublished events |
 | `OUTBOX_BATCH_SIZE` | `50` | |
-| `RABBITMQ_RECONNECT_MAX_BACKOFF` | `30s` | |
 | `APP_PORT` | `8082` | |
 | `APP_ENV` | `local` | `local` / `docker` / `production`; selects log format and Gin mode |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -125,6 +119,11 @@ a message naming the variable rather than at the first request that happens to n
 | `SHUTDOWN_TIMEOUT` | `10s` | graceful drain |
 | **`REFERENCE_YEAR`** | `2026` | the calendar year treated as "now". **Applicant, Credential, University Record and Moderation Service must all be given the same value**, or perfectly honest applicants read as liars |
 | `GENERATOR_SEED` | `0` | `0` picks a fresh sequence per boot; a fixed number reproduces a run exactly |
+
+The broker variables - URL, exchange (which must match every other service exactly), queue,
+dead-letter exchange and queue, prefetch, reconnect backoff cap - are off the contract since
+2026-10-05 and are documented in the service's own README only. The broker URL is empty by
+default, and **empty disables messaging entirely**; the service still serves every endpoint.
 
 The contract also requires the Gateway URLs of the two consumers
 (`http://gateway-service:8080/api/v1/applicant` and `.../university-record`), the shared
@@ -273,7 +272,7 @@ restarting a healthy container because somebody else's database was slow would b
 ```json
 { "status": "degraded", "service": "credential-service", "version": "2.0.0",
   "components": { "mongodb": {"status": "up"},
-                  "rabbitmq": {"status": "down", "details": "dial tcp: connection refused"} },
+                  "<broker>": {"status": "down", "details": "dial tcp: connection refused"} },
   "pending_events": 3 }
 ```
 
@@ -281,13 +280,13 @@ restarting a healthy container because somebody else's database was slow would b
 | --- | --- | --- |
 | everything up | `ok` | `200` |
 | broker away, Mongo fine | `degraded` | `200` |
-| `RABBITMQ_URL` unset | `ok` (rabbitmq `disabled`) | `200` |
+| broker URL unset | `ok` (broker component `disabled`) | `200` |
 | Mongo unreachable | `unavailable` | `503` |
 
 A broker outage is **not** a readiness failure: every endpoint still works and events queue in
 the outbox. `pending_events` climbing is the signal to look at the broker.
 
-The team's `docker-compose.yml` sets no `RABBITMQ_URL`, so in that stack the component reads
+The team's `docker-compose.yml` sets no broker URL, so in that stack the broker component reads
 `disabled`, the status stays `ok`, and `pending_events` only grows.
 
 ### 5.7 Error codes
@@ -598,7 +597,7 @@ removes them.
 
 ## 10. Interaction flows
 
-Every REST call below passes through the Gateway (events travel through RabbitMQ): the caller sends `{gateway}/api/v1/<prefix>/...`, and
+Every REST call below passes through the Gateway (events travel through the broker): the caller sends `{gateway}/api/v1/<prefix>/...`, and
 the paths shown are the service's own (see the CPR README "Gateway").
 
 ### 10.1 Session Service asks Applicant Service for the next applicant
@@ -650,7 +649,7 @@ Raise these in the CPR before integration.
 
 | # | Divergence | Who is affected |
 | --- | --- | --- |
-| 1 | **No HTTP event delivery in image `2.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Applicant and University Record, and no `POST /api/v1/events` of its own; it still publishes to and consumes from RabbitMQ ([§8](#8-events)), which the contract dropped on 2026-10-05. The team's `docker-compose.yml` runs no broker, so until the service is reworked no peer receives its applicants and it receives none of theirs | Applicant and University Record Service |
+| 1 | **No HTTP event delivery in image `2.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Applicant and University Record, and no `POST /api/v1/events` of its own; it still publishes to and consumes from an AMQP broker ([§8](#8-events)), which the contract dropped on 2026-10-05. The team's `docker-compose.yml` runs no broker, so until the service is reworked no peer receives its applicants and it receives none of theirs | Applicant and University Record Service |
 | 2 | **`GET .../documents/validation` is protected only by the Gateway** and by this port being unpublished. Reading no credential in the service is correct under the contract | Gateway, Lab 2 grading |
 | 3 | **`422 VALIDATION_ERROR`** for an impossible person. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | generic clients |
 | 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, with course codes matching `^[A-Z]{2,4}$`. Image `2.0.0` ships the copy taken from Applicant Service before that file existed, and it does not match: 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format. Its `fake_courses.json` (`ELSE-NET`, `QBIT-101`, `WEB5`, …) does not follow the format either | University Record Service, Moderation |

@@ -2,9 +2,12 @@
 # teammate can run this without cloning anyone's (private) service repository. So far it
 # covers Server Rules, University Record, Moderation, Discord DMs, Player, Server
 # Moderation Session, Applicant and Credential. There is no message broker: services call
-# each other directly, and events are pushed over HTTP (README "Event delivery"). Other
-# services should add their own blocks here the same way, referencing their own published
-# image and joining the same `student-id-net` network.
+# each other directly, and events are pushed over HTTP (README "Event delivery"). Applicant
+# and Credential push theirs through the Gateway (`gateway-service`), which this file does
+# not run yet; until its block lands, their events wait in their outboxes and each service's
+# /health/ready shows the backlog per consumer. Other services should add their own blocks
+# here the same way, referencing their own published image and joining the same
+# `student-id-net` network.
 #
 # Every service token below is the same value, SERVICE_TOKEN in .env - the contract's one
 # X-Service-Token for the whole stack.
@@ -305,7 +308,7 @@ services:
       - student-id-net
 
   applicant-service:
-    image: stewdh/applicant-service:1.0.0
+    image: stewdh/applicant-service:2.1.0
     restart: unless-stopped
     depends_on:
       applicant-postgres:
@@ -314,10 +317,21 @@ services:
       APP_ENV: docker
       APP_PORT: "8081"
       LOG_LEVEL: info
-      SERVICE_VERSION: "1.0.0"
+      SERVICE_VERSION: "2.1.0"
       TZ: UTC
+      # Task timeout (408) and concurrent task limit (429) - README "Task timeout and concurrent
+      # task limit". DEV_ENDPOINTS mounts GET /api/v1/dev/slow?ms=, which demonstrates both.
+      HTTP_REQUEST_TIMEOUT: 5s
+      MAX_CONCURRENT_TASKS: "64"
+      DEV_ENDPOINTS: ${APPLICANT_DEV_ENDPOINTS:-true}
       DATABASE_URL: "postgres://${APPLICANT_POSTGRES_USER:-applicant_user}:${APPLICANT_POSTGRES_PASSWORD:?set APPLICANT_POSTGRES_PASSWORD}@applicant-postgres:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
       MIGRATE_ON_START: "true"
+      # Event delivery (README "Event delivery"): applicant.initialized is pushed from the
+      # outbox to each consumer's POST /api/v1/events through the Gateway, with the one
+      # service token. Through the Gateway, never a peer's own address.
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      CREDENTIAL_URL: http://gateway-service:8080/api/v1/credential
+      UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
       REFERENCE_YEAR: *reference_year
     ports:
       - "8081:8081"
@@ -350,7 +364,7 @@ services:
       - student-id-net
 
   credential-service:
-    image: stewdh/credential-service:1.0.0
+    image: stewdh/credential-service:2.1.0
     restart: unless-stopped
     depends_on:
       credential-mongo:
@@ -359,11 +373,18 @@ services:
       APP_ENV: docker
       APP_PORT: "8082"
       LOG_LEVEL: info
-      SERVICE_VERSION: "1.0.0"
+      SERVICE_VERSION: "2.1.0"
       TZ: UTC
+      HTTP_REQUEST_TIMEOUT: 5s
+      MAX_CONCURRENT_TASKS: "64"
+      DEV_ENDPOINTS: ${CREDENTIAL_DEV_ENDPOINTS:-true}
       MONGODB_URI: "mongodb://${CREDENTIAL_MONGO_USER:-credential_user}:${CREDENTIAL_MONGO_PASSWORD:?set CREDENTIAL_MONGO_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
       MONGODB_DATABASE: credential_db
       ENSURE_INDEXES_ON_START: "true"
+      # Event delivery, as for Applicant above.
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      APPLICANT_URL: http://gateway-service:8080/api/v1/applicant
+      UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
       REFERENCE_YEAR: *reference_year
     ports:
       - "8082:8082"

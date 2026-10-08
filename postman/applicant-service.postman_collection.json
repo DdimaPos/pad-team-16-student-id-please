@@ -2,7 +2,7 @@
   "info": {
     "name": "Applicant Service",
     "_postman_id": "a1c0f7e2-6b3d-4f8a-9e51-7c2d4b6a8e01",
-    "description": "Applicant Service \u2014 Team 16, \"Student ID, please\" (FAF.PAD21.1).\n\nThe service owns the identity of the people trying to get into the university Discord server. Every applicant exists twice: the profile they claim, which this API serves, and the profile that is true, which never leaves the service except inside the applicant.initialized event.\n\nRun the requests top to bottom: \"Next applicant\" stores the new applicant_id in a collection variable, and the requests after it reuse it.\n\nSet `base_url` to where the service is listening (http://localhost:8081 by default).",
+    "description": "Applicant Service — Team 16, \"Student ID, please\" (FAF.PAD21.1).\n\nThe service owns the identity of the people trying to get into the university Discord server. Every applicant exists twice: the profile they claim, which this API serves, and the profile that is true, which never leaves the service except inside the applicant.initialized event.\n\nRun the requests top to bottom: \"Next applicant\" stores the new applicant_id in a collection variable, and the requests after it reuse it.\n\nSet `base_url` to where the service is listening (http://localhost:8081 by default).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -23,6 +23,44 @@
     },
     {
       "key": "created_applicant_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "slow_ms",
+      "value": "6000"
+    },
+    {
+      "key": "max_concurrent_tasks",
+      "value": "64"
+    },
+    {
+      "key": "gateway_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me_too"
+    },
+    {
+      "key": "jwt_secret",
+      "value": "change_me_to_a_random_string_of_32_chars_or_more"
+    },
+    {
+      "key": "player_id",
+      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
+    },
+    {
+      "key": "player_token",
+      "value": ""
+    },
+    {
+      "key": "event_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "event_applicant_id",
       "value": "",
       "type": "string"
     }
@@ -78,7 +116,7 @@
                 "ready"
               ]
             },
-            "description": "Reports whether the service can do useful work. Postgres is the only hard dependency; events wait in the outbox while a consumer is unreachable."
+            "description": "Reports whether the service can do useful work. The database is the only hard dependency. `components.event_relay` says whether applicant.initialized can be pushed at all, and `consumers.<name>` how many deliveries still wait for each consumer (`pending`) or were refused with 422 (`parked`)."
           },
           "response": [],
           "event": [
@@ -91,7 +129,8 @@
                   "const body = pm.response.json();",
                   "pm.test('postgres is up', () => {",
                   "  pm.expect(body.components.postgres.status).to.eql('up');",
-                  "});"
+                  "});",
+                  "console.log('event relay:', body.components.event_relay.status, 'consumers:', JSON.stringify(body.consumers));"
                 ]
               }
             }
@@ -176,7 +215,7 @@
                 "{{applicant_id}}"
               ]
             },
-            "description": "What the applicant claims about themselves. Shown to the Moderator and read by Moderation Service, which compares it against the university records.\n\nThe truth is never returned here \u2014 that is the game."
+            "description": "What the applicant claims about themselves. Shown to the Moderator and read by Moderation Service, which compares it against the university records.\n\nThe truth is never returned here — that is the game."
           },
           "response": [],
           "event": [
@@ -186,7 +225,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('applicant_id')) {",
-                  "  throw new Error('applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -215,6 +254,153 @@
                   "});",
                   "pm.test('courses is a list, never null', () => {",
                   "  pm.expect(body.courses).to.be.an('array');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Receive applicant.initialized - Credential Service met the applicant first",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events"
+              ]
+            },
+            "description": "The consumer side of the contract's event delivery (CPR README \"Event delivery\"). Credential Service pushes the envelope here, through the Gateway, when it was the first service to meet the applicant. A fresh event answers 200 with `duplicate: false` and this service creates its own record under the same `applicant_id`.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{event_id}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-13T11:00:00Z\",\n  \"producer\": \"credential-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{event_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"credential-service\",\n    \"difficulty\": 3,\n    \"claimed\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    },\n    \"actual\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": null,\n      \"email\": \"ana.rusu77@gmail.com\",\n      \"major\": null,\n      \"year\": null,\n      \"university_status\": \"outsider\",\n      \"courses\": [],\n      \"role\": \"guest\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new event on every run, so the first push is fresh and the second is a repeat.",
+                  "pm.collectionVariables.set('event_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('event_applicant_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('event_id echoed, not a duplicate', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql(['duplicate', 'event_id']);",
+                  "  pm.expect(body.event_id).to.eql(pm.collectionVariables.get('event_id'));",
+                  "  pm.expect(body.duplicate).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Receive the same event again - a repeat is not an error",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events"
+              ]
+            },
+            "description": "Delivery is at-least-once, so the producer may push the same `event_id` twice. The second arrival answers 200 with `duplicate: true` and changes nothing.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{event_id}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-13T11:00:00Z\",\n  \"producer\": \"credential-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{event_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"credential-service\",\n    \"difficulty\": 3,\n    \"claimed\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    },\n    \"actual\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": null,\n      \"email\": \"ana.rusu77@gmail.com\",\n      \"major\": null,\n      \"year\": null,\n      \"university_status\": \"outsider\",\n      \"courses\": [],\n      \"role\": \"guest\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('duplicate: true', () => {",
+                  "  pm.expect(pm.response.json().duplicate).to.eql(true);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get the applicant created from the event",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicants/{{event_applicant_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicants",
+                "{{event_applicant_id}}"
+              ]
+            },
+            "description": "The record this service built from the event's `claimed` profile."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('built from the claimed profile', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.name).to.eql('Ana Rusu');",
+                  "  pm.expect(body.student_id).to.eql('FAF24214');",
                   "});"
                 ]
               }
@@ -410,7 +596,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('created_applicant_id')) {",
-                  "  throw new Error('created_applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('created_applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -461,7 +647,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('created_applicant_id')) {",
-                  "  throw new Error('created_applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('created_applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -505,7 +691,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('created_applicant_id')) {",
-                  "  throw new Error('created_applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('created_applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -828,7 +1014,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('applicant_id')) {",
-                  "  throw new Error('applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -873,6 +1059,1078 @@
                   "pm.test('NOT_FOUND', () => {",
                   "  pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND');",
                   "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invalid event: an event type this service does not consume",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events"
+              ]
+            },
+            "description": "422 INVALID_EVENT: a retry cannot succeed, so the producer parks the delivery instead of trying again.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{event_id}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-13T11:00:00Z\",\n  \"producer\": \"credential-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{event_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"credential-service\",\n    \"difficulty\": 3,\n    \"claimed\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    },\n    \"actual\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": null,\n      \"email\": \"ana.rusu77@gmail.com\",\n      \"major\": null,\n      \"year\": null,\n      \"university_status\": \"outsider\",\n      \"courses\": [],\n      \"role\": \"guest\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new event on every run, so the first push is fresh and the second is a repeat.",
+                  "pm.collectionVariables.set('event_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('event_applicant_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable', () => pm.response.to.have.status(422));",
+                  "pm.test('INVALID_EVENT with a reason', () => {",
+                  "  const err = pm.response.json().error;",
+                  "  pm.expect(err.code).to.eql('INVALID_EVENT');",
+                  "  pm.expect(err.details.reason).to.be.a('string');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invalid event: envelope version 2",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events"
+              ]
+            },
+            "description": "The contract bumps `version` for a breaking payload change; a consumer rejects a version it does not know with 422 INVALID_EVENT rather than misreading the payload.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{event_id}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-13T11:00:00Z\",\n  \"producer\": \"credential-service\",\n  \"version\": 2,\n  \"payload\": {\n    \"applicant_id\": \"{{event_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"credential-service\",\n    \"difficulty\": 3,\n    \"claimed\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    },\n    \"actual\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": null,\n      \"email\": \"ana.rusu77@gmail.com\",\n      \"major\": null,\n      \"year\": null,\n      \"university_status\": \"outsider\",\n      \"courses\": [],\n      \"role\": \"guest\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new event on every run, so the first push is fresh and the second is a repeat.",
+                  "pm.collectionVariables.set('event_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('event_applicant_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable', () => pm.response.to.have.status(422));",
+                  "pm.test('INVALID_EVENT', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Invalid event: not JSON",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "events"
+              ]
+            },
+            "description": "An envelope that cannot be parsed is 422 INVALID_EVENT, not 400: it is the event that is unusable, and the producer must park it.",
+            "body": {
+              "mode": "raw",
+              "raw": "{not json",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable', () => pm.response.to.have.status(422));",
+                  "pm.test('INVALID_EVENT', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Through the Gateway",
+      "description": "In the running system nothing calls Applicant Service directly: every request enters at the Gateway as `{{gateway_url}}/api/v1/applicant/...`, which checks the credential, removes it and forwards the rest to the service's `/api/v1/...` (CPR README, Gateway and Authentication). A service call carries `X-Service-Token`; a player's carries `Authorization: Bearer <jwt>`, which this folder's pre-request script mints for `player_id` with `jwt_secret`. `service_token` and `jwt_secret` must match the Gateway's SERVICE_TOKEN and JWT_SECRET, and the Gateway must reach the service as APPLICANT_URL. The policy per route is the Gateway's; the service itself checks no credential and reads only `X-Player-Id`.",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Player tokens, signed the way Player Service signs them: HS256 with JWT_SECRET, `sub` = the",
+              "// player's id, `iat` and `exp`. The Gateway verifies the signature, so `jwt_secret` must be the",
+              "// JWT_SECRET of the Gateway being called (gateway-service/.env).",
+              "function b64url(words) {",
+              "  return CryptoJS.enc.Base64.stringify(words)",
+              "    .replace(/\\+/g, '-').replace(/\\//g, '_').replace(/=+$/, '');",
+              "}",
+              "function mint(claims, secret) {",
+              "  const header = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify({ alg: 'HS256', typ: 'JWT' })));",
+              "  const payload = b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(claims)));",
+              "  return header + '.' + payload + '.' + b64url(CryptoJS.HmacSHA256(header + '.' + payload, secret));",
+              "}",
+              "const now = Math.floor(Date.now() / 1000);",
+              "const sub = pm.variables.get('player_id');",
+              "const secret = pm.variables.get('jwt_secret');",
+              "pm.collectionVariables.set('player_token', mint({ sub: sub, iat: now, exp: now + 3600 }, secret));"
+            ]
+          }
+        }
+      ],
+      "item": [
+        {
+          "name": "Service health (public)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/health",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "health"
+              ]
+            },
+            "description": "`/api/v1/applicant/health` is forwarded to the service's `/health`: a public route, no credential, not counted as a task. The Gateway adds `X-Request-ID` when the caller sent none."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('reports the service', () => {",
+                  "  pm.expect(pm.response.json().service).to.eql('applicant-service');",
+                  "});",
+                  "pm.test('the Gateway added X-Request-ID', () => {",
+                  "  pm.expect(pm.response.headers.has('X-Request-ID')).to.be.true;",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Readiness (service token)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/health/ready",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "health",
+                "ready"
+              ]
+            },
+            "description": "Readiness leaks dependency state, so the Gateway forwards it only with the service token; without one it answers 403 SERVICE_TOKEN_REQUIRED."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('postgres is up', () => {",
+                  "  pm.expect(pm.response.json().components.postgres.status).to.eql('up');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Next applicant - Session Service's call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/next",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "How Server Moderation Session Service calls it: `POST {gateway}/api/v1/applicant/applicants/next` with the shared `X-Service-Token`. The Gateway forwards it as `POST /api/v1/applicants/next` without the token, and never retries it, so an applicant is never created twice.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
+                  "const body = pm.response.json();",
+                  "pm.test('returns the identifiers only', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql(",
+                  "    ['applicant_id', 'created_at', 'session_id']);",
+                  "});",
+                  "pm.collectionVariables.set('applicant_id', body.applicant_id);",
+                  "console.log('applicant_id =', body.applicant_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Next applicant without the service token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/next",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "A service-only route: no service token, no forwarding. The service is not called, so nothing was created.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Next applicant with a player token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/next",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "next"
+              ]
+            },
+            "description": "A player cannot create applicants and desynchronise sessions, whatever token they hold: a service-only route takes the service token and nothing else.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get applicant as a player - the game client",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "What the game shows the Moderator. The route accepts a player or a service; for a player the Gateway forwards `X-Player-Id: <sub>` and nothing else - the service never sees the token."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('exactly the eleven contract fields', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql([",
+                  "    'applicant_id', 'courses', 'created_at', 'email', 'major', 'name',",
+                  "    'role', 'session_id', 'student_id', 'university_status', 'year']);",
+                  "});",
+                  "pm.test('the truth never leaks', () => {",
+                  "  const raw = pm.response.text().toLowerCase();",
+                  "  ['actual', 'lie_archetype', 'is_honest'].forEach(",
+                  "    f => pm.expect(raw).to.not.include(f));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get applicant as a service - Moderation Service's call",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "Moderation Service reads the claimed profile with the service token, never with the Moderator's token."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the applicant asked for', () => {",
+                  "  pm.expect(pm.response.json().applicant_id).to.eql(pm.collectionVariables.get('applicant_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Get applicant without a credential",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "{{applicant_id}}"
+              ]
+            },
+            "description": "A route that needs a calling player or a service got neither. Refused at the Gateway; the service is not called."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('applicant_id')) {",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('UNAUTHENTICATED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List applicants as a player",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants?limit=5",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "The CRUD extensions are administrative (docs/APPLICANT_SERVICE.md §14): a player could pre-read applicants they have not met. The Gateway admits them with the service token only."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "  pm.expect(e.details).to.be.an('object');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "List applicants with the service token",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/applicants?limit=5",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "The same extension, as an administrator or a test would call it."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('paginated shape', () => {",
+                  "  pm.expect(body.items).to.be.an('array');",
+                  "  pm.expect(body.total).to.be.a('number');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Push applicant.initialized - Credential Service's call",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/events",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "events"
+              ]
+            },
+            "description": "How Credential Service's outbox relay delivers the event: `POST {gateway}/api/v1/applicant/events` with the shared `X-Service-Token`. The Gateway checks the token, strips it and forwards the envelope unchanged as `POST /api/v1/events`; it never retries, retrying is the relay's job.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{event_id}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-13T11:00:00Z\",\n  \"producer\": \"credential-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{event_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"credential-service\",\n    \"difficulty\": 3,\n    \"claimed\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    },\n    \"actual\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": null,\n      \"email\": \"ana.rusu77@gmail.com\",\n      \"major\": null,\n      \"year\": null,\n      \"university_status\": \"outsider\",\n      \"courses\": [],\n      \"role\": \"guest\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new event on every run, so the first push is fresh and the second is a repeat.",
+                  "pm.collectionVariables.set('event_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('event_applicant_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('fresh event applied', () => {",
+                  "  const body = pm.response.json();",
+                  "  pm.expect(body.event_id).to.eql(pm.collectionVariables.get('event_id'));",
+                  "  pm.expect(body.duplicate).to.eql(false);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Push the same event again through the Gateway",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/events",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "events"
+              ]
+            },
+            "description": "The relay redelivers after a lost answer; the consumer's dedup turns it into a no-op.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{event_id}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-13T11:00:00Z\",\n  \"producer\": \"credential-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{event_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"credential-service\",\n    \"difficulty\": 3,\n    \"claimed\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    },\n    \"actual\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": null,\n      \"email\": \"ana.rusu77@gmail.com\",\n      \"major\": null,\n      \"year\": null,\n      \"university_status\": \"outsider\",\n      \"courses\": [],\n      \"role\": \"guest\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('duplicate: true', () => pm.expect(pm.response.json().duplicate).to.eql(true));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Push without the service token",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/events",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "events"
+              ]
+            },
+            "description": "`POST /events` is service-only (CPR README \"Authentication\"). The Gateway refuses it before any service is called.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{event_id}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-13T11:00:00Z\",\n  \"producer\": \"credential-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{event_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"credential-service\",\n    \"difficulty\": 3,\n    \"claimed\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    },\n    \"actual\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": null,\n      \"email\": \"ana.rusu77@gmail.com\",\n      \"major\": null,\n      \"year\": null,\n      \"university_status\": \"outsider\",\n      \"courses\": [],\n      \"role\": \"guest\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new event on every run, so the first push is fresh and the second is a repeat.",
+                  "pm.collectionVariables.set('event_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('event_applicant_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => {",
+                  "  pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Push an event this service cannot apply",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/events",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "events"
+              ]
+            },
+            "description": "The service's own 422 INVALID_EVENT reaches the producer through the Gateway unchanged, which is what tells its relay to park the delivery.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{event_id}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-13T11:00:00Z\",\n  \"producer\": \"credential-service\",\n  \"version\": 2,\n  \"payload\": {\n    \"applicant_id\": \"{{event_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"credential-service\",\n    \"difficulty\": 3,\n    \"claimed\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": \"FAF24214\",\n      \"email\": \"ana.rusu@isa.utm.md\",\n      \"major\": \"FAF\",\n      \"year\": 2,\n      \"university_status\": \"faf_student\",\n      \"courses\": [\n        \"POO\",\n        \"SDA\"\n      ],\n      \"role\": \"student\"\n    },\n    \"actual\": {\n      \"name\": \"Ana Rusu\",\n      \"student_id\": null,\n      \"email\": \"ana.rusu77@gmail.com\",\n      \"major\": null,\n      \"year\": null,\n      \"university_status\": \"outsider\",\n      \"courses\": [],\n      \"role\": \"guest\"\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new event on every run, so the first push is fresh and the second is a repeat.",
+                  "pm.collectionVariables.set('event_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('event_applicant_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable', () => pm.response.to.have.status(422));",
+                  "pm.test('INVALID_EVENT', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Limits (needs DEV_ENDPOINTS=true)",
+      "description": "Task timeout and concurrent task limit, demonstrated with GET /api/v1/dev/slow.",
+      "item": [
+        {
+          "name": "Task timeout (408)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/slow?ms={{slow_ms}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "{{slow_ms}}"
+                }
+              ]
+            },
+            "description": "Asks the service to do nothing for `slow_ms` (6000 ms), longer than HTTP_REQUEST_TIMEOUT (5s). The task is stopped at the timeout and answered 408 REQUEST_TIMEOUT. Needs DEV_ENDPOINTS=true; the tests are skipped when the endpoint is not mounted."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The dev endpoint answers 404 when the service runs without DEV_ENDPOINTS=true.",
+                  "const devOff = pm.response.code === 404;",
+                  "const check = devOff ? pm.test.skip : pm.test;",
+                  "check('408 Request Timeout', () => pm.response.to.have.status(408));",
+                  "check('code is REQUEST_TIMEOUT, in the shared envelope', () => {",
+                  "  const error = pm.response.json().error;",
+                  "  pm.expect(error.code).to.eql('REQUEST_TIMEOUT');",
+                  "  pm.expect(error.details).to.be.an('object');",
+                  "});",
+                  "check('stopped at the timeout, not after slow_ms', () => {",
+                  "  pm.expect(pm.response.responseTime).to.be.below(Number(pm.variables.get('slow_ms')));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Concurrent task limit (429)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "The pre-request script opens `max_concurrent_tasks` (64) slow requests at once. While they are in progress it sends one more request under /api/v1, which must be refused with 429 TOO_MANY_REQUESTS and Retry-After, and the readiness probe, which must still answer because health endpoints are exempt. Needs DEV_ENDPOINTS=true and `max_concurrent_tasks` equal to the service's MAX_CONCURRENT_TASKS; the tests are skipped when the dev endpoint is not mounted."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('base_url');",
+                  "const limit = Number(pm.variables.get('max_concurrent_tasks'));",
+                  "const seen = {};",
+                  "const save = () => pm.variables.set('limit_seen', JSON.stringify(seen));",
+                  "save();",
+                  "",
+                  "pm.sendRequest(base + '/api/v1/dev/slow?ms=0', (err, res) => {",
+                  "  seen.dev = err ? 0 : res.code;",
+                  "  save();",
+                  "  if (seen.dev !== 200) { return; }",
+                  "",
+                  "  // Fill every slot. These are still running when the two requests below are sent.",
+                  "  for (let i = 0; i < limit; i++) {",
+                  "    pm.sendRequest(base + '/api/v1/dev/slow?ms=3000', () => {});",
+                  "  }",
+                  "  setTimeout(() => {",
+                  "    pm.sendRequest(base + '/api/v1/applicants?limit=1', (err, res) => {",
+                  "      if (!err) { seen.extra = { status: res.code, retryAfter: res.headers.get('Retry-After'), body: res.text() }; }",
+                  "      save();",
+                  "    });",
+                  "    pm.sendRequest(base + '/health/ready', (err, res) => {",
+                  "      if (!err) { seen.ready = res.code; }",
+                  "      save();",
+                  "    });",
+                  "  }, 1000);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const seen = JSON.parse(pm.variables.get('limit_seen') || '{}');",
+                  "// The dev endpoint answers 404 when the service runs without DEV_ENDPOINTS=true.",
+                  "const check = seen.dev === 200 ? pm.test : pm.test.skip;",
+                  "check('the request above the limit is refused with 429', () => {",
+                  "  pm.expect(seen.extra.status).to.eql(429);",
+                  "});",
+                  "check('code is TOO_MANY_REQUESTS, with Retry-After', () => {",
+                  "  pm.expect(JSON.parse(seen.extra.body).error.code).to.eql('TOO_MANY_REQUESTS');",
+                  "  pm.expect(seen.extra.retryAfter).to.be.a('string').and.not.empty;",
+                  "});",
+                  "check('/health/ready still answers while the limit is reached', () => {",
+                  "  pm.expect(seen.ready).to.eql(200);",
+                  "});",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
                 ]
               }
             }

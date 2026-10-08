@@ -220,13 +220,18 @@ services:
       - student-id-net
 
   player-service:
-    image: dimapos/player-service:0.1.0
+    image: dimapos/player-service:2.0.0
     restart: unless-stopped
     depends_on:
       player-postgres:
         condition: service_healthy
     environment:
       APP_ENV: docker
+      # Signs the player JWT issued by POST /api/v1/auth/login. The Gateway
+      # verifies it with the same value.
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
+      HTTP_REQUEST_TIMEOUT: ${PLAYER_HTTP_REQUEST_TIMEOUT:-5s}
+      MAX_CONCURRENT_TASKS: ${PLAYER_MAX_CONCURRENT_TASKS:-50}
       POSTGRES_HOST: player-postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: ${PLAYER_POSTGRES_USER:-player_user}
@@ -235,9 +240,7 @@ services:
       # Seeds six players on an empty database, including the one the README's
       # own example response describes (level 4, 1250 xp).
       SEED_ON_START: ${PLAYER_SEED_ON_START:-true}
-      # Mounts POST /api/v1/dev/events/session-ended, the only way to deliver a
-      # session.ended event until POST /api/v1/events exists. It grants
-      # XP without a credential, so turn it off outside the demo.
+      # Mounts GET /api/v1/dev/slow?ms=, which demonstrates the 408 and the 429.
       ENABLE_DEV_ENDPOINTS: ${PLAYER_ENABLE_DEV_ENDPOINTS:-true}
     ports:
       - "8087:8080"

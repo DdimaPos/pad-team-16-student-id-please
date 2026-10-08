@@ -649,14 +649,10 @@ A total XP is floored at zero, so the minimum level is always 1.
 ###### Endpoints beyond this contract
 
 Player Service also exposes register, list, profile read/edit, delete, shift history, disciplinary
-log and friends endpoints, plus a development endpoint that applies a `session.ended` event. They
-are not part of this contract and may change without amending it - see
-[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md). No endpoint returns a player's email.
-
-**Not yet wired:** the published image has no `POST /api/v1/auth/login` and no task timeout or
-concurrent limit, and some of its validation errors use codes other than those in [Errors](#errors)
-(`INVALID_PLAYER_ID`, `MALFORMED_BODY`, `422 VALIDATION_ERROR`) - see the divergences in
-[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md).
+log and friends endpoints, plus a development endpoint (`GET /api/v1/dev/slow`) that demonstrates the
+task timeout and the concurrent task limit. They are not part of this contract and may change without
+amending it - see [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md). No endpoint returns a player's
+email.
 
 ##### Events
 
@@ -669,10 +665,6 @@ concurrent limit, and some of its validation errors use codes other than those i
 
   An id in `players[]` with no account here is skipped and logged - Session Service decides who was
   in a shift, and one unknown id must not cost the other players their XP.
-
-  **Not yet wired:** the published image has no `POST /api/v1/events` yet; this event currently
-  reaches it only through `POST /api/v1/dev/events/session-ended` - see
-  [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md).
 
 #### Server Moderation Session Service
 
@@ -1764,7 +1756,7 @@ need to clone the (private) service repository to run one.
 | Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | `8085`    | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN` (sent on every outbound call); peer URLs `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL` = the Gateway plus the peer's prefix (empty = the built-in mock of that peer), `REFERENCE_YEAR`; optional `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`), `UPSTREAM_TIMEOUT` (`4s`) |
 | Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `WS_PUBLIC_URL` (the address clients reach port `8086` at, the base of a ticket's `ws_url`); optional `REDIS_URL` (fan-out between instances), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). Reads no service token: credentials are checked at the Gateway                                 |
 | Gateway Service                   | `stewdh/gateway-service` (Docker Hub image is published by CI on the first merge to `main`; not yet available)    | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md)                                                                                                                                                          |
-| Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | `8087`    | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional); contract: `JWT_SECRET` (same value as the Gateway's) for login - not read by the published image yet, see below                                                 |
+| Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | `8087`    | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS` - see below                                                 |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088`    | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL` and `APPLICANT_SERVICE_URL` to reach the real services instead of its stubs - see below                                                       |
 
 **One service token for the whole stack.** Every variable above that holds a service token
@@ -1791,8 +1783,8 @@ development; the remaining compose blocks and collections switch to the Gateway 
 its image. Moderation `2.0.0` already addresses its peers as `http://gateway-service:8080/api/v1/<prefix>`
 (those calls fail as `DEPENDENCY_UNAVAILABLE` and its relay keeps retrying until the block lands). The
 Applicant, Credential and Gateway collections already carry the calls through the Gateway, for a
-Gateway run from its repository (`postman/`, "Through the Gateway"), and the Moderation and Discord DMs
-collections target the Gateway's port `8080`. Moderation and Discord DMs `2.0.0` trust `X-Player-Id`;
+Gateway run from its repository (`postman/`, "Through the Gateway"), and the Moderation, Discord DMs and
+Player collections target the Gateway's port `8080`. Moderation, Discord DMs and Player `2.0.0` trust `X-Player-Id`;
 they and Applicant and Credential (`2.1.0`) answer `408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS` and
 carry a Lab 2 version tag. The per-service notes under [Endpoints](#endpoints) and the `docs/`
 references list what each other image still does instead.
@@ -1806,9 +1798,9 @@ Gateway block is not in `docker-compose.yml` yet, and their consumer URLs point 
 `pending` per consumer); and University Record `0.1.0` has no `POST /api/v1/events`, so pushes to
 it answer `404` and are retried with backoff until it ships one. Moderation `2.0.0` relays
 `decision.recorded` to Session's `POST /api/v1/events`, retrying with backoff until Session's exists,
-and Discord DMs `2.0.0` exposes `POST /api/v1/events`. Player and Session neither expose
-`POST /api/v1/events` nor relay their outboxes. Where a service offers its own interim route
-(`POST /api/v1/dev/events/*` in Player, Session and University Record), someone hands the event over
+and Discord DMs and Player `2.0.0` expose `POST /api/v1/events`. Session neither exposes
+`POST /api/v1/events` nor relays its outbox. Where a service offers its own interim route
+(`POST /api/v1/dev/events/*` in Session and University Record), someone hands the event over
 by hand. Those routes are beyond this contract and disappear once `POST /api/v1/events` exists.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
@@ -1817,13 +1809,13 @@ free number: `8080`-`8088` are taken above, and the database containers hold `54
 Credential, which listen on `8081` and `8082`, and Moderation and Discord DMs, which listen on `8085`
 and `8086`.
 
-`dimapos/player-service` is published for `linux/amd64` and `linux/arm64`. `POSTGRES_PASSWORD` is
-its only required variable - everything else has a working default, the schema is applied at
-startup, and an empty database is seeded with six players (including
+`dimapos/player-service` is published for `linux/amd64` and `linux/arm64`. `POSTGRES_PASSWORD` and
+`JWT_SECRET` are its only required variables - the service refuses to start without either.
+Everything else has a working default (`HTTP_REQUEST_TIMEOUT=5s`, `MAX_CONCURRENT_TASKS=50`), the
+schema is applied at startup, and an empty database is seeded with six players (including
 `8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11` / `dima_mod`, the one this contract uses in its own example
-response). Two optional switches matter in a shared stack: `SEED_ON_START` and
-`ENABLE_DEV_ENDPOINTS` - the latter mounts `POST /api/v1/dev/events/session-ended`, which applies a
-`session.ended` event with no credential and should be off outside the demo.
+response; every seeded account logs in with `seed-password`). `ENABLE_DEV_ENDPOINTS` mounts
+`GET /api/v1/dev/slow`, which the Gateway forwards only with the service token.
 
 `dimapos/server-moderation-session-service` is published for `linux/amd64` and `linux/arm64`.
 `POSTGRES_PASSWORD` is its only required variable. The schema is applied at startup, and an empty

@@ -205,8 +205,8 @@
           }
         },
         {
-          "name": "admin route without a service token (401 UNAUTHENTICATED)",
-          "request": { "method": "GET", "url": "{{base_url}}/api/v1/admin/rulesets" }
+          "name": "admin route called with X-Player-Id (403 SERVICE_TOKEN_REQUIRED)",
+          "request": { "method": "GET", "header": [{ "key": "X-Player-Id", "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10" }], "url": "{{base_url}}/api/v1/admin/rulesets" }
         }
       ]
     }

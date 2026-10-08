@@ -180,7 +180,7 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:2.0.0
+    image: dmracovit/discord-dms-service:2.1.0
     restart: unless-stopped
     depends_on:
       dms-mongo:
@@ -195,8 +195,10 @@ services:
       # The address clients reach port 8086 at: the base of the ws_url a ticket comes with. The chat is
       # negotiated through the Gateway (POST /api/v1/discord-dms/ws-tickets) and connected here directly.
       WS_PUBLIC_URL: ${DMS_WS_PUBLIC_URL:-ws://localhost:8086}
+      # Two listeners: 8086 serves the WebSocket only and is the one published below; the REST API listens
+      # on 8096, never published, and the Gateway reaches it there (DISCORD_DMS_URL=http://discord-dms-service:8096).
     ports:
-      - "8086:8086"   # stays published in the final stack: the direct WebSocket connection
+      - "8086:8086"   # stays published in the final stack: the direct WebSocket connection, nothing else answers here
     networks:
       - student-id-net
 

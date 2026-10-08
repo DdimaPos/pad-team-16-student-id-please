@@ -9,7 +9,7 @@ shift ends. It never checks whether what players write is true.
 Owner: Racovita Dumitru. Source: the private `discord-DMs-service` repository, linked as a submodule of this CPR.
 
 > **Audience:** developers of the other services of *"Student ID, please"* (Team 16, FAF.PAD21.1), or the Gateway.
-> Copied from the service's own README at `v2.0.0`; relative paths below refer to the `discord-DMs-service/` submodule.
+> Copied from the service's own README at `v2.1.0`; relative paths below refer to the `discord-DMs-service/` submodule.
 > Where the implementation diverges from the CPR contract, the divergence is called out in the last section.
 
 ## Integration card
@@ -17,7 +17,7 @@ Owner: Racovita Dumitru. Source: the private `discord-DMs-service` repository, l
 | | |
 | --- | --- |
 | Language / framework | Go 1.25, Gin, gorilla/websocket |
-| Container port | `8086` (host `8086`, one of the two ports that stay published: the WebSocket is connected directly) |
+| Container ports | `8086` WebSocket (`WS_PORT`), the one port published (host `8086`): the WebSocket is connected directly; `8096` REST (`APP_PORT`), reached only through the Gateway inside the network, never published |
 | Base path | `/api/v1`; REST reached through the Gateway as `{gateway}/api/v1/discord-dms/...`; `GET /api/v1/ws` reached **directly** on port `8086` |
 | Health | `GET /health` (liveness), `GET /health/ready` (readiness: mongodb, pubsub, open connections) |
 | Database | MongoDB 7, `dms_db` (own container, host port `27019`) |
@@ -76,7 +76,8 @@ the team-wide compose in the CPR.
 | `WS_TICKET_TTL` | `30s` | no | How long a WebSocket ticket stays valid |
 | `HTTP_REQUEST_TIMEOUT` | `5s` | no | Task timeout: a request running longer is stopped and answers `408 REQUEST_TIMEOUT`. `5s` or `5`, like the other services. The Gateway allows 10 s, so the outer layer never gives up first |
 | `MAX_CONCURRENT_TASKS` | `64` | no | Concurrent task limit: the request above it is refused at once with `429 TOO_MANY_REQUESTS` |
-| `APP_PORT` | `8086` | no | HTTP port |
+| `APP_PORT` | `8096` | no | Port of the REST API; the Gateway reaches it inside the network (`DISCORD_DMS_URL=http://discord-dms-service:8096`), it is never published |
+| `WS_PORT` | `8086` | no | Port of the WebSocket listener: only `GET /api/v1/ws` and `GET /health` answer there. The one port published to clients; must differ from `APP_PORT` |
 | `APP_ENV` | `local` | no | `local` / `test` / `development` = text logs; anything else = JSON logs, release mode |
 | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn`, `error` |
 | `DEV_ENDPOINTS` | `false` | no | Mounts `/api/v1/dev/*` (the slow route for the timeout demo). Keep `false` in shared deployments |
@@ -139,7 +140,7 @@ only negotiates it (Lab 2, grade 7):
 
 1. The client calls `POST {gateway}/api/v1/discord-dms/ws-tickets` with its JWT and `{ "session_id" }`. The Gateway validates the player and forwards the request with `X-Player-Id`.
 2. This service checks that the player is a member of an active session (`403 NOT_IN_SESSION`, `409 SESSION_NOT_ACTIVE`), stores a random 32-character ticket bound to the player and the session, and answers `201 { "ws_url": "ws://<WS_PUBLIC_URL>/api/v1/ws?ticket=...", "expires_at": "..." }`.
-3. The client opens `ws_url` **directly** within `WS_TICKET_TTL` (30 s). The ticket is consumed by the first upgrade that presents it: a second use, an unknown or an expired ticket is `401 INVALID_TICKET`, and a shift that ended in between is `409 SESSION_NOT_ACTIVE`. Nothing about the player is accepted on this route except the ticket.
+3. The client opens `ws_url` **directly** within `WS_TICKET_TTL` (30 s); it lands on the WebSocket listener (`WS_PORT`, `8086`), which serves nothing else. The ticket is consumed by the first upgrade that presents it: a second use, an unknown or an expired ticket is `401 INVALID_TICKET`, and a shift that ended in between is `409 SESSION_NOT_ACTIVE`. Nothing about the player is accepted on this route except the ticket.
 4. From then on the connection carries the chat; the Gateway holds nothing. A client that reconnects asks for a new ticket and catches up through the REST history.
 
 To try it by hand: run the Postman folder "WebSocket negotiation", which prints the `ws_url`, then
@@ -230,7 +231,9 @@ tests run against real containers when the variables are set and are skipped oth
 | 1 | `POST /channels/{id}/messages`, `PATCH /channels/{id}/messages/{message_id}` (the Lab 1 CRUD requirement), `/admin/*` and `/dev/*` exist beyond the contract; nothing in the contract depends on them | the Gateway forwards `/admin/*` and `/dev/*` only with the service token |
 | 2 | The WebSocket protocol adds frames the contract does not list, all optional for a client: `ping` / `pong`, `message.updated` (after the beyond-contract `PATCH`) and a `session.ended` frame right before the close the contract requires | the game client may ignore them |
 
-Port `8086` is published because the contract says so (the direct WebSocket). The REST routes answer on that port too and, like every service, trust `X-Player-Id`; clients are expected to use the Gateway.
+Port `8086` is published because the contract says so (the direct WebSocket). Since `2.1.0` it is the WebSocket listener only (`WS_PORT`): the REST routes, which trust `X-Player-Id` like every service, live on `APP_PORT` (`8096`) inside the network and are reached only through the Gateway, so nothing that reads a header is reachable directly.
+
+---
 
 ---
 

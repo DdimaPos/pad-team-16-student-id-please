@@ -3,13 +3,13 @@
 Everything another service, a gateway or a teammate needs in order to work with this service,
 without reading its source.
 
-Team 16 · *Student ID, please* · FAF.PAD21.1 · version `1.0.0`
+Team 16 · *Student ID, please* · FAF.PAD21.1 · version `2.0.0`
 
 For "how do I start it", see [README.md](../credential-service/README.md). This document is the contract.
 
 Event delivery and authentication are described as the CPR contract requires them since
 2026-10-05 (direct HTTP event push, `Authorization: Bearer` / `X-Service-Token`). Where the
-published image `1.0.0` still differs, [§11](#11-divergences-from-the-cpr-contract) says so.
+published image `2.0.0` still differs, [§11](#11-divergences-from-the-cpr-contract) says so.
 
 ## Contents
 
@@ -63,7 +63,7 @@ Rules Service's ruleset.
 | Events | HTTP push through the Gateway: outbox relay → `{gateway}/api/v1/<consumer>/events`; received on its own `POST /api/v1/events` |
 | Auth | checked by the Gateway, not here; the service receives only `X-Player-Id` and validates no token - see [§13](#13-gateway-requirements) |
 | Producer name | `credential-service` |
-| Image | `stewdh/credential-service:1.0.0`, also `:latest` (linux/amd64, linux/arm64) |
+| Image | `stewdh/credential-service:2.0.0`, also `:latest` (linux/amd64, linux/arm64) |
 | Error envelope | `{"error":{"code","message","details"}}` |
 | Timestamps | ISO 8601, UTC, whole seconds |
 | Identifiers | UUID v4 strings |
@@ -109,15 +109,35 @@ a message naming the variable rather than at the first request that happens to n
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
 | `SERVICE_VERSION` | `dev` | reported by `/health` |
 | `HTTP_READ_TIMEOUT` / `HTTP_WRITE_TIMEOUT` | `10s` | |
-| `HTTP_REQUEST_TIMEOUT` | `5s` | per-request deadline - the contract's task timeout; reached = `408 REQUEST_TIMEOUT` (not documented for `1.0.0`) |
+| `HTTP_REQUEST_TIMEOUT` | `5s` | task timeout: a request running longer is stopped and answered `408 REQUEST_TIMEOUT` (see below). `0` disables it |
+| `MAX_CONCURRENT_TASKS` | `64` | concurrent task limit for `/api/v1`: a request above it is refused with `429 TOO_MANY_REQUESTS`. Must be ≥ 1 |
+| `DEV_ENDPOINTS` | `false` | mounts `GET /api/v1/dev/slow?ms=` (see below). Keep `false` in shared deployments |
 | `SHUTDOWN_TIMEOUT` | `10s` | graceful drain |
 | **`REFERENCE_YEAR`** | `2026` | the calendar year treated as "now". **Applicant, Credential, University Record and Moderation Service must all be given the same value**, or perfectly honest applicants read as liars |
 | `GENERATOR_SEED` | `0` | `0` picks a fresh sequence per boot; a fixed number reproduces a run exactly |
 
 The contract also requires the Gateway URLs of the two consumers
 (`http://gateway-service:8080/api/v1/applicant` and `.../university-record`), the shared
-`SERVICE_TOKEN` it sends on every push, and `MAX_CONCURRENT_TASKS` (reached = `429
-TOO_MANY_REQUESTS`). Image `1.0.0` has no variables for them yet.
+`SERVICE_TOKEN` it sends on every push. Image `2.0.0` has no variables for them yet.
+
+**Task timeout (`HTTP_REQUEST_TIMEOUT`).** Every request gets a deadline. When it fires,
+whatever the request is waiting on in MongoDB is cancelled and the service answers
+`408 REQUEST_TIMEOUT`. An applicant is one document written by one operation, and that operation
+is not started once the deadline has passed; one that did start finishes and is answered normally.
+So `408` always means the applicant was not stored, changed or deleted. One side effect can remain
+after a timed-out `POST /applicants/next`: the university email reserved while generating the
+applicant (standalone MongoDB, no multi-document transactions). It costs a later applicant with
+the same name a numeric suffix; no applicant, document or event refers to it.
+The Gateway's own timeout (`10s`) is above it, so this answer reaches the caller.
+
+**Concurrent task limit (`MAX_CONCURRENT_TASKS`).** At most that many requests under `/api/v1` are
+in progress at once. One more is refused at once - not queued - with `429 TOO_MANY_REQUESTS` and
+`Retry-After: 1`, before any work is done. `/health` and `/health/ready` are not counted.
+
+**Dev endpoint (`DEV_ENDPOINTS=true`).** `GET /api/v1/dev/slow?ms=<0..60000>` does nothing for `ms`
+milliseconds and answers `200 { "slept_ms": <ms> }`; it counts as a task. `?ms=6000` answers `408`
+after the timeout, and with `MAX_CONCURRENT_TASKS` of them open one more request to `/api/v1`
+answers `429` while `/health` still answers `200`. Without the flag the path is `404 NOT_FOUND`.
 
 ---
 
@@ -130,7 +150,7 @@ TOO_MANY_REQUESTS`). Image `1.0.0` has no variables for them yet.
 | `POST` | `/api/v1/applicants/next` | contract | no service yet |
 | `GET` | `/api/v1/applicants/{applicant_id}/documents` | contract | Client |
 | `GET` | `/api/v1/applicants/{applicant_id}/documents/validation` | contract | Moderation Service |
-| `POST` | `/api/v1/events` | contract | Applicant, University Record Service — **not in `1.0.0`** |
+| `POST` | `/api/v1/events` | contract | Applicant, University Record Service — **not in `2.0.0`** |
 | `GET` | `/api/v1/applicants` | *extension* | — |
 | `POST` | `/api/v1/applicants` | *extension* | — |
 | `GET` | `/api/v1/applicants/{applicant_id}` | *extension* | — |
@@ -239,7 +259,7 @@ restarting a healthy container because somebody else's database was slow would b
 `GET /health/ready`:
 
 ```json
-{ "status": "ok", "service": "credential-service", "version": "1.0.0",
+{ "status": "ok", "service": "credential-service", "version": "2.0.0",
   "components": { "mongodb": {"status": "up"} },
   "pending_events": 3 }
 ```
@@ -251,7 +271,7 @@ restarting a healthy container because somebody else's database was slow would b
 
 An unreachable consumer is **not** a readiness failure: every endpoint still works and events
 wait in the outbox. `pending_events` climbing is the signal to look at the consumers. The body of
-image `1.0.0` still reports a component for the event transport the contract dropped; ignore it.
+image `2.0.0` still reports a component for the event transport the contract dropped; ignore it.
 
 ### 5.7 Error codes
 
@@ -260,8 +280,8 @@ image `1.0.0` still reports a component for the event transport the contract dro
 | `VALIDATION_ERROR` | `400` | malformed request; `details` names the offending field by its **wire** name |
 | `VALIDATION_ERROR` | `422` | a well-formed request describing an impossible person; `details` carries `invariant`, `side`, `reason`. The contract keeps `VALIDATION_ERROR` for `400` — see [§11](#11-divergences-from-the-cpr-contract) |
 | `INVALID_EVENT` | `422` | `POST /api/v1/events` only: unusable envelope or payload, or an unknown `event_type`/`version` |
-| `REQUEST_TIMEOUT` | `408` | contract: the task timeout was reached (not in `1.0.0`) |
-| `TOO_MANY_REQUESTS` | `429` | contract: the concurrent task limit was reached, with `Retry-After` (not in `1.0.0`) |
+| `REQUEST_TIMEOUT` | `408` | the request ran longer than `HTTP_REQUEST_TIMEOUT` and was stopped; **nothing was changed** |
+| `TOO_MANY_REQUESTS` | `429` | `MAX_CONCURRENT_TASKS` requests are already in progress; header `Retry-After: 1`; **nothing was changed** |
 | `APPLICANT_NOT_FOUND` | `404` | no such applicant — including the moment before a peer's event arrives |
 | `APPLICANT_ALREADY_EXISTS` | `409` | a supplied `applicant_id` is taken |
 | `NOT_FOUND` | `404` | unknown route |
@@ -438,7 +458,7 @@ Direct HTTP push, as the CPR's "Event delivery" section defines it - there is no
 - **Receiving.** Peers push through the Gateway to this service's own `POST /api/v1/events`; the
   Gateway admits it only with the service token.
 
-> **Image `1.0.0` does not implement this yet** — see [§11](#11-divergences-from-the-cpr-contract).
+> **Image `2.0.0` does not implement this yet** — see [§11](#11-divergences-from-the-cpr-contract).
 
 ### 8.2 Envelope
 
@@ -605,10 +625,10 @@ Raise these in the CPR before integration.
 
 | # | Divergence | Who is affected |
 | --- | --- | --- |
-| 1 | **No HTTP event delivery in image `1.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Applicant and University Record, and no `POST /api/v1/events` of its own; it still delivers events through the transport the contract dropped on 2026-10-05 | Applicant and University Record Service |
-| 2 | **No task timeout or concurrent task limit as the contract defines them** (`408` / `429`), and the image is tagged `1.0.0`, not a Lab 2 `2.x.y`. Reading no credential is correct under the contract - but `GET .../documents/validation` is then protected only by the Gateway and by this port being unpublished | Gateway, Lab 2 grading |
+| 1 | **No HTTP event delivery in image `2.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Applicant and University Record, and no `POST /api/v1/events` of its own; it still delivers events through the transport the contract dropped on 2026-10-05 | Applicant and University Record Service |
+| 2 | **`GET .../documents/validation` is protected only by the Gateway** and by this port being unpublished. Reading no credential in the service is correct under the contract | Gateway, Lab 2 grading |
 | 3 | **`422 VALIDATION_ERROR`** for an impossible person. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | generic clients |
-| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, with course codes matching `^[A-Z]{2,4}$`. Image `1.0.0` ships the copy taken from Applicant Service before that file existed; whether it matches is unverified | University Record Service, Moderation |
+| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, with course codes matching `^[A-Z]{2,4}$`. Image `2.0.0` ships the copy taken from Applicant Service before that file existed; whether it matches is unverified | University Record Service, Moderation |
 | 5 | **Five CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `GET`, `PATCH`, `DELETE`) | gateway and auth — see [§13](#13-gateway-requirements) |
 | 6 | **`POST /api/v1/applicants` does not produce `applicant.initialized`** | anyone expecting every applicant to be announced |
 | 7 | **The contract read endpoints do not use the `{items, total}` list envelope.** The API conventions prescribe it for lists; both document endpoints are specified with `{applicant_id, documents}` and the endpoint spec wins. The extension list endpoint does use `{items, total}` | anyone writing a generic client |

@@ -87,7 +87,7 @@ non-negotiable for anyone integrating:
 | **Receives** | `applicant.initialized` (from Credential / University Record only) |
 | **Authentication** | Checked by the Gateway, not here: callers send `Authorization: Bearer <jwt>` or `X-Service-Token` to the Gateway, which forwards only `X-Player-Id`. The service validates no token - see [§14](#14-gateway-requirements) |
 | **Outbound HTTP calls** | `POST {gateway}/api/v1/credential/events` and `.../university-record/events`, with `X-Service-Token` (event delivery only) |
-| **Docker image** | `stewdh/applicant-service:1.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
+| **Docker image** | `stewdh/applicant-service:2.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
 | **Hard dependency** | PostgreSQL only. Event consumers are soft — the service runs fully while they are down; events wait in the outbox |
 
 ---
@@ -174,7 +174,9 @@ A misconfiguration fails fast with the offending variable named.
 | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn`, `error` — anything else fails validation |
 | `HTTP_READ_TIMEOUT` | `10s` | no | Server read timeout |
 | `HTTP_WRITE_TIMEOUT` | `10s` | no | Server write timeout |
-| `HTTP_REQUEST_TIMEOUT` | `5s` | no | Per-request context deadline (see the caveat below) |
+| `HTTP_REQUEST_TIMEOUT` | `5s` | no | Task timeout: a request running longer is stopped and answered `408 REQUEST_TIMEOUT` (see below). `0` disables it |
+| `MAX_CONCURRENT_TASKS` | `64` | no | Concurrent task limit for `/api/v1`: a request above it is refused with `429 TOO_MANY_REQUESTS`. Must be ≥ 1 |
+| `DEV_ENDPOINTS` | `false` | no | Mounts `GET /api/v1/dev/slow?ms=` (see below). Keep `false` in shared deployments |
 | `SHUTDOWN_TIMEOUT` | `10s` | no | Grace period for in-flight requests on SIGTERM |
 | `DB_MAX_CONNS` | `10` | no | pgx pool size. Must be ≥ 1 |
 | `DB_CONNECT_TIMEOUT` | `30s` | no | How long to retry the database at boot before giving up |
@@ -189,14 +191,23 @@ to the default rather than failing.
 
 The contract also requires the Gateway URLs of the two consumers
 (`http://gateway-service:8080/api/v1/credential` and `.../university-record`), the shared
-`SERVICE_TOKEN` it sends on every push, and `MAX_CONCURRENT_TASKS`. Image `1.0.0` has no variables
+`SERVICE_TOKEN` it sends on every push. Image `2.0.0` has no variables
 for them yet; their names will be listed here when it does ([§12](#12-divergences-from-the-cpr-contract)).
 
-**Caveat on `HTTP_REQUEST_TIMEOUT`:** it is the variable the contract names for the task timeout,
-but it installs a context deadline and does **not** emit the contract's `408 REQUEST_TIMEOUT`. When
-it fires, in-flight database work is cancelled and the request surfaces as
-`500 DEPENDENCY_UNAVAILABLE` with `details.dependency = "postgres"`. The Gateway's own timeout
-(`10s`) is above it, so the service's body reaches the client.
+**Task timeout (`HTTP_REQUEST_TIMEOUT`).** Every request gets a deadline. When it fires,
+in-flight database work is cancelled, the open transaction is rolled back and the service answers
+`408 REQUEST_TIMEOUT` - nothing was changed. A transaction is never committed after the deadline,
+and a commit that did succeed is never reported as a timeout, so `408` always means "not stored".
+The Gateway's own timeout (`10s`) is above it, so this answer reaches the caller.
+
+**Concurrent task limit (`MAX_CONCURRENT_TASKS`).** At most that many requests under `/api/v1` are
+in progress at once. One more is refused at once - not queued - with `429 TOO_MANY_REQUESTS` and
+`Retry-After: 1`, before any work is done. `/health` and `/health/ready` are not counted.
+
+**Dev endpoint (`DEV_ENDPOINTS=true`).** `GET /api/v1/dev/slow?ms=<0..60000>` does nothing for `ms`
+milliseconds and answers `200 { "slept_ms": <ms> }`; it counts as a task. `?ms=6000` answers `408`
+after the timeout, and with `MAX_CONCURRENT_TASKS` of them open one more request to `/api/v1`
+answers `429` while `/health` still answers `200`. Without the flag the path is `404 NOT_FOUND`.
 
 ---
 
@@ -217,7 +228,8 @@ Conventions, all inherited from the team contract:
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/applicants/next` | **contract** | Server Moderation Session Service | service-to-service |
 | `GET` | `/api/v1/applicants/{applicant_id}` | **contract** | Moderation Service, game client | player-safe |
-| `POST` | `/api/v1/events` | **contract** | Credential, University Record Service | service-to-service. **Not in image `1.0.0`** |
+| `POST` | `/api/v1/events` | **contract** | Credential, University Record Service | service-to-service. **Not in image `2.0.0`** |
+| `GET` | `/api/v1/dev/slow?ms=` | dev (`DEV_ENDPOINTS`) | demo / tests | service token at the Gateway |
 | `GET` | `/api/v1/applicants` | extension | admin / tests | **not player-safe** |
 | `POST` | `/api/v1/applicants` | extension | admin / tests | **not player-safe** |
 | `PATCH` | `/api/v1/applicants/{applicant_id}` | extension | admin / tests | **not player-safe** |
@@ -358,7 +370,7 @@ does not check dependencies: a liveness probe that fails on a dependency restart
 container because somebody else is having a bad day.
 
 ```json
-{ "status": "ok", "service": "applicant-service", "version": "1.0.0" }
+{ "status": "ok", "service": "applicant-service", "version": "2.0.0" }
 ```
 
 **`GET /health/ready`** — readiness.
@@ -367,7 +379,7 @@ container because somebody else is having a bad day.
 {
   "status": "ok",
   "service": "applicant-service",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "components": {
     "postgres": { "status": "up" }
   },
@@ -388,7 +400,7 @@ down.
 > **Do not remove an instance from the load-balancer pool because `pending_events` grows.** The
 > REST surface is fully functional while a consumer is away; events simply wait in the outbox.
 
-The body of image `1.0.0` still reports the component of the event transport the contract
+The body of image `2.0.0` still reports the component of the event transport the contract
 dropped; ignore it.
 
 ### 6.8b What the API deliberately does not expose
@@ -409,8 +421,8 @@ downstream:
 | HTTP | `code` | When |
 | --- | --- | --- |
 | `400` | `VALIDATION_ERROR` | Malformed JSON, missing/invalid field, bad UUID, out-of-range pagination |
-| `408` | `REQUEST_TIMEOUT` | Contract: the task timeout was reached. **Not in image `1.0.0`**, which answers `500 DEPENDENCY_UNAVAILABLE` |
-| `429` | `TOO_MANY_REQUESTS` | Contract: the concurrent task limit was reached, with `Retry-After`. **Not in image `1.0.0`** |
+| `408` | `REQUEST_TIMEOUT` | The request ran longer than `HTTP_REQUEST_TIMEOUT` and was stopped. `details` empty. **Nothing was changed** |
+| `429` | `TOO_MANY_REQUESTS` | `MAX_CONCURRENT_TASKS` requests are already in progress. Header `Retry-After: 1`. `details` empty. **Nothing was changed** |
 | `404` | `APPLICANT_NOT_FOUND` | No applicant with that id |
 | `404` | `NOT_FOUND` | Unknown route |
 | `405` | `METHOD_NOT_ALLOWED` | Known path, wrong method |
@@ -651,7 +663,7 @@ Direct HTTP push, as the CPR's "Event delivery" section defines it - there is no
 - **Receiving.** Peers push their `applicant.initialized` through the Gateway to this service's own
   `POST /api/v1/events`; the Gateway admits it only with the service token.
 
-> **Image `1.0.0` does not implement this yet** - it has no HTTP relay and no
+> **Image `2.0.0` does not implement this yet** - it has no HTTP relay and no
 > `POST /api/v1/events`. See [§12](#12-divergences-from-the-cpr-contract).
 
 ### 9.2 Envelope
@@ -892,10 +904,9 @@ Raise these in the CPR before integration; they are the parts other services mus
 
 | # | Divergence | Who is affected |
 | --- | --- | --- |
-| 1 | **No HTTP event delivery in image `1.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Credential and University Record, and no `POST /api/v1/events` of its own; it still delivers events through the transport the contract dropped on 2026-10-05. Until it is reworked, no peer receives its applicants | Credential and University Record Service, and through them Moderation |
-| 2 | **No task timeout or concurrent task limit as the contract defines them.** `HTTP_REQUEST_TIMEOUT` surfaces as `500 DEPENDENCY_UNAVAILABLE` instead of `408 REQUEST_TIMEOUT`, and there is no `MAX_CONCURRENT_TASKS` / `429`. The image is tagged `1.0.0`, not a Lab 2 `2.x.y` | Gateway, Lab 2 grading |
-| 3 | **`422 VALIDATION_ERROR`** for an incoherent profile. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | Generic clients |
-| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, and the fake codes must follow `^[A-Z]{2,4}$`. Image `1.0.0` predates that file: whether its catalog matches is unverified, and its fake codes (`ELSE-NET`, `QBIT-101`) do not follow the format | University Record and Credential Service, Moderation |
+| 1 | **No HTTP event delivery in image `2.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Credential and University Record, and no `POST /api/v1/events` of its own; it still delivers events through the transport the contract dropped on 2026-10-05. Until it is reworked, no peer receives its applicants | Credential and University Record Service, and through them Moderation |
+| 2 | **`422 VALIDATION_ERROR`** for an incoherent profile. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | Generic clients |
+| 3 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, and the fake codes must follow `^[A-Z]{2,4}$`. Image `2.0.0` predates that file: whether its catalog matches is unverified, and its fake codes (`ELSE-NET`, `QBIT-101`) do not follow the format | University Record and Credential Service, Moderation |
 | 5 | **Four CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `PATCH`, `DELETE`) | Gateway and auth — see [§14](#14-gateway-requirements) |
 | 6 | **`POST /api/v1/applicants` does not produce `applicant.initialized`** | Anyone expecting every applicant to be announced |
 
@@ -1029,7 +1040,8 @@ There is no `Idempotency-Key` support.
 | --- | --- |
 | Server read / write | 10s |
 | Server idle (keep-alive) | 60s |
-| Per-request context deadline | 5s → surfaces as `500 DEPENDENCY_UNAVAILABLE`, not the contract's `408` |
+| Task timeout (`HTTP_REQUEST_TIMEOUT`) | 5s → `408 REQUEST_TIMEOUT`, transaction rolled back |
+| Concurrent task limit (`MAX_CONCURRENT_TASKS`) | 64 → `429 TOO_MANY_REQUESTS` + `Retry-After: 1` |
 | Graceful shutdown | 10s |
 
 The Gateway's timeout (`10s`) is above 5s, so the service's own error body reaches the client.
@@ -1171,7 +1183,7 @@ the relay delivers the envelope there exactly as a peer would receive it.
 
 Push an event and watch this service create its own record. Push the **same `event_id`** twice
 to prove idempotency - the second answer is `200` with `"duplicate": true`. **Contract
-endpoint; not in image `1.0.0`.**
+endpoint; not in image `2.0.0`.**
 
 ```bash
 curl -sS -X POST $BASE/api/v1/events \

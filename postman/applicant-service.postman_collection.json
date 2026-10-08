@@ -2,7 +2,7 @@
   "info": {
     "name": "Applicant Service",
     "_postman_id": "a1c0f7e2-6b3d-4f8a-9e51-7c2d4b6a8e01",
-    "description": "Applicant Service \u2014 Team 16, \"Student ID, please\" (FAF.PAD21.1).\n\nThe service owns the identity of the people trying to get into the university Discord server. Every applicant exists twice: the profile they claim, which this API serves, and the profile that is true, which never leaves the service except inside the applicant.initialized event.\n\nRun the requests top to bottom: \"Next applicant\" stores the new applicant_id in a collection variable, and the requests after it reuse it.\n\nSet `base_url` to where the service is listening (http://localhost:8081 by default).",
+    "description": "Applicant Service — Team 16, \"Student ID, please\" (FAF.PAD21.1).\n\nThe service owns the identity of the people trying to get into the university Discord server. Every applicant exists twice: the profile they claim, which this API serves, and the profile that is true, which never leaves the service except inside the applicant.initialized event.\n\nRun the requests top to bottom: \"Next applicant\" stores the new applicant_id in a collection variable, and the requests after it reuse it.\n\nSet `base_url` to where the service is listening (http://localhost:8081 by default).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -25,6 +25,14 @@
       "key": "created_applicant_id",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "slow_ms",
+      "value": "6000"
+    },
+    {
+      "key": "max_concurrent_tasks",
+      "value": "64"
     }
   ],
   "item": [
@@ -176,7 +184,7 @@
                 "{{applicant_id}}"
               ]
             },
-            "description": "What the applicant claims about themselves. Shown to the Moderator and read by Moderation Service, which compares it against the university records.\n\nThe truth is never returned here \u2014 that is the game."
+            "description": "What the applicant claims about themselves. Shown to the Moderator and read by Moderation Service, which compares it against the university records.\n\nThe truth is never returned here — that is the game."
           },
           "response": [],
           "event": [
@@ -186,7 +194,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('applicant_id')) {",
-                  "  throw new Error('applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -410,7 +418,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('created_applicant_id')) {",
-                  "  throw new Error('created_applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('created_applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -461,7 +469,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('created_applicant_id')) {",
-                  "  throw new Error('created_applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('created_applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -505,7 +513,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('created_applicant_id')) {",
-                  "  throw new Error('created_applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('created_applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -828,7 +836,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "if (!pm.collectionVariables.get('applicant_id')) {",
-                  "  throw new Error('applicant_id is not set \u2014 run the request that creates it first, or use Run Collection.');",
+                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
                   "}"
                 ]
               }
@@ -873,6 +881,137 @@
                   "pm.test('NOT_FOUND', () => {",
                   "  pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND');",
                   "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Limits (needs DEV_ENDPOINTS=true)",
+      "description": "Task timeout and concurrent task limit, demonstrated with GET /api/v1/dev/slow.",
+      "item": [
+        {
+          "name": "Task timeout (408)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/dev/slow?ms={{slow_ms}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "{{slow_ms}}"
+                }
+              ]
+            },
+            "description": "Asks the service to do nothing for `slow_ms` (6000 ms), longer than HTTP_REQUEST_TIMEOUT (5s). The task is stopped at the timeout and answered 408 REQUEST_TIMEOUT. Needs DEV_ENDPOINTS=true; the tests are skipped when the endpoint is not mounted."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The dev endpoint answers 404 when the service runs without DEV_ENDPOINTS=true.",
+                  "const devOff = pm.response.code === 404;",
+                  "const check = devOff ? pm.test.skip : pm.test;",
+                  "check('408 Request Timeout', () => pm.response.to.have.status(408));",
+                  "check('code is REQUEST_TIMEOUT, in the shared envelope', () => {",
+                  "  const error = pm.response.json().error;",
+                  "  pm.expect(error.code).to.eql('REQUEST_TIMEOUT');",
+                  "  pm.expect(error.details).to.be.an('object');",
+                  "});",
+                  "check('stopped at the timeout, not after slow_ms', () => {",
+                  "  pm.expect(pm.response.responseTime).to.be.below(Number(pm.variables.get('slow_ms')));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Concurrent task limit (429)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": "The pre-request script opens `max_concurrent_tasks` (64) slow requests at once. While they are in progress it sends one more request under /api/v1, which must be refused with 429 TOO_MANY_REQUESTS and Retry-After, and the readiness probe, which must still answer because health endpoints are exempt. Needs DEV_ENDPOINTS=true and `max_concurrent_tasks` equal to the service's MAX_CONCURRENT_TASKS; the tests are skipped when the dev endpoint is not mounted."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const base = pm.variables.get('base_url');",
+                  "const limit = Number(pm.variables.get('max_concurrent_tasks'));",
+                  "const seen = {};",
+                  "const save = () => pm.variables.set('limit_seen', JSON.stringify(seen));",
+                  "save();",
+                  "",
+                  "pm.sendRequest(base + '/api/v1/dev/slow?ms=0', (err, res) => {",
+                  "  seen.dev = err ? 0 : res.code;",
+                  "  save();",
+                  "  if (seen.dev !== 200) { return; }",
+                  "",
+                  "  // Fill every slot. These are still running when the two requests below are sent.",
+                  "  for (let i = 0; i < limit; i++) {",
+                  "    pm.sendRequest(base + '/api/v1/dev/slow?ms=3000', () => {});",
+                  "  }",
+                  "  setTimeout(() => {",
+                  "    pm.sendRequest(base + '/api/v1/applicants?limit=1', (err, res) => {",
+                  "      if (!err) { seen.extra = { status: res.code, retryAfter: res.headers.get('Retry-After'), body: res.text() }; }",
+                  "      save();",
+                  "    });",
+                  "    pm.sendRequest(base + '/health/ready', (err, res) => {",
+                  "      if (!err) { seen.ready = res.code; }",
+                  "      save();",
+                  "    });",
+                  "  }, 1000);",
+                  "});"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const seen = JSON.parse(pm.variables.get('limit_seen') || '{}');",
+                  "// The dev endpoint answers 404 when the service runs without DEV_ENDPOINTS=true.",
+                  "const check = seen.dev === 200 ? pm.test : pm.test.skip;",
+                  "check('the request above the limit is refused with 429', () => {",
+                  "  pm.expect(seen.extra.status).to.eql(429);",
+                  "});",
+                  "check('code is TOO_MANY_REQUESTS, with Retry-After', () => {",
+                  "  pm.expect(JSON.parse(seen.extra.body).error.code).to.eql('TOO_MANY_REQUESTS');",
+                  "  pm.expect(seen.extra.retryAfter).to.be.a('string').and.not.empty;",
+                  "});",
+                  "check('/health/ready still answers while the limit is reached', () => {",
+                  "  pm.expect(seen.ready).to.eql(200);",
+                  "});",
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
                 ]
               }
             }

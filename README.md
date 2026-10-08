@@ -1592,10 +1592,8 @@ Further rules:
 
 **Received:** none.
 
-**Not yet wired:** the published image (`0.2.0`) keeps `decision.recorded` in its outbox, readable
-through `GET /api/v1/admin/events`, but has no relay to Session yet. It calls its five peers directly
-instead of through the Gateway, sends `X-Service-Token` only to University Record, and reads the
-calling player from the Bearer token instead of `X-Player-Id` - see
+The published image (`2.0.0`) implements this section: the relay pushes `decision.recorded` to Session's
+`POST /api/v1/events` through the Gateway and `GET /api/v1/admin/events` shows the delivery state - see
 [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md).
 
 #### Discord DMs Service
@@ -1747,11 +1745,8 @@ The client sends `message.send`. The server stores the message and pushes `messa
 - `session.ended` - from Server Moderation Session Service  
   Archives the channels of the session (they become read-only) and closes its WebSocket connections.
 
-**Not yet wired:** the published image (`0.2.0`) receives both events through
-`POST /api/v1/dev/events/session-started` and `/session-ended`, not `POST /api/v1/events`. It has no
-`POST /api/v1/ws-tickets`: `GET /api/v1/ws` still takes the player's JWT (`Authorization` or
-`?access_token=`) instead of a ticket, and its REST endpoints read the Bearer token instead of
-`X-Player-Id` - see [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md).
+The published image (`2.0.0`) implements this section: `POST /api/v1/events`, `POST /api/v1/ws-tickets`
+and the ticket-only `GET /api/v1/ws` - see [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md).
 
 ---
 
@@ -1766,14 +1761,14 @@ need to clone the (private) service repository to run one.
 | Credential Service                | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service)                                 | `8082`    | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record/Moderation Service); event delivery: `SERVICE_TOKEN`, `APPLICANT_URL`, `UNIVERSITY_RECORD_URL` (the Gateway plus the consumer's prefix)                         |
 | Server Rules Service              | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service)                         | `8083`    | `ConnectionStrings__RulesDb` (PostgreSQL 17); validates no token                                                                                                                                                                                |
 | University Record Service         | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service)               | `8084`    | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential/Moderation Service), `SERVICE_TOKEN` (sent with its events), `APPLICANT_URL`, `CREDENTIAL_URL`                                                                                              |
-| Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | `8085`    | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (each one falls back to a built-in mock when empty), `UPSTREAM_SERVICE_TOKEN`, `REFERENCE_YEAR` |
-| Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `SERVICE_TOKEN`; optional `REDIS_URL` (fan-out between instances)                                                                                                                                                      |
+| Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | `8085`    | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN` (sent on every outbound call); peer URLs `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL` = the Gateway plus the peer's prefix (empty = the built-in mock of that peer), `REFERENCE_YEAR`; optional `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`), `UPSTREAM_TIMEOUT` (`4s`) |
+| Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `WS_PUBLIC_URL` (the address clients reach port `8086` at, the base of a ticket's `ws_url`); optional `REDIS_URL` (fan-out between instances), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). Reads no service token: credentials are checked at the Gateway                                 |
 | Gateway Service                   | `stewdh/gateway-service` (Docker Hub image is published by CI on the first merge to `main`; not yet available)    | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md)                                                                                                                                                          |
 | Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | `8087`    | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional); contract: `JWT_SECRET` (same value as the Gateway's) for login - not read by the published image yet, see below                                                 |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088`    | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL` and `APPLICANT_SERVICE_URL` to reach the real services instead of its stubs - see below                                                       |
 
 **One service token for the whole stack.** Every variable above that holds a service token
-(`SERVICE_TOKEN`, `UPSTREAM_SERVICE_TOKEN`) is set to the same value,
+(`SERVICE_TOKEN`) is set to the same value,
 `SERVICE_TOKEN` in `.env` - the `X-Service-Token` of [Authentication](#authentication).
 
 **Everything goes through the Gateway.** Every peer URL above (`APPLICANT_URL`, `PLAYER_SERVICE_URL`,
@@ -1790,14 +1785,17 @@ the contract.
 **`JWT_SECRET`** is shared by exactly two containers, Player Service (signs) and the Gateway
 (verifies), and lives in `.env` next to `SERVICE_TOKEN`.
 
-**Not yet wired: the Gateway.** The Gateway image is not published yet, so `docker-compose.yml`,
-`.env.example` and the Postman collections still address every service directly, and every service
-port in the table above stays published during Lab 2 development; they switch to the Gateway in the
-PR that adds its image. The Applicant, Credential and Gateway collections already carry the calls
-through the Gateway, for a Gateway run from its repository (`postman/`, "Through the Gateway"). No
-published service image yet trusts `X-Player-Id`; only Applicant and Credential (`2.1.0`) answer
-`408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS` and carry a Lab 2 version tag. The per-service
-notes under [Endpoints](#endpoints) and the `docs/` references list what each one still does instead.
+**Not yet wired: the Gateway.** The Gateway image is not published yet, so `docker-compose.yml` has
+no `gateway-service` block and every service port in the table above stays published during Lab 2
+development; the remaining compose blocks and collections switch to the Gateway in the PR that adds
+its image. Moderation `2.0.0` already addresses its peers as `http://gateway-service:8080/api/v1/<prefix>`
+(those calls fail as `DEPENDENCY_UNAVAILABLE` and its relay keeps retrying until the block lands). The
+Applicant, Credential and Gateway collections already carry the calls through the Gateway, for a
+Gateway run from its repository (`postman/`, "Through the Gateway"), and the Moderation and Discord DMs
+collections target the Gateway's port `8080`. Moderation and Discord DMs `2.0.0` trust `X-Player-Id`;
+they and Applicant and Credential (`2.1.0`) answer `408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS` and
+carry a Lab 2 version tag. The per-service notes under [Endpoints](#endpoints) and the `docs/`
+references list what each other image still does instead.
 
 **Partly wired: event delivery.** Applicant and Credential (`2.1.0`) implement
 [Event delivery](#event-delivery) on both sides: each relays its outbox to
@@ -1806,12 +1804,12 @@ and serves `POST /api/v1/events`. Two things still stand between them and a deli
 Gateway block is not in `docker-compose.yml` yet, and their consumer URLs point at
 `gateway-service`, so until it lands their events wait in the outbox (each `/health/ready` shows
 `pending` per consumer); and University Record `0.1.0` has no `POST /api/v1/events`, so pushes to
-it answer `404` and are retried with backoff until it ships one. No other published image
-implements event delivery: Player, Session, Moderation and Discord DMs neither expose
+it answer `404` and are retried with backoff until it ships one. Moderation `2.0.0` relays
+`decision.recorded` to Session's `POST /api/v1/events`, retrying with backoff until Session's exists,
+and Discord DMs `2.0.0` exposes `POST /api/v1/events`. Player and Session neither expose
 `POST /api/v1/events` nor relay their outboxes. Where a service offers its own interim route
-(`POST /api/v1/dev/events/*` in Player, Session, University Record and Discord DMs), someone hands
-the event over by hand. Those routes are beyond this contract and disappear once
-`POST /api/v1/events` exists.
+(`POST /api/v1/dev/events/*` in Player, Session and University Record), someone hands the event over
+by hand. Those routes are beyond this contract and disappear once `POST /api/v1/events` exists.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
 free number: `8080`-`8088` are taken above, and the database containers hold `5433`-`5438`, `6380`,

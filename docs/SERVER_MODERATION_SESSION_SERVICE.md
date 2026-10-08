@@ -621,18 +621,20 @@ Player Service by hand, because the relay does not exist yet:
 ```bash
 curl -sS -X POST localhost:8088/api/v1/sessions/$S/end -H "Authorization: Bearer $(jwt $M)" | jq .
 
-# the outbox row IS the envelope - post it unchanged
+# the outbox row IS the envelope - push it unchanged, as the relay will
 curl -sS localhost:8088/api/v1/sessions/$S/events \
   | jq -c '.items[] | select(.event_type=="session.ended")' \
-  | curl -sS -X POST localhost:8087/api/v1/dev/events/session-ended -d @-
-# {"duplicate":false,"players_updated":3,"unknown_players":[]}
+  | curl -sS -X POST localhost:8080/api/v1/player/events \
+      -H "X-Service-Token: $SERVICE_TOKEN" -H 'Content-Type: application/json' -d @-
+# {"duplicate":false,"event_id":"..."}
 
-curl -sS localhost:8087/api/v1/players/$M | jq .
+curl -sS localhost:8080/api/v1/player/players/$M -H "X-Service-Token: $SERVICE_TOKEN" | jq .
 # the XP, the shift count and the level have moved
 ```
 
-Or: `./scripts/handoff.sh`. Run it twice - Player Service must report `"duplicate": true` and nothing
-must move.
+Push it twice - Player Service must report `"duplicate": true` and nothing must move.
+`./scripts/handoff.sh` in the Session repository still targets Player's removed
+`/dev/events/session-ended` route (Player `2.0.0` takes events only on `POST /api/v1/events`).
 
 ### Postman
 

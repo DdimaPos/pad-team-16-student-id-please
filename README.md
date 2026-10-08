@@ -1003,9 +1003,6 @@ Gateway, and answers some errors with codes other than those in [Errors](#errors
 - `applicant.initialized` - from Credential Service or University Record Service  
   When another service met the applicant first, Applicant Service stores the profile from `claimed` (and keeps `actual` hidden) under the same `applicant_id`. An event whose `initialized_by` is `applicant-service` would be its own; it is never pushed back, and is ignored if it arrives.
 
-**Not yet wired:** the published image (`2.0.0`) neither relays events over HTTP nor exposes
-`POST /api/v1/events` - see [`docs/APPLICANT_SERVICE.md`](docs/APPLICANT_SERVICE.md). It does
-implement the task timeout and the concurrent task limit.
 
 #### Credential Service
 
@@ -1162,10 +1159,8 @@ confirmation, and claimed courses bring a registration. An honest outsider bring
 - `applicant.initialized` - from Applicant Service or University Record Service  
   Creates the applicant's documents from `claimed`. Where `claimed` and `actual` differ, the documents that support the false claim are marked `forged`. Honest applicants never get forged documents, but depending on `difficulty`, some of their documents may be `expired`, `inconsistent` or `incomplete`. An event whose `initialized_by` is `credential-service` is ignored if it arrives.
 
-**Not yet wired:** the published image (`2.0.0`) neither relays events over HTTP nor exposes
-`POST /api/v1/events`. It does implement the task timeout and the concurrent task limit.
-`GET .../documents/validation` is protected only once the
-Gateway enforces the service token and the service's port is no longer published - see
+**Known gap:** `GET .../documents/validation` is protected only once the Gateway enforces the
+service token and the service's port is no longer published - see
 [`docs/CREDENTIAL_SERVICE.md`](docs/CREDENTIAL_SERVICE.md).
 
 #### Server Rules Service
@@ -1767,8 +1762,8 @@ need to clone the (private) service repository to run one.
 
 | Service                           | Docker Hub image                                                                                                  | Host port | Requires                                                                                                                                                                                                                                          |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Applicant Service                 | [`stewdh/applicant-service`](https://hub.docker.com/r/stewdh/applicant-service)                                   | `8081`    | `DATABASE_URL` (PostgreSQL 16), `REFERENCE_YEAR` (must match Credential/University Record/Moderation Service)                                                                                                                                     |
-| Credential Service                | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service)                                 | `8082`    | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record/Moderation Service)                                                                                                                                           |
+| Applicant Service                 | [`stewdh/applicant-service`](https://hub.docker.com/r/stewdh/applicant-service)                                   | `8081`    | `DATABASE_URL` (PostgreSQL 16), `REFERENCE_YEAR` (must match Credential/University Record/Moderation Service); event delivery: `SERVICE_TOKEN`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL` (the Gateway plus the consumer's prefix)                  |
+| Credential Service                | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service)                                 | `8082`    | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record/Moderation Service); event delivery: `SERVICE_TOKEN`, `APPLICANT_URL`, `UNIVERSITY_RECORD_URL` (the Gateway plus the consumer's prefix)                         |
 | Server Rules Service              | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service)                         | `8083`    | `ConnectionStrings__RulesDb` (PostgreSQL 17), `Auth__ServiceToken`                                                                                                                                                                                |
 | University Record Service         | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service)               | `8084`    | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential/Moderation Service), `Auth__ServiceToken`                                                                                              |
 | Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | `8085`    | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (each one falls back to a built-in mock when empty), `UPSTREAM_SERVICE_TOKEN`, `REFERENCE_YEAR` |
@@ -1800,15 +1795,23 @@ the contract.
 port in the table above stays published during Lab 2 development; they switch to the Gateway in the
 PR that adds its image. The Applicant, Credential and Gateway collections already carry the calls
 through the Gateway, for a Gateway run from its repository (`postman/`, "Through the Gateway"). No
-published service image yet trusts `X-Player-Id`; only Applicant and Credential (`2.0.0`) answer
+published service image yet trusts `X-Player-Id`; only Applicant and Credential (`2.1.0`) answer
 `408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS` and carry a Lab 2 version tag. The per-service
 notes under [Endpoints](#endpoints) and the `docs/` references list what each one still does instead.
 
-**Not yet wired: event delivery.** No published image implements [Event delivery](#event-delivery)
-yet - none exposes `POST /api/v1/events` or relays its outbox to its consumers. Until they do,
-events only move where a service offers its own interim route (`POST /api/v1/dev/events/*` in
-Player, Session, University Record and Discord DMs), and someone hands them over. Those routes are
-beyond this contract and disappear once `POST /api/v1/events` exists.
+**Partly wired: event delivery.** Applicant and Credential (`2.1.0`) implement
+[Event delivery](#event-delivery) on both sides: each relays its outbox to
+`POST {gateway}/api/v1/<consumer>/events` with the service token, one delivery state per consumer,
+and serves `POST /api/v1/events`. Two things still stand between them and a delivered event. The
+Gateway block is not in `docker-compose.yml` yet, and their consumer URLs point at
+`gateway-service`, so until it lands their events wait in the outbox (each `/health/ready` shows
+`pending` per consumer); and University Record `0.1.0` has no `POST /api/v1/events`, so pushes to
+it answer `404` and are retried with backoff until it ships one. No other published image
+implements event delivery: Player, Session, Moderation and Discord DMs neither expose
+`POST /api/v1/events` nor relay their outboxes. Where a service offers its own interim route
+(`POST /api/v1/dev/events/*` in Player, Session, University Record and Discord DMs), someone hands
+the event over by hand. Those routes are beyond this contract and disappear once
+`POST /api/v1/events` exists.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
 free number: `8080`-`8088` are taken above, and the database containers hold `5433`-`5438`, `6380`,

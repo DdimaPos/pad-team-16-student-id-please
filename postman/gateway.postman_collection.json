@@ -47,6 +47,21 @@
     {
       "key": "applicant_id",
       "value": ""
+    },
+    {
+      "key": "moderator_id",
+      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+      "description": "The Moderator of the seeded Discord DMs session. Sent as X-Player-Id until the authorization part sets it from the JWT"
+    },
+    {
+      "key": "ws_session_id",
+      "value": "",
+      "description": "set by the websocket setup request (a fresh session pushed through the Gateway)"
+    },
+    {
+      "key": "started_event_id",
+      "value": "",
+      "description": "set by the setup request"
     }
   ],
   "item": [
@@ -1019,6 +1034,266 @@
       ]
     },
     {
+      "name": "websocket negotiation (the Gateway negotiates, the client connects to Discord DMs directly)",
+      "item": [
+        {
+          "name": "setup: a fresh active session in Discord DMs (session.started through the Gateway, service token)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A session of its own, so the run does not depend on the seeded one (Session Service's seed may already have ended it).",
+                  "const hex = () => Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');",
+                  "const uuid = () => hex().replace(/^(.{8})(.{4})(.{3})(.{3})(.{12})$/, (m, a, b, c, d, e) => `${a}-${b}-4${c}-8${d}-${e}`);",
+                  "pm.collectionVariables.set('ws_session_id', uuid()); pm.collectionVariables.set('started_event_id', uuid());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('not a duplicate', () => pm.expect(pm.response.json().duplicate).to.eql(false));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "events"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{started_event_id}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-10-08T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{ws_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"ruleset_version\": 3,\n    \"started_at\": \"2026-10-08T18:05:00Z\",\n    \"junior_moderators\": []\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Pushes session.started the way Session Service does, so the ticket requests below have an active session whatever the seeds look like."
+          },
+          "response": []
+        },
+        {
+          "name": "POST /api/v1/discord-dms/ws-tickets -> 201 with the direct ws_url and a one-time ticket",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('ws_url points at Discord DMS directly, with a one-time ticket', () => { pm.expect(b.ws_url).to.match(/^wss?:\\/\\/.+\\/api\\/v1\\/ws\\?ticket=[0-9a-f]{32}$/); pm.expect(b.ws_url.split('/api/')[0]).to.not.include(':8080'); });",
+                  "pm.test('expires_at is about 30 s away', () => { const d = (new Date(b.expires_at) - Date.now()) / 1000; pm.expect(d).to.be.within(20, 31); });",
+                  "console.log('open directly, once, within 30 s: ' + b.ws_url);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "ws-tickets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{ws_session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The Gateway asks Discord DMs for the ticket on the player's behalf and hands the answer back; it never carries the chat. Open the printed ws_url with a WebSocket client (for example `wscat -c \"<ws_url>\"`)."
+          },
+          "response": []
+        },
+        {
+          "name": "a stranger gets no ticket: 403 NOT_IN_SESSION passed through unchanged",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('NOT_IN_SESSION', () => pm.expect(pm.response.json().error.code).to.eql('NOT_IN_SESSION'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "ws-tickets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{ws_session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "no player identity: 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "ws-tickets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{ws_session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /api/v1/discord-dms/ws through the Gateway is refused: 400 VALIDATION_ERROR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('explains where to negotiate', () => { const e = pm.response.json().error; pm.expect(e.code).to.eql('VALIDATION_ERROR'); pm.expect(e.message).to.include('ws-tickets'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/ws?ticket=7f3c9a1e5b2d4c8f9a0e6b1d3c5f7a9e",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "ws"
+              ],
+              "query": [
+                {
+                  "key": "ticket",
+                  "value": "7f3c9a1e5b2d4c8f9a0e6b1d3c5f7a9e"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
       "name": "Limits (needs DEV_ENDPOINTS=true)",
       "description": "Task timeout and concurrent task limit, demonstrated with Applicant Service's GET /api/v1/dev/slow through the Gateway. `/dev/*` is forwarded with the service token only, so every request here carries `service_token`.",
       "item": [
@@ -1180,7 +1455,26 @@
           "const secret = pm.variables.get('jwt_secret');",
           "pm.collectionVariables.set('player_token', mint({ sub: sub, iat: now, exp: now + 3600 }, secret));",
           "pm.collectionVariables.set('expired_token', mint({ sub: sub, iat: now - 7200, exp: now - 3600 }, secret));",
-          "pm.collectionVariables.set('foreign_token', mint({ sub: sub, iat: now, exp: now + 3600 }, 'not-the-secret-of-this-gateway-at-all'));"
+          "pm.collectionVariables.set('foreign_token', mint({ sub: sub, iat: now, exp: now + 3600 }, 'not-the-secret-of-this-gateway-at-all'));",
+          "",
+          "// Through the Gateway a player is identified by a JWT (HS256, JWT_SECRET shared with Player Service),",
+          "// never by X-Player-Id: the Gateway checks the token, discards any client-sent X-Player-Id and sets",
+          "// its own from the token's sub. Player Service's POST /api/v1/auth/login is not published yet, so",
+          "// this script signs the token itself: every request that names a player in X-Player-Id gets",
+          "// Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id header is dropped.",
+          "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
+          "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
+          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
+          "  const CryptoJS = require('crypto-js');",
+          "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
+          "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
+          "  const now = Math.floor(Date.now() / 1000);",
+          "  const sub = pm.variables.replaceIn(playerHeader.value);",
+          "  const unsigned = part({ alg: 'HS256', typ: 'JWT' }) + '.' + part({ sub: sub, iat: now, exp: now + 300 });",
+          "  const signature = b64url(CryptoJS.HmacSHA256(unsigned, pm.variables.get('jwt_secret')));",
+          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + unsigned + '.' + signature });",
+          "  pm.request.headers.remove('X-Player-Id');",
+          "}"
         ]
       }
     }

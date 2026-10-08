@@ -2,12 +2,13 @@
 # teammate can run this without cloning anyone's (private) service repository. So far it
 # covers Server Rules, University Record, Moderation, Discord DMs, Player, Server
 # Moderation Session, Applicant and Credential. There is no message broker: services call
-# each other directly, and events are pushed over HTTP (README "Event delivery"). Applicant
-# and Credential push theirs through the Gateway (`gateway-service`), which this file does
-# not run yet; until its block lands, their events wait in their outboxes and each service's
-# /health/ready shows the backlog per consumer. Other services should add their own blocks
-# here the same way, referencing their own published image and joining the same
-# `student-id-net` network.
+# each other and push events over HTTP through the Gateway (README "Event delivery"); the
+# Lab 1 images still call each other directly until their Lab 2 images land. Applicant,
+# Credential and Moderation reach their peers through the Gateway (`gateway-service`), which
+# this file does not run yet; until its block lands, their events wait in their outboxes and
+# each service's /health/ready shows the backlog per consumer. Other services should add
+# their own blocks here the same way, referencing their own published image and joining the
+# same `student-id-net` network.
 #
 # Every service token below is the same value, SERVICE_TOKEN in .env - the contract's one
 # X-Service-Token for the whole stack.
@@ -121,25 +122,27 @@ services:
       - student-id-net
 
   moderation-service:
-    image: dmracovit/moderation-service:0.2.0
+    image: dmracovit/moderation-service:2.0.0
     restart: unless-stopped
     depends_on:
       moderation-postgres:
         condition: service_healthy
     environment:
       DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
+      # The stack's one X-Service-Token, sent on every call to a peer and on every event push.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
-      # Sent as X-Service-Token to peers; University Record checks it on /applicants/{id}/records.
-      UPSTREAM_SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       DEV_ENDPOINTS: ${MODERATION_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
       REFERENCE_YEAR: *reference_year
-      # Peers inside student-id-net. Clearing a URL selects the built-in mock of that peer.
-      APPLICANT_URL: ${MODERATION_APPLICANT_URL:-http://applicant-service:8081}
-      CREDENTIAL_URL: ${MODERATION_CREDENTIAL_URL:-http://credential-service:8082}
-      RULES_URL: ${MODERATION_RULES_URL:-http://server-rules-service:8080}
-      UNIVERSITY_RECORD_URL: ${MODERATION_UNIVERSITY_RECORD_URL:-http://university-record-service:8080}
-      SESSION_URL: ${MODERATION_SESSION_URL:-http://session-service:8080}
+      # Each peer is reached through the Gateway (README "Deployments"): the Gateway's address plus the
+      # peer's prefix. The gateway-service block arrives with the Gateway image (#39); until then these
+      # calls fail as DEPENDENCY_UNAVAILABLE and the relay keeps retrying, as the contract says.
+      # Clearing a variable in .env (MODERATION_SESSION_URL=) selects the built-in mock of that peer.
+      SESSION_URL: ${MODERATION_SESSION_URL-http://gateway-service:8080/api/v1/session}
+      APPLICANT_URL: ${MODERATION_APPLICANT_URL-http://gateway-service:8080/api/v1/applicant}
+      CREDENTIAL_URL: ${MODERATION_CREDENTIAL_URL-http://gateway-service:8080/api/v1/credential}
+      UNIVERSITY_RECORD_URL: ${MODERATION_UNIVERSITY_RECORD_URL-http://gateway-service:8080/api/v1/university-record}
+      RULES_URL: ${MODERATION_RULES_URL-http://gateway-service:8080/api/v1/server-rules}
     ports:
       - "8085:8085"
     networks:
@@ -177,7 +180,7 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:0.2.0
+    image: dmracovit/discord-dms-service:2.0.0
     restart: unless-stopped
     depends_on:
       dms-mongo:
@@ -187,11 +190,13 @@ services:
     environment:
       MONGODB_URI: "mongodb://${DMS_MONGO_USER:-dms_user}:${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}@dms-mongo:27017/dms_db?authSource=admin"
       REDIS_URL: redis://dms-redis:6379/0
-      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       DEV_ENDPOINTS: ${DMS_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
+      # The address clients reach port 8086 at: the base of the ws_url a ticket comes with. The chat is
+      # negotiated through the Gateway (POST /api/v1/discord-dms/ws-tickets) and connected here directly.
+      WS_PUBLIC_URL: ${DMS_WS_PUBLIC_URL:-ws://localhost:8086}
     ports:
-      - "8086:8086"
+      - "8086:8086"   # stays published in the final stack: the direct WebSocket connection
     networks:
       - student-id-net
 

@@ -5,10 +5,9 @@
 > cross-cutting system pieces. It documents what this service does, how to run it, how to
 > talk to it, what it guarantees, and — importantly — what it does **not** do.
 >
-> Everything here is stated from the implementation, except event delivery and authentication,
-> which follow the team's Common Public Repository (CPR) contract as amended on 2026-10-05
-> (direct HTTP event push, `Authorization: Bearer` / `X-Service-Token`). Where the published
-> image diverges from that contract, the divergence is called out explicitly in
+> Everything here is stated from the implementation shipped as image `2.0.0`, not from the design
+> documents. Where that image diverges from the team's Common Public Repository (CPR) contract -
+> event delivery above all - the divergence is called out explicitly in
 > [§12](#12-divergences-from-the-cpr-contract).
 
 ---
@@ -82,13 +81,13 @@ non-negotiable for anyone integrating:
 | **Health (liveness)** | `GET /health` |
 | **Health (readiness)** | `GET /health/ready` |
 | **Database** | PostgreSQL 16, `applicant_db` (private — no other service may connect) |
-| **Events** | HTTP push through the Gateway, no broker: produced events are relayed from the outbox to `{gateway}/api/v1/<consumer>/events`; received events arrive on its own `POST /api/v1/events` |
-| **Produces** | `applicant.initialized`, pushed to Credential and University Record |
-| **Receives** | `applicant.initialized` (from Credential / University Record only) |
+| **Broker** | AMQP topic exchange `student-id.events`. The contract dropped the broker on 2026-10-05 in favour of HTTP push through the Gateway; image `2.0.0` has not followed - see [§12](#12-divergences-from-the-cpr-contract) |
+| **Publishes** | `applicant.initialized` |
+| **Consumes** | `applicant.initialized` (from Credential / University Record only) |
 | **Authentication** | Checked by the Gateway, not here: callers send `Authorization: Bearer <jwt>` or `X-Service-Token` to the Gateway, which forwards only `X-Player-Id`. The service validates no token - see [§14](#14-gateway-requirements) |
-| **Outbound HTTP calls** | `POST {gateway}/api/v1/credential/events` and `.../university-record/events`, with `X-Service-Token` (event delivery only) |
-| **Docker image** | `stewdh/applicant-service:1.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
-| **Hard dependency** | PostgreSQL only. Event consumers are soft — the service runs fully while they are down; events wait in the outbox |
+| **Outbound HTTP calls** | None |
+| **Docker image** | `stewdh/applicant-service:2.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
+| **Hard dependency** | PostgreSQL only. The broker is soft — the service runs fully without it |
 
 ---
 
@@ -106,7 +105,7 @@ non-negotiable for anyone integrating:
 ### Start it
 
 ```bash
-./scripts/run.sh                # build image, start postgres + service, wait for ready
+./scripts/run.sh                # build image, start postgres + broker + service, wait for ready
 ./scripts/run.sh --local        # run from source against the containerised dependencies
 ./scripts/run.sh --down         # stop (add --volumes to drop data)
 ./scripts/run.sh --logs         # follow logs
@@ -124,7 +123,8 @@ into the team-wide compose file; it lets anyone run Applicant Service without cl
 
 ### Minimum viable configuration
 
-The only required variable is `DATABASE_URL`. Everything else has a working default.
+The only required variable is `DATABASE_URL`. Everything else has a working default; with no
+broker URL set (the default), messaging is off and events accumulate in the outbox.
 
 ```bash
 DATABASE_URL=postgres://user:pass@host:5432/applicant_db?sslmode=disable \
@@ -138,7 +138,8 @@ DATABASE_URL=postgres://user:pass@host:5432/applicant_db?sslmode=disable \
 2. Connect to PostgreSQL, retrying with backoff for up to `DB_CONNECT_TIMEOUT` (30s default).
    **If the database is not reachable within that window, the process exits non-zero.**
 3. Apply embedded migrations under a PostgreSQL advisory lock (safe with concurrent replicas).
-4. Start the background outbox relay. An unreachable consumer never blocks or fails startup.
+4. Start the background workers: dial the broker with capped backoff, and start the consumer
+   and the outbox relay. Failure here never blocks or fails startup.
 5. Start the HTTP server — **the service is now serving**.
 
 Typical cold start against a warm database is well under a second.
@@ -151,6 +152,8 @@ Typical cold start against a warm database is well under a second.
 | --- | --- | --- |
 | `8081` | Applicant Service HTTP | Set by `APP_PORT` (default `8081`); the shipped compose file pins the container to `8081` and maps it with `APP_HOST_PORT` |
 | `5433` → `5432` | PostgreSQL | **Host port is 5433 on purpose.** During integration several teammates' databases run on one laptop and 5432 is taken first |
+| `5672` | Broker (AMQP) | Started by the service's own compose file. The team's `docker-compose.yml` has no broker |
+| `15672` | Broker management UI and HTTP API | Useful for inspecting the exchange and queues |
 
 The compose network is named **`student-id-net`** so other teams' stacks can join it. Inside
 that network the service is reachable as `http://applicant-service:8081`.
@@ -174,29 +177,49 @@ A misconfiguration fails fast with the offending variable named.
 | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn`, `error` — anything else fails validation |
 | `HTTP_READ_TIMEOUT` | `10s` | no | Server read timeout |
 | `HTTP_WRITE_TIMEOUT` | `10s` | no | Server write timeout |
-| `HTTP_REQUEST_TIMEOUT` | `5s` | no | Per-request context deadline (see the caveat below) |
+| `HTTP_REQUEST_TIMEOUT` | `5s` | no | Task timeout: a request running longer is stopped and answered `408 REQUEST_TIMEOUT` (see below). `0` disables it |
+| `MAX_CONCURRENT_TASKS` | `64` | no | Concurrent task limit for `/api/v1`: a request above it is refused with `429 TOO_MANY_REQUESTS`. Must be ≥ 1 |
+| `DEV_ENDPOINTS` | `false` | no | Mounts `GET /api/v1/dev/slow?ms=` (see below). Keep `false` in shared deployments |
 | `SHUTDOWN_TIMEOUT` | `10s` | no | Grace period for in-flight requests on SIGTERM |
 | `DB_MAX_CONNS` | `10` | no | pgx pool size. Must be ≥ 1 |
 | `DB_CONNECT_TIMEOUT` | `30s` | no | How long to retry the database at boot before giving up |
 | `MIGRATE_ON_START` | `true` | no | Apply embedded migrations at startup |
+| `PUBLISH_CONFIRM_TIMEOUT` | `2s` | no | How long to wait for a publisher confirm |
 | `OUTBOX_POLL_INTERVAL` | `500ms` | no | How often the relay drains the outbox |
 | `OUTBOX_BATCH_SIZE` | `50` | no | Events per drain batch. Must be ≥ 1 |
 | `REFERENCE_YEAR` | `2026` | no | The calendar year the generator treats as "now". Must be 1900–2999. **Must match across all three applicant-data services** — see [§7.3](#73-admission-year-and-study-year) |
 | `GENERATOR_SEED` | `0` | no | `0` = a fresh random sequence per boot. Non-zero = reproducible applicants. **See the replica warning in [§15](#15-scaling-concurrency-and-statefulness)** |
 
-**An empty string counts as unset** for every variable, so `LOG_LEVEL=""` silently falls back
-to the default rather than failing.
+The broker variables - URL, exchange (which must match every other service exactly), queue,
+dead-letter exchange and queue, prefetch, reconnect backoff cap - are off the contract since
+2026-10-05 and are documented in the service's own README only. The broker URL is empty by
+default, and **empty disables messaging entirely**: events accumulate in the outbox and none
+are consumed.
 
-The contract also requires the Gateway URLs of the two consumers
-(`http://gateway-service:8080/api/v1/credential` and `.../university-record`), the shared
-`SERVICE_TOKEN` it sends on every push, and `MAX_CONCURRENT_TASKS`. Image `1.0.0` has no variables
-for them yet; their names will be listed here when it does ([§12](#12-divergences-from-the-cpr-contract)).
+**An empty string counts as unset** for every variable, so an empty value silently falls back
+to the default rather than failing. The one place this is load-bearing is the broker URL, where
+empty deliberately means "messaging off".
 
-**Caveat on `HTTP_REQUEST_TIMEOUT`:** it is the variable the contract names for the task timeout,
-but it installs a context deadline and does **not** emit the contract's `408 REQUEST_TIMEOUT`. When
-it fires, in-flight database work is cancelled and the request surfaces as
-`500 DEPENDENCY_UNAVAILABLE` with `details.dependency = "postgres"`. The Gateway's own timeout
-(`10s`) is above it, so the service's body reaches the client.
+The contract instead requires the Gateway URLs of the two consumers
+(`http://gateway-service:8080/api/v1/credential` and `.../university-record`) and the shared
+`SERVICE_TOKEN` sent on every push. Image `2.0.0` has no variables for them
+([§12](#12-divergences-from-the-cpr-contract)).
+
+**Task timeout (`HTTP_REQUEST_TIMEOUT`).** Every request gets a deadline. When it fires,
+in-flight database work is cancelled, the open transaction is rolled back and the service answers
+`408 REQUEST_TIMEOUT` - nothing was changed. A transaction is never committed after the deadline,
+and a commit that did succeed is never reported as a timeout, so `408` always means "not stored".
+The Gateway's own timeout (`10s`) is above it, so this answer reaches the caller.
+
+**Concurrent task limit (`MAX_CONCURRENT_TASKS`).** At most that many requests under `/api/v1` are
+in progress at once. One more is refused at once - not queued - with `429 TOO_MANY_REQUESTS` and
+`Retry-After: 1`, before any work is done. `/health` and `/health/ready` are not counted.
+
+**Dev endpoint (`DEV_ENDPOINTS=true`).** `GET /api/v1/dev/slow?ms=<0..60000>` does nothing for `ms`
+milliseconds and answers `200 { "slept_ms": <ms> }`; it counts as a task. `?ms=6000` answers `408`
+after the timeout, and with `MAX_CONCURRENT_TASKS` of them open one more request to `/api/v1`
+answers `429` while `/health` still answers `200`. Without the flag the path is `404 NOT_FOUND`.
+A bad `ms` (not an integer, or outside `0..60000`) answers `400 VALIDATION_ERROR`.
 
 ---
 
@@ -217,7 +240,8 @@ Conventions, all inherited from the team contract:
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/applicants/next` | **contract** | Server Moderation Session Service | service-to-service |
 | `GET` | `/api/v1/applicants/{applicant_id}` | **contract** | Moderation Service, game client | player-safe |
-| `POST` | `/api/v1/events` | **contract** | Credential, University Record Service | service-to-service. **Not in image `1.0.0`** |
+| `POST` | `/api/v1/events` | **contract** | Credential, University Record Service | service-to-service. **Not in image `2.0.0`**: answers `404 NOT_FOUND` |
+| `GET` | `/api/v1/dev/slow?ms=` | dev (`DEV_ENDPOINTS`) | demo / tests | service token at the Gateway |
 | `GET` | `/api/v1/applicants` | extension | admin / tests | **not player-safe** |
 | `POST` | `/api/v1/applicants` | extension | admin / tests | **not player-safe** |
 | `PATCH` | `/api/v1/applicants/{applicant_id}` | extension | admin / tests | **not player-safe** |
@@ -358,7 +382,7 @@ does not check dependencies: a liveness probe that fails on a dependency restart
 container because somebody else is having a bad day.
 
 ```json
-{ "status": "ok", "service": "applicant-service", "version": "1.0.0" }
+{ "status": "ok", "service": "applicant-service", "version": "2.0.0" }
 ```
 
 **`GET /health/ready`** — readiness.
@@ -367,29 +391,36 @@ container because somebody else is having a bad day.
 {
   "status": "ok",
   "service": "applicant-service",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "components": {
-    "postgres": { "status": "up" }
+    "postgres": { "status": "up" },
+    "<broker>": { "status": "up" }
   },
   "pending_events": 0
 }
 ```
 
-| Condition | HTTP | `status` |
-| --- | --- | --- |
-| Everything up | `200` | `ok` |
-| **PostgreSQL down** | **`503`** | `unavailable` |
+| Condition | HTTP | `status` | `components.<broker>.status` |
+| --- | --- | --- | --- |
+| Everything up | `200` | `ok` | `up` |
+| **Broker down** | **`200`** | `degraded` | `down` |
+| **Broker URL unset** | **`200`** | **`ok`** | `disabled` |
+| **PostgreSQL down** | **`503`** | `unavailable` | *(unchanged)* |
+
+The broker component's `status` is one of `up`, `down`, `disabled`. Note the third row: messaging
+being *switched off* is treated as a deliberate configuration, not a fault, so the overall
+status stays `ok`. Watch for `disabled` explicitly if you want to catch a missing broker
+URL — otherwise events accumulate in the outbox indefinitely and nothing says so.
 
 `components.<name>.details` carries the last error. `pending_events` is the outbox backlog —
-a number that keeps climbing means a consumer has been unreachable for a while. **It is
-omitted from the body when the count cannot be taken**, which is precisely when PostgreSQL is
-down.
+a number that keeps climbing means the broker has been away for a while. **It is omitted from
+the body when the count cannot be taken**, which is precisely when PostgreSQL is down.
 
-> **Do not remove an instance from the load-balancer pool because `pending_events` grows.** The
-> REST surface is fully functional while a consumer is away; events simply wait in the outbox.
+> **Do not remove an instance from the load-balancer pool on `degraded`.** The REST surface is
+> fully functional without the broker; events simply queue until it returns.
 
-The body of image `1.0.0` still reports the component of the event transport the contract
-dropped; ignore it.
+The team's `docker-compose.yml` runs no broker and sets no broker URL, so in that stack the
+component reads `disabled`, the status stays `ok`, and `pending_events` only grows.
 
 ### 6.8b What the API deliberately does not expose
 
@@ -409,14 +440,14 @@ downstream:
 | HTTP | `code` | When |
 | --- | --- | --- |
 | `400` | `VALIDATION_ERROR` | Malformed JSON, missing/invalid field, bad UUID, out-of-range pagination |
-| `408` | `REQUEST_TIMEOUT` | Contract: the task timeout was reached. **Not in image `1.0.0`**, which answers `500 DEPENDENCY_UNAVAILABLE` |
-| `429` | `TOO_MANY_REQUESTS` | Contract: the concurrent task limit was reached, with `Retry-After`. **Not in image `1.0.0`** |
+| `408` | `REQUEST_TIMEOUT` | The request ran longer than `HTTP_REQUEST_TIMEOUT` and was stopped. `details` empty. **Nothing was changed** |
+| `429` | `TOO_MANY_REQUESTS` | `MAX_CONCURRENT_TASKS` requests are already in progress. Header `Retry-After: 1`. `details` empty. **Nothing was changed** |
 | `404` | `APPLICANT_NOT_FOUND` | No applicant with that id |
 | `404` | `NOT_FOUND` | Unknown route |
 | `405` | `METHOD_NOT_ALLOWED` | Known path, wrong method |
 | `422` | `VALIDATION_ERROR` | Well-formed, but the profile is not internally coherent. `details.invariant`, `details.side`, `details.reason`. `invariant` is usually an `I1`–`I12` id, but is the literal `"DB"` (with `side: "row"`) when a database constraint rejected the row. The contract reserves `422` for endpoint-specific codes; this one is a divergence, see [§12](#12-divergences-from-the-cpr-contract) |
-| `422` | `INVALID_EVENT` | `POST /api/v1/events` only: unparseable envelope, an `event_type` other than `applicant.initialized`, an unknown `version`, or an unusable payload |
-| `500` | `DEPENDENCY_UNAVAILABLE` | PostgreSQL unreachable or the request deadline fired. `details.dependency`. **Nothing was changed** |
+| `422` | `INVALID_EVENT` | Contract code for `POST /api/v1/events`. **Never returned by image `2.0.0`**, which does not serve that endpoint |
+| `500` | `DEPENDENCY_UNAVAILABLE` | PostgreSQL unreachable. A request stopped by the task timeout answers `408`, not this. `details.dependency`. **Nothing was changed** |
 | `500` | `INTERNAL_ERROR` | A bug, or a panic (recovered). `details` empty |
 
 Both `400` and `422` use the code `VALIDATION_ERROR`; the status distinguishes "could not parse
@@ -535,19 +566,20 @@ being identical if you generate addresses yourself.
 
 ### 7.5 Courses
 
-A course is identified by its `code` alone: 2-4 uppercase letters (`^[A-Z]{2,4}$`, e.g. `POO`,
-`SDA`, `PAD`). Codes come from the curriculum keyed by `(major, year)`. A profile's courses
+Course codes come from an embedded curriculum keyed by `(major, year)`: 2-4 uppercase letters
+(`POO`, `SDA`, `PAD`), with one exception, `LEN1`. A profile's courses
 normally belong to that person's own year of their own programme. Properties you can rely on:
 
 - `courses` is **always an array**, never `null`. Empty for `staff`, `alumni` and `outsider`.
 - Sorted ascending, no duplicates, at most **5** entries.
-- The curriculum is the CPR's [`shared/courses.json`](../shared/courses.json), shipped as
-  `internal/generator/catalog/data/courses.json` and **byte-identical** to the CPR copy. Credential
-  and University Record Service ship the same file, or a fabricated registration and an honest
-  one become indistinguishable. A change to it is a contract change.
-- A separate `fake_courses.json`, this service's own, holds codes that exist nowhere. They follow
-  the **same format** (`QBIT`, …) so a fabrication is not visible at a glance, and never collide
-  with a catalog code. University Record answers `exists: false` for them.
+- The curriculum is shipped as `internal/generator/catalog/data/courses.json`: 53 entries, the 49
+  of the CPR's [`shared/courses.json`](../shared/courses.json) plus `LEN1` ("Limba Engleză I",
+  year 1, spring) for each of the four majors. The contract requires a byte-identical copy of the
+  CPR file and codes matching `^[A-Z]{2,4}$`; image `2.0.0` meets neither
+  ([§12](#12-divergences-from-the-cpr-contract)). Credential Service ships the same file.
+- A separate `fake_courses.json` holds eight codes that exist nowhere (`ELSE-NET`, `QBIT-101`,
+  `WEB5`, …). They do not follow the catalog format, so a fabrication can be told apart at a
+  glance. University Record should answer `exists: false` for them.
 
 ---
 
@@ -639,20 +671,26 @@ record generation. `P(lie)` by difficulty: `1 → 0.15`, `2 → 0.35`, `3 → 0.
 
 ### 9.1 Transport
 
-Direct HTTP push, as the CPR's "Event delivery" section defines it - there is no broker.
+- Exchange **`student-id.events`**, type `topic`, **durable**, not auto-deleted.
+- Routing key **`applicant.initialized`**.
+- This service's queue: `applicant-service.applicant-initialized`, durable, dead-lettered to
+  `student-id.dlx` with routing key `applicant.initialized.dead`.
+- Dead-letter queue `applicant-service.dlq`, bound to `student-id.dlx` with `#`.
+- Publishes are **persistent** with **publisher confirms**; `mandatory` is `false` (during
+  integration peer queues often do not exist yet, and flagging every publish unroutable would
+  bury the real failures).
 
-- **Producing.** `applicant.initialized` is written to the outbox in the same transaction as the
-  applicant. A background relay sends the envelope, unchanged, through the Gateway to
-  `{gateway}/api/v1/credential/events` and `{gateway}/api/v1/university-record/events`, with
-  `X-Service-Token`. Delivery state is tracked per consumer. A `2xx` marks it delivered;
-  `422 INVALID_EVENT` parks it for that consumer; anything else (another `4xx`, the Gateway's
-  `408`/`429`/`502`, a `5xx`, a timeout, a refused connection) is retried with backoff capped at
-  30 s.
-- **Receiving.** Peers push their `applicant.initialized` through the Gateway to this service's own
-  `POST /api/v1/events`; the Gateway admits it only with the service token.
+> **Every service must declare the shared exchange identically** (`topic`, durable, not
+> auto-delete). One mismatched declaration gives everyone `PRECONDITION_FAILED (406)`, and
+> amqp091-go reports that by *closing the channel*, after which publishes fail quietly. This
+> service watches both connection and channel closure and surfaces it in `/health/ready`.
 
-> **Image `1.0.0` does not implement this yet** - it has no HTTP relay and no
-> `POST /api/v1/events`. See [§12](#12-divergences-from-the-cpr-contract).
+> **This is not the contract's transport.** Since 2026-10-05 the CPR's "Event delivery" section
+> requires direct HTTP push: the producer relays each envelope through the Gateway to every
+> consumer's `POST /api/v1/events`, and there is no broker. Image `2.0.0` has no such relay and
+> serves no `POST /api/v1/events` (it answers `404 NOT_FOUND`). The team's `docker-compose.yml`
+> runs no broker, so in that stack this service neither delivers nor receives any event - see
+> [§12](#12-divergences-from-the-cpr-contract).
 
 ### 9.2 Envelope
 
@@ -671,9 +709,9 @@ Common to every event in the system:
 
 `occurred_at` is UTC truncated to whole seconds.
 
-### 9.3 Produced: `applicant.initialized`
+### 9.3 Published: `applicant.initialized`
 
-Pushed to Credential Service and University Record Service. Sent only when this service was
+Consumed by Credential Service and University Record Service. Sent only when this service was
 contacted first.
 
 ```json
@@ -707,48 +745,55 @@ contacted first.
 - **Build from the right half.** Credential Service builds documents from `claimed` and marks
   as `forged` whatever supports a claim that `actual` contradicts. University Record Service
   builds the university's records from `actual` — an outsider gets no enrollment row at all.
+- **Ignore your own.** Your queue is bound to the exchange you publish on, so your own events
+  come back. Drop any event whose `initialized_by` equals your own service name.
 - **Deduplicate on `event_id`.** Delivery is at-least-once (see [§9.5](#95-delivery-guarantees)).
 - **Do not require `actual`.** It is always sent by this service, but a lenient reader is what
-  keeps an integration day from being lost to parked events full of usable data.
+  keeps an integration day from being lost to a dead-letter queue full of usable messages.
 
-### 9.4 Received: `applicant.initialized`
+### 9.4 Consumed: `applicant.initialized`
 
 Accepted from Credential Service and University Record Service (i.e. any event whose
 `initialized_by` is not `applicant-service`). This service creates its own record under the
 same `applicant_id` from the `claimed` profile, and registers the `actual` university address
 so its own generator will not later hand the same address to someone else.
 
-Handling policy, as the answer to `POST /api/v1/events`:
+Handling policy:
 
-| Situation | Answer |
+| Situation | Action |
 | --- | --- |
-| Unparseable envelope, or `event_type` ≠ `applicant.initialized`, or an unknown `version` | `422 INVALID_EVENT` — the producer parks it, it will never succeed |
-| `initialized_by == "applicant-service"` | `200` and drop — our own; never pushed back by a conforming peer |
-| Unknown/empty `initialized_by`, unusable payload | `422 INVALID_EVENT` |
-| Already-seen `event_id` | `200` with `"duplicate": true`, nothing changes |
-| Payload the database refuses (wrong shape for our schema) | `422 INVALID_EVENT` |
-| Transient failure (PostgreSQL unreachable) | `500` — the producer retries |
+| Unparseable envelope, or `event_type` ≠ `applicant.initialized` | Dead-letter immediately (it will never succeed) |
+| `initialized_by == "applicant-service"` | Acknowledge and drop — our own |
+| Unknown/empty `initialized_by`, unusable payload | Dead-letter |
+| Already-seen `event_id` | Acknowledge, do nothing |
+| Transient failure, first delivery | Requeue (exactly one retry) |
+| Payload the database refuses (wrong shape for our schema) | Dead-letter immediately |
+| Transient failure, redelivered | Dead-letter |
 
 **A peer's `difficulty` is silently clamped into 1–5** before storage; an out-of-range value
 is not a reason to reject an otherwise usable applicant.
 
+The retry bound uses the AMQP `Redelivered` flag rather than a counter. Without a bound, a
+permanently failing message is requeued thousands of times a second and looks from outside
+exactly like a healthy, busy consumer.
+
 ### 9.5 Delivery guarantees
 
 Publishing uses a **transactional outbox**: the applicant row and the event are written in one
-database transaction, and a relay pushes from the outbox afterwards.
+database transaction, and a relay publishes from the outbox afterwards.
 
 | Property | Guarantee |
 | --- | --- |
 | An applicant exists but no event was ever queued | **Impossible** — same transaction |
-| An event is sent for an applicant that does not exist | **Impossible** — same transaction |
-| The same event delivered more than once | **Possible** — a crash between a successful push and the bookkeeping update sends it again |
+| An event is published for an applicant that does not exist | **Impossible** — same transaction |
+| The same event published more than once | **Possible** — a crash between a confirmed publish and the bookkeeping update republishes it |
 | Ordering | Best-effort (oldest first within a batch); **do not rely on it** |
 
 So: **at-least-once, never at-most-once.** Every consumer must deduplicate on `event_id`.
 
 **Consequences you can build on:** `POST /api/v1/applicants/next` returns `201` whether or not
-the consumers are reachable, and the backlog drains automatically once they are.
-`/health/ready` reports `pending_events` so you can watch the backlog.
+the broker is reachable, and the backlog drains automatically on reconnect. `/health/ready`
+reports `pending_events` so you can watch the backlog.
 
 ---
 
@@ -787,7 +832,7 @@ line:
 The split is deliberate: the left column is the **shared vocabulary** from the contract's
 "Shared values", where an out-of-set value is a genuine contract violation. The right column
 encodes **this service's own formatting choices**, and a peer must never have its events
-parked merely for spelling a student ID differently.
+dead-lettered merely for spelling a student ID differently.
 
 > This was wrong until migration `0003`: the column-level checks applied to every row, so a
 > peer sending the CPR's six-digit `FAF231017` had *every* event rejected, retried once and
@@ -818,7 +863,7 @@ change would silently never apply.
 
 ## 11. Use cases and interaction flows
 
-Every arrow below passes through the Gateway: the caller sends `{gateway}/api/v1/<prefix>/...`, and
+Every REST call below passes through the Gateway (events travel through the broker): the caller sends `{gateway}/api/v1/<prefix>/...`, and
 the paths shown are the service's own (see the CPR README "Gateway").
 
 ### 11.1 Server Moderation Session Service — "give me the next applicant"
@@ -829,7 +874,7 @@ Session Service     →  Applicant Service: POST /api/v1/applicants/next
                                           { session_id, difficulty }
 Applicant Service   →  Session Service:   201 { applicant_id, session_id, created_at }
 Session Service     :  stores applicant_id as the session's current_applicant_id
-Applicant Service   →  (async) pushes applicant.initialized to Credential and University Record
+Applicant Service   →  (async) publishes applicant.initialized
 ```
 
 - `difficulty` is the session's own difficulty (derived from player levels).
@@ -879,7 +924,7 @@ The student ID encodes the group ([§7.2](#72-student-id--majoryygnn)), so
 
 ### 11.6 Applicant Service as a *consumer*
 
-If Credential or University Record is contacted first, it pushes the event here and **this**
+If Credential or University Record is contacted first, it publishes the event and **this**
 service creates its record from `claimed`. That path is implemented and tested. Today no
 service calls their `POST /applicants/next`, but the contract is identical on all three, so
 Session Service could switch without any change on its side.
@@ -892,10 +937,9 @@ Raise these in the CPR before integration; they are the parts other services mus
 
 | # | Divergence | Who is affected |
 | --- | --- | --- |
-| 1 | **No HTTP event delivery in image `1.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Credential and University Record, and no `POST /api/v1/events` of its own; it still delivers events through the transport the contract dropped on 2026-10-05. Until it is reworked, no peer receives its applicants | Credential and University Record Service, and through them Moderation |
-| 2 | **No task timeout or concurrent task limit as the contract defines them.** `HTTP_REQUEST_TIMEOUT` surfaces as `500 DEPENDENCY_UNAVAILABLE` instead of `408 REQUEST_TIMEOUT`, and there is no `MAX_CONCURRENT_TASKS` / `429`. The image is tagged `1.0.0`, not a Lab 2 `2.x.y` | Gateway, Lab 2 grading |
-| 3 | **`422 VALIDATION_ERROR`** for an incoherent profile. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | Generic clients |
-| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, and the fake codes must follow `^[A-Z]{2,4}$`. Image `1.0.0` predates that file: whether its catalog matches is unverified, and its fake codes (`ELSE-NET`, `QBIT-101`) do not follow the format | University Record and Credential Service, Moderation |
+| 1 | **No HTTP event delivery in image `2.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Credential and University Record, and no `POST /api/v1/events` of its own; it still publishes to and consumes from an AMQP broker ([§9](#9-events)), which the contract dropped on 2026-10-05. The team's `docker-compose.yml` runs no broker, so until the service is reworked no peer receives its applicants and it receives none of theirs | Credential and University Record Service, and through them Moderation |
+| 2 | **`422 VALIDATION_ERROR`** for an incoherent profile. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | Generic clients |
+| 3 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, and the fake codes must follow `^[A-Z]{2,4}$`. Image `2.0.0` does not match: its catalog has 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format - and none of its eight fake codes (`ELSE-NET`, `QBIT-101`, `WEB5`, …) follow the format. Credential Service ships the same two files | University Record and Credential Service, Moderation |
 | 5 | **Four CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `PATCH`, `DELETE`) | Gateway and auth — see [§14](#14-gateway-requirements) |
 | 6 | **`POST /api/v1/applicants` does not produce `applicant.initialized`** | Anyone expecting every applicant to be announced |
 
@@ -908,7 +952,7 @@ Raise these in the CPR before integration; they are the parts other services mus
 Right after an applicant is created by **another** service, `GET /api/v1/applicants/{id}`
 returns `404 APPLICANT_NOT_FOUND` until the event arrives. This is normal and expected by the
 contract. Clients should retry briefly rather than treating it as an error. Typical window is
-milliseconds; it is unbounded while the producer cannot reach this service.
+milliseconds; it is unbounded if the broker is down.
 
 ### 13.2 `POST /applicants/next` is not idempotent
 
@@ -920,13 +964,15 @@ or retry policy to know about this service.
 `identity_theft` deliberately produces two applicants claiming the same identifier. Never key
 on `claimed.student_id`.
 
-### 13.4 A consumer is down
+### 13.4 Broker outage
 
-- `POST /applicants/next` still returns `201`; events wait in the outbox.
-- `/health/ready` stays `200`, with a rising `pending_events`.
-- That consumer receives nothing until it is back; its view of applicants goes stale. The other
-  consumer is not held back - delivery state is per consumer.
-- Once it answers again, the backlog drains automatically.
+- `POST /applicants/next` still returns `201`; events queue in the outbox.
+- `/health/ready` returns `200` with `status: "degraded"` and a rising `pending_events`.
+- Peers receive nothing until the broker returns; their view of applicants goes stale.
+- On reconnect the backlog publishes automatically. Confirmed by hand against the running
+  stack — three applicants created with the broker stopped, backlog of three, drained to zero on
+  restart with no intervention. **No automated integration test covers this**; the unit tests
+  use fakes.
 
 ### 13.5 Database outage
 
@@ -938,15 +984,15 @@ on `claimed.student_id`.
 - At *startup*, an unreachable database for longer than `DB_CONNECT_TIMEOUT` (30s) exits the
   process non-zero — rely on the orchestrator's restart policy.
 
-### 13.6 Unusable events
+### 13.6 Poison messages
 
-An unreadable or wrong-typed event, or a payload the database refuses, is answered
-`422 INVALID_EVENT`, so the producer parks it instead of retrying - it would fail identically
-again. Only a genuinely transient failure (`500`) is retried by the producer.
+An unreadable or wrong-typed message goes straight to `applicant-service.dlq` and never
+retries. A payload the database refuses is also parked immediately, since it would fail
+identically on a redelivery. Only a genuinely transient failure is retried, exactly once.
 
-**If a peer reports that its applicants never appear here, look for parked events on the
-producer's side and this service's `422` log lines first.** The most likely cause is a payload
-shape this service cannot store — see the constraint split in [§10](#10-what-and-how-it-stores).
+**Inspect the DLQ first if a peer reports that its applicants never appear here.** The most
+likely cause is a payload shape this service cannot store — see the constraint split in
+[§10](#10-what-and-how-it-stores).
 
 ### 13.7 Email namespace exhaustion
 
@@ -1003,7 +1049,7 @@ port unpublished.
 | --- | --- | --- |
 | `GET /api/v1/applicants/{id}` | **Yes** | Claimed profile only. This is what the game shows |
 | `POST /api/v1/applicants/next` | **No — service only** | Creates an applicant and an event. A player could spam applicants and desynchronise sessions |
-| `POST /api/v1/events` | **No — service only** | A player could inject applicants |
+| `POST /api/v1/events` | **No — service only** | A player could inject applicants. Contract endpoint; image `2.0.0` does not serve it |
 | `GET /api/v1/applicants` | **No — admin only** | Enumerates every applicant across every session. A player could pre-read applicants they have not met |
 | `POST`, `PATCH`, `DELETE /api/v1/applicants` | **No — admin only** | A player could edit the applicant they are being judged on |
 | `/health`, `/health/ready` | **No — internal** | Leaks dependency state and version |
@@ -1029,7 +1075,8 @@ There is no `Idempotency-Key` support.
 | --- | --- |
 | Server read / write | 10s |
 | Server idle (keep-alive) | 60s |
-| Per-request context deadline | 5s → surfaces as `500 DEPENDENCY_UNAVAILABLE`, not the contract's `408` |
+| Task timeout (`HTTP_REQUEST_TIMEOUT`) | 5s → `408 REQUEST_TIMEOUT`, transaction rolled back |
+| Concurrent task limit (`MAX_CONCURRENT_TASKS`) | 64 → `429 TOO_MANY_REQUESTS` + `Retry-After: 1` |
 | Graceful shutdown | 10s |
 
 The Gateway's timeout (`10s`) is above 5s, so the service's own error body reaches the client.
@@ -1059,14 +1106,15 @@ is a few hundred bytes.
 | Liveness / restart | `GET /health` | The process is wedged. Restart |
 | Readiness / pool membership | `GET /health/ready` | `503` = PostgreSQL unreachable. Remove from pool |
 
-**Treat `200` with a growing `pending_events` as healthy.** It means only a consumer is away, and the
+**Treat `200` + `status: "degraded"` as healthy.** It means only the broker is away, and the
 REST surface is fully functional.
 
 ### Graceful shutdown
 
 On `SIGTERM` / `SIGINT` the service stops accepting HTTP, drains in-flight requests (up to
-`SHUTDOWN_TIMEOUT`), then stops the relay, then closes the database pool — in that order, so an in-flight
-delivery is never cut off from the database. Give the orchestrator a termination grace period **above** `SHUTDOWN_TIMEOUT`.
+`SHUTDOWN_TIMEOUT`), then stops the consumer and relay, then closes the broker and the
+database pool — in that order, so a consumer holding a message is never cut off from the
+database. Give the orchestrator a termination grace period **above** `SHUTDOWN_TIMEOUT`.
 
 ---
 
@@ -1080,7 +1128,7 @@ Replicas are safe:
 | Concern | Behaviour |
 | --- | --- |
 | Migrations | Guarded by a PostgreSQL advisory lock — concurrent starts serialise |
-| Received events | Any replica may receive a push; dedup on `event_id` in the database makes a duplicate harmless |
+| Consumer | All replicas share one queue → competing consumers, each message handled once |
 | Outbox relay | `SELECT … FOR UPDATE SKIP LOCKED` — a second relay takes different rows rather than waiting or double-publishing |
 | Email allocation | Arbitrated by a unique index, correct across processes |
 | Generator RNG | Mutex-protected; race-clean under `-race` |
@@ -1090,7 +1138,8 @@ Replicas are safe:
 > `GENERATOR_SEED=0` (the default) in any multi-replica deployment; reserve a fixed seed for
 > single-instance demos and reproducible debugging.
 
-**Connection budget:** each replica opens up to `DB_MAX_CONNS` (10) PostgreSQL connections. Size the database's `max_connections` accordingly.
+**Connection budget:** each replica opens up to `DB_MAX_CONNS` (10) PostgreSQL connections and
+2 AMQP channels on 1 connection. Size the database's `max_connections` accordingly.
 
 **Cost per applicant:** one `POST /applicants/next` performs roughly — one victim-pool query,
 one or more email reservation attempts, one applicant insert, one outbox insert, all in a
@@ -1110,7 +1159,9 @@ Events worth alerting on:
 
 | Log message | Meaning |
 | --- | --- |
-| `parking message …` | An event could not be used and was refused — investigate |
+| `broker unreachable, retrying` | Broker down; outbox is filling |
+| `broker unavailable, events are queued in the outbox` | Same, throttled to once a minute |
+| `parking message …` | A message went to the DLQ — investigate |
 | `archetype could not be applied, retrying` | A rare generator sampling edge; harmless unless frequent |
 | `falling back to an honest applicant` | **A generator bug** — every archetype attempt failed |
 | `request failed` at `error` level | A 5xx |
@@ -1147,7 +1198,7 @@ Do not assume these exist:
 The recipes use `BASE=http://localhost:8081`, the service's own port, which is published only during
 Lab 2 development. Through the Gateway, replace `$BASE/api/v1/` with
 `http://localhost:8080/api/v1/applicant/` and send the credential the route needs (`X-Service-Token`
-for `POST /applicants/next` and `POST /events`).
+for `POST /applicants/next`).
 
 ### Create and read an applicant
 
@@ -1164,35 +1215,34 @@ curl -sS $BASE/api/v1/applicants/$ID | jq
 
 ### Watch what a peer service would receive
 
-Point one consumer URL at any HTTP endpoint that logs request bodies, create an applicant, and
-the relay delivers the envelope there exactly as a peer would receive it.
+Bind a spy queue to the exchange, then create an applicant:
+
+```bash
+RU=<broker-user>; RP=<broker-pass>
+curl -sS -u "$RU:$RP" -X PUT http://localhost:15672/api/queues/%2F/spy.peer \
+  -H 'content-type: application/json' -d '{"durable":true}'
+curl -sS -u "$RU:$RP" -X POST http://localhost:15672/api/bindings/%2F/e/student-id.events/q/spy.peer \
+  -H 'content-type: application/json' -d '{"routing_key":"applicant.initialized"}'
+
+# ... create an applicant ...
+
+curl -sS -u "$RU:$RP" -X POST http://localhost:15672/api/queues/%2F/spy.peer/get \
+  -H 'content-type: application/json' \
+  -d '{"count":1,"ackmode":"ack_requeue_false","encoding":"auto"}' | jq -r '.[0].payload' | jq
+```
 
 ### Pretend to be Credential Service
 
-Push an event and watch this service create its own record. Push the **same `event_id`** twice
-to prove idempotency - the second answer is `200` with `"duplicate": true`. **Contract
-endpoint; not in image `1.0.0`.**
+Publish an event and watch this service create its own record. Publish the **same `event_id`**
+twice to prove idempotency:
 
 ```bash
-curl -sS -X POST $BASE/api/v1/events \
-  -H 'Content-Type: application/json' -H "X-Service-Token: $SERVICE_TOKEN" -d '{
-  "event_id": "aaaa1111-2222-4333-8444-555566667777",
-  "event_type": "applicant.initialized",
-  "occurred_at": "2026-09-13T11:00:00Z",
-  "producer": "credential-service",
-  "version": 1,
-  "payload": {
-    "applicant_id": "7c1e4a90-1111-4222-8333-444455556666",
-    "session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-    "initialized_by": "credential-service",
-    "difficulty": 2,
-    "claimed": { "name": "Ana Rusu", "student_id": "FAF24214", "email": "ana.rusu@isa.utm.md",
-                 "major": "FAF", "year": 2, "university_status": "faf_student",
-                 "courses": ["POO", "SDA"], "role": "student" },
-    "actual":  { "name": "Ana Rusu", "student_id": "FAF24214", "email": "ana.rusu@isa.utm.md",
-                 "major": "FAF", "year": 2, "university_status": "faf_student",
-                 "courses": ["POO", "SDA"], "role": "student" }
-  }
+curl -sS -u "$RU:$RP" -X POST http://localhost:15672/api/exchanges/%2F/student-id.events/publish \
+  -H 'content-type: application/json' -d '{
+  "properties": {"content_type":"application/json","delivery_mode":2},
+  "routing_key": "applicant.initialized",
+  "payload_encoding": "string",
+  "payload": "{\"event_id\":\"aaaa1111-2222-4333-8444-555566667777\",\"event_type\":\"applicant.initialized\",\"occurred_at\":\"2026-09-13T11:00:00Z\",\"producer\":\"credential-service\",\"version\":1,\"payload\":{\"applicant_id\":\"7c1e4a90-1111-4222-8333-444455556666\",\"session_id\":\"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\"initialized_by\":\"credential-service\",\"difficulty\":2,\"claimed\":{\"name\":\"Ana Rusu\",\"student_id\":\"FAF24214\",\"email\":\"ana.rusu@isa.utm.md\",\"major\":\"FAF\",\"year\":2,\"university_status\":\"faf_student\",\"courses\":[\"POO\",\"SDA\"],\"role\":\"student\"},\"actual\":{\"name\":\"Ana Rusu\",\"student_id\":\"FAF24214\",\"email\":\"ana.rusu@isa.utm.md\",\"major\":\"FAF\",\"year\":2,\"university_status\":\"faf_student\",\"courses\":[\"POO\",\"SDA\"],\"role\":\"student\"}}}"
 }'
 ```
 

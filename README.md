@@ -1003,9 +1003,9 @@ Gateway, and answers some errors with codes other than those in [Errors](#errors
 - `applicant.initialized` - from Credential Service or University Record Service  
   When another service met the applicant first, Applicant Service stores the profile from `claimed` (and keeps `actual` hidden) under the same `applicant_id`. An event whose `initialized_by` is `applicant-service` would be its own; it is never pushed back, and is ignored if it arrives.
 
-**Not yet wired:** the published image (`1.0.0`) neither relays events over HTTP nor exposes
-`POST /api/v1/events`, and has no task timeout or concurrent limit (its request deadline surfaces as
-`500 DEPENDENCY_UNAVAILABLE`, not `408`) - see [`docs/APPLICANT_SERVICE.md`](docs/APPLICANT_SERVICE.md).
+**Not yet wired:** the published image (`2.0.0`) neither relays events over HTTP nor exposes
+`POST /api/v1/events` - see [`docs/APPLICANT_SERVICE.md`](docs/APPLICANT_SERVICE.md). It does
+implement the task timeout and the concurrent task limit.
 
 #### Credential Service
 
@@ -1162,9 +1162,8 @@ confirmation, and claimed courses bring a registration. An honest outsider bring
 - `applicant.initialized` - from Applicant Service or University Record Service  
   Creates the applicant's documents from `claimed`. Where `claimed` and `actual` differ, the documents that support the false claim are marked `forged`. Honest applicants never get forged documents, but depending on `difficulty`, some of their documents may be `expired`, `inconsistent` or `incomplete`. An event whose `initialized_by` is `credential-service` is ignored if it arrives.
 
-**Not yet wired:** the published image (`1.0.0`) neither relays events over HTTP nor exposes
-`POST /api/v1/events`, and documents no `408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS` (it has an
-`HTTP_REQUEST_TIMEOUT` deadline; what it answers when that fires is not documented).
+**Not yet wired:** the published image (`2.0.0`) neither relays events over HTTP nor exposes
+`POST /api/v1/events`. It does implement the task timeout and the concurrent task limit.
 `GET .../documents/validation` is protected only once the
 Gateway enforces the service token and the service's port is no longer published - see
 [`docs/CREDENTIAL_SERVICE.md`](docs/CREDENTIAL_SERVICE.md).
@@ -1774,7 +1773,7 @@ need to clone the (private) service repository to run one.
 | University Record Service         | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service)               | `8084`    | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential/Moderation Service), `Auth__ServiceToken`                                                                                              |
 | Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | `8085`    | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN`; peer URLs `APPLICANT_URL`, `CREDENTIAL_URL`, `RULES_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL` (each one falls back to a built-in mock when empty), `UPSTREAM_SERVICE_TOKEN`, `REFERENCE_YEAR` |
 | Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `SERVICE_TOKEN`; optional `REDIS_URL` (fan-out between instances)                                                                                                                                                      |
-| Gateway Service                   | `d1vinexd/gateway-service` (Docker Hub image is published by CI on the first merge to `main`; not yet available)  | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md)                                                                                                                                                          |
+| Gateway Service                   | `stewdh/gateway-service` (Docker Hub image is published by CI on the first merge to `main`; not yet available)    | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md)                                                                                                                                                          |
 | Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | `8087`    | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional); contract: `JWT_SECRET` (same value as the Gateway's) for login - not read by the published image yet, see below                                                 |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | `8088`    | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); optionally `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL` and `APPLICANT_SERVICE_URL` to reach the real services instead of its stubs - see below                                                       |
 
@@ -1799,8 +1798,10 @@ the contract.
 **Not yet wired: the Gateway.** The Gateway image is not published yet, so `docker-compose.yml`,
 `.env.example` and the Postman collections still address every service directly, and every service
 port in the table above stays published during Lab 2 development; they switch to the Gateway in the
-PR that adds its image. No published service image yet trusts `X-Player-Id`, answers
-`408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS`, or carries a Lab 2 version tag; the per-service
+PR that adds its image. The Applicant, Credential and Gateway collections already carry the calls
+through the Gateway, for a Gateway run from its repository (`postman/`, "Through the Gateway"). No
+published service image yet trusts `X-Player-Id`; only Applicant and Credential (`2.0.0`) answer
+`408 REQUEST_TIMEOUT` / `429 TOO_MANY_REQUESTS` and carry a Lab 2 version tag. The per-service
 notes under [Endpoints](#endpoints) and the `docs/` references list what each one still does instead.
 
 **Not yet wired: event delivery.** No published image implements [Event delivery](#event-delivery)

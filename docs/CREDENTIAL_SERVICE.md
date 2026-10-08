@@ -7,9 +7,9 @@ Team 16 · *Student ID, please* · FAF.PAD21.1 · version `2.0.0`
 
 For "how do I start it", see [README.md](../credential-service/README.md). This document is the contract.
 
-Event delivery and authentication are described as the CPR contract requires them since
-2026-10-05 (direct HTTP event push, `Authorization: Bearer` / `X-Service-Token`). Where the
-published image `2.0.0` still differs, [§11](#11-divergences-from-the-cpr-contract) says so.
+Everything here describes the published image `2.0.0`. Where it differs from the CPR contract -
+event delivery above all, which the contract moved to direct HTTP push on 2026-10-05 -
+[§11](#11-divergences-from-the-cpr-contract) says so.
 
 ## Contents
 
@@ -45,10 +45,10 @@ Rules Service's ruleset.
 | --- | --- |
 | **Owns** | the document bundle per applicant; each document's `validation_status` and the `problems` behind it |
 | **Does not own** | the applicant's identity profile (Applicant Service); the university's hidden records (University Record Service); the admission decision (Moderation Service) |
-| **Calls** | `POST {gateway}/api/v1/applicant/events` and `.../university-record/events`, with `X-Service-Token` - event delivery only |
+| **Calls** | nothing. No outbound HTTP at all |
 | **Is called by** | the game client (`/documents`) and Moderation Service (`/documents/validation`) |
-| **Receives** | `applicant.initialized`, from Applicant Service or University Record Service, on its own `POST /api/v1/events` |
-| **Produces** | `applicant.initialized`, only when it was the first service to meet the applicant |
+| **Listens to** | `applicant.initialized`, from Applicant Service or University Record Service |
+| **Publishes** | `applicant.initialized`, only when it was the first service to meet the applicant |
 
 ---
 
@@ -60,7 +60,9 @@ Rules Service's ruleset.
 | Port | `8082` |
 | Health | `GET /health`, `GET /health/ready` |
 | Database | MongoDB, `credential_db` |
-| Events | HTTP push through the Gateway: outbox relay → `{gateway}/api/v1/<consumer>/events`; received on its own `POST /api/v1/events` |
+| Exchange | `student-id.events` (topic, durable) |
+| Queue | `credential-service.applicant-initialized` |
+| Dead letters | `student-id.dlx` → `credential-service.dlq` |
 | Auth | checked by the Gateway, not here; the service receives only `X-Player-Id` and validates no token - see [§13](#13-gateway-requirements) |
 | Producer name | `credential-service` |
 | Image | `stewdh/credential-service:2.0.0`, also `:latest` (linux/amd64, linux/arm64) |
@@ -68,8 +70,8 @@ Rules Service's ruleset.
 | Timestamps | ISO 8601, UTC, whole seconds |
 | Identifiers | UUID v4 strings |
 
-**Hard dependency:** MongoDB only. Event consumers are optional at runtime — see
-[§12.2](#122-a-consumer-is-away).
+**Hard dependency:** MongoDB only. The broker is optional at runtime — see
+[§12.2](#122-the-broker-is-away).
 
 ---
 
@@ -84,7 +86,8 @@ Rules Service's ruleset.
 run on one laptop.
 
 The compose network is named **`student-id-net`**, the same one Applicant Service declares, so
-the two stacks see each other.
+the two stacks see each other. RabbitMQ sits behind the `broker` profile of the service's own
+compose file and is off by default. The team's `docker-compose.yml` runs no broker at all.
 
 Inside the network the service is reachable as `credential-service:8082`.
 
@@ -102,8 +105,15 @@ a message naming the variable rather than at the first request that happens to n
 | `DB_MAX_POOL_SIZE` | `20` | driver connection pool |
 | `DB_CONNECT_TIMEOUT` | `30s` | also the server-selection timeout |
 | `ENSURE_INDEXES_ON_START` | `true` | idempotent; the document store's equivalent of migrations |
+| `RABBITMQ_URL` | *(empty)* | **empty disables messaging entirely** and the service still serves every endpoint |
+| `RABBITMQ_EXCHANGE` | `student-id.events` | must match every other service exactly |
+| `RABBITMQ_QUEUE` | `credential-service.applicant-initialized` | |
+| `RABBITMQ_DLX` / `RABBITMQ_DLQ` | `student-id.dlx` / `credential-service.dlq` | |
+| `RABBITMQ_PREFETCH` | `10` | |
+| `PUBLISH_CONFIRM_TIMEOUT` | `2s` | |
 | `OUTBOX_POLL_INTERVAL` | `500ms` | how often the relay looks for unpublished events |
 | `OUTBOX_BATCH_SIZE` | `50` | |
+| `RABBITMQ_RECONNECT_MAX_BACKOFF` | `30s` | |
 | `APP_PORT` | `8082` | |
 | `APP_ENV` | `local` | `local` / `docker` / `production`; selects log format and Gin mode |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
@@ -138,6 +148,7 @@ in progress at once. One more is refused at once - not queued - with `429 TOO_MA
 milliseconds and answers `200 { "slept_ms": <ms> }`; it counts as a task. `?ms=6000` answers `408`
 after the timeout, and with `MAX_CONCURRENT_TASKS` of them open one more request to `/api/v1`
 answers `429` while `/health` still answers `200`. Without the flag the path is `404 NOT_FOUND`.
+A bad `ms` (not an integer, or outside `0..60000`) answers `400 VALIDATION_ERROR`.
 
 ---
 
@@ -150,12 +161,13 @@ answers `429` while `/health` still answers `200`. Without the flag the path is 
 | `POST` | `/api/v1/applicants/next` | contract | no service yet |
 | `GET` | `/api/v1/applicants/{applicant_id}/documents` | contract | Client |
 | `GET` | `/api/v1/applicants/{applicant_id}/documents/validation` | contract | Moderation Service |
-| `POST` | `/api/v1/events` | contract | Applicant, University Record Service — **not in `2.0.0`** |
+| `POST` | `/api/v1/events` | contract | Applicant, University Record Service — **not in `2.0.0`**: answers `404 NOT_FOUND` |
 | `GET` | `/api/v1/applicants` | *extension* | — |
 | `POST` | `/api/v1/applicants` | *extension* | — |
 | `GET` | `/api/v1/applicants/{applicant_id}` | *extension* | — |
 | `PATCH` | `/api/v1/applicants/{applicant_id}` | *extension* | — |
 | `DELETE` | `/api/v1/applicants/{applicant_id}` | *extension* | — |
+| `GET` | `/api/v1/dev/slow?ms=` | dev (`DEV_ENDPOINTS`) | demo / tests |
 | `GET` | `/health`, `/health/ready` | infrastructure | orchestrator |
 
 ### 5.2 `POST /api/v1/applicants/next`
@@ -259,19 +271,24 @@ restarting a healthy container because somebody else's database was slow would b
 `GET /health/ready`:
 
 ```json
-{ "status": "ok", "service": "credential-service", "version": "2.0.0",
-  "components": { "mongodb": {"status": "up"} },
+{ "status": "degraded", "service": "credential-service", "version": "2.0.0",
+  "components": { "mongodb": {"status": "up"},
+                  "rabbitmq": {"status": "down", "details": "dial tcp: connection refused"} },
   "pending_events": 3 }
 ```
 
 | Situation | `status` | HTTP |
 | --- | --- | --- |
 | everything up | `ok` | `200` |
+| broker away, Mongo fine | `degraded` | `200` |
+| `RABBITMQ_URL` unset | `ok` (rabbitmq `disabled`) | `200` |
 | Mongo unreachable | `unavailable` | `503` |
 
-An unreachable consumer is **not** a readiness failure: every endpoint still works and events
-wait in the outbox. `pending_events` climbing is the signal to look at the consumers. The body of
-image `2.0.0` still reports a component for the event transport the contract dropped; ignore it.
+A broker outage is **not** a readiness failure: every endpoint still works and events queue in
+the outbox. `pending_events` climbing is the signal to look at the broker.
+
+The team's `docker-compose.yml` sets no `RABBITMQ_URL`, so in that stack the component reads
+`disabled`, the status stays `ok`, and `pending_events` only grows.
 
 ### 5.7 Error codes
 
@@ -279,7 +296,7 @@ image `2.0.0` still reports a component for the event transport the contract dro
 | --- | --- | --- |
 | `VALIDATION_ERROR` | `400` | malformed request; `details` names the offending field by its **wire** name |
 | `VALIDATION_ERROR` | `422` | a well-formed request describing an impossible person; `details` carries `invariant`, `side`, `reason`. The contract keeps `VALIDATION_ERROR` for `400` — see [§11](#11-divergences-from-the-cpr-contract) |
-| `INVALID_EVENT` | `422` | `POST /api/v1/events` only: unusable envelope or payload, or an unknown `event_type`/`version` |
+| `INVALID_EVENT` | `422` | contract code for `POST /api/v1/events`. **Never returned by image `2.0.0`**, which does not serve that endpoint |
 | `REQUEST_TIMEOUT` | `408` | the request ran longer than `HTTP_REQUEST_TIMEOUT` and was stopped; **nothing was changed** |
 | `TOO_MANY_REQUESTS` | `429` | `MAX_CONCURRENT_TASKS` requests are already in progress; header `Retry-After: 1`; **nothing was changed** |
 | `APPLICANT_NOT_FOUND` | `404` | no such applicant — including the moment before a peer's event arrives |
@@ -347,7 +364,7 @@ final confirmation (whose `academic_year` is then their last one, and therefore 
 | `student_id` | `"FAF25314"` | |
 | `academic_year` | `"2026-2027"` | |
 | `semester` | `"autumn"` | |
-| `courses` | `[{"code": "POO", "title": "Programarea Orientată pe Obiecte"}]` | `code` is the course identifier from the CPR's [`shared/courses.json`](../shared/courses.json) (`^[A-Z]{2,4}$`); `title` is informative |
+| `courses` | `[{"code": "POO", "title": "Programarea Orientată pe Obiecte"}]` | `code` is the course identifier from the shipped catalog, which is the CPR's [`shared/courses.json`](../shared/courses.json) plus `LEN1` ([§11](#11-divergences-from-the-cpr-contract)); `title` is informative |
 | `issued_at` | `"2026-09-01"` | |
 
 Present when the applicant claims any courses.
@@ -447,18 +464,26 @@ All the problems are listed, whatever the status.
 
 ### 8.1 Transport
 
-Direct HTTP push, as the CPR's "Event delivery" section defines it - there is no broker.
+- Exchange **`student-id.events`**, type `topic`, **durable**, not auto-deleted.
+- Routing key **`applicant.initialized`**.
+- Queue `credential-service.applicant-initialized`, durable, dead-lettered to
+  `student-id.dlx` with routing key `applicant.initialized.dead`.
+- Dead-letter queue `credential-service.dlq`, bound to `student-id.dlx` with `#`.
+- Publishes are **persistent** with **publisher confirms**; `mandatory` is `false` — during
+  integration peer queues often do not exist yet, and flagging every publish unroutable would
+  bury the real failures.
 
-- **Producing.** `applicant.initialized` is written to the outbox embedded in the applicant's
-  document ([§9](#9-what-and-how-it-stores)). A relay sends the envelope, unchanged, through the
-  Gateway to `{gateway}/api/v1/applicant/events` and `{gateway}/api/v1/university-record/events`,
-  with `X-Service-Token`, tracking delivery per consumer: `2xx` = delivered, `422 INVALID_EVENT` =
-  parked, anything else (the Gateway's `408`/`429`/`502` included) = retried with backoff capped
-  at 30 s.
-- **Receiving.** Peers push through the Gateway to this service's own `POST /api/v1/events`; the
-  Gateway admits it only with the service token.
+> **Every service must declare the shared exchange identically** (`topic`, durable, not
+> auto-delete). One mismatched declaration gives everyone `PRECONDITION_FAILED (406)`, which
+> amqp091-go reports by *closing the channel*, after which publishes fail quietly. This
+> service watches both connection and channel closure and surfaces it in `/health/ready`.
 
-> **Image `2.0.0` does not implement this yet** — see [§11](#11-divergences-from-the-cpr-contract).
+> **This is not the contract's transport.** Since 2026-10-05 the CPR's "Event delivery" section
+> requires direct HTTP push: the producer relays each envelope through the Gateway to every
+> consumer's `POST /api/v1/events`, and there is no broker. Image `2.0.0` has no such relay and
+> serves no `POST /api/v1/events` (it answers `404 NOT_FOUND`). The team's `docker-compose.yml`
+> runs no broker, so in that stack this service neither delivers nor receives any event - see
+> [§11](#11-divergences-from-the-cpr-contract).
 
 ### 8.2 Envelope
 
@@ -472,10 +497,10 @@ Direct HTTP push, as the CPR's "Event delivery" section defines it - there is no
 }
 ```
 
-### 8.3 Produced: `applicant.initialized`
+### 8.3 Published: `applicant.initialized`
 
 Sent only when this service was the first to meet the applicant — i.e. from its own
-`POST /api/v1/applicants/next`. Pushed to Applicant Service and University Record Service.
+`POST /api/v1/applicants/next`. Consumed by Applicant Service and University Record Service.
 
 ```json
 { "applicant_id": "5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13",
@@ -494,30 +519,30 @@ Both halves travel together: Credential builds documents from `claimed` and Univ
 builds the hidden records from `actual`. Ship one without the other and neither peer can do
 its job. `courses` is always an array, never `null`. `occurred_at` is whole seconds in UTC.
 
-### 8.4 Received: `applicant.initialized`
+### 8.4 Consumed: `applicant.initialized`
 
 From Applicant Service or University Record Service. The bundle is built from `claimed`, and
 judged against `actual`.
 
-- An event whose `initialized_by` is `credential-service` is **ignored** (`200`) — a
-  conforming peer never pushes our own event back, but it is harmless if one arrives.
-- `actual` is read **leniently**: a peer that omits it is not refused. Nothing can be forged
+- Events whose `initialized_by` is `credential-service` are **ignored** — our own messages
+  come back to us because the queue is bound to the exchange we publish on.
+- `actual` is read **leniently**: a peer that omits it is not parked. Nothing can be forged
   without it, but the applicant is still visible.
 - An envelope that cannot be parsed, or a payload missing `applicant_id`, `initialized_by` or
-  a claimed name, is answered **`422 INVALID_EVENT`**, so the producer parks it — it will not
-  read any better on a retry.
-- An already-seen `event_id` is answered `200` with `"duplicate": true`.
-- A transient failure (MongoDB unreachable) is answered `500`, and the producer retries.
+  a claimed name, is **parked** in the DLQ — it will not read any better on a retry.
+- A transient failure is requeued **once** (bounded by the `Redelivered` flag, not a counter),
+  then parked. Without that bound a message that always fails would be requeued thousands of
+  times a second and look like a healthy busy consumer from outside.
 
 ### 8.5 Delivery guarantees
 
 Publishing goes through an outbox embedded in the applicant's own document
 ([§9](#9-what-and-how-it-stores)), so:
 
-- an applicant is never created without their announcement being recorded, and never announced
+- an applicant is never created without their announcement being queued, and never announced
   without being created;
-- the stamp marking an event delivered to a consumer is written *after* that consumer answers
-  `2xx`, so a crash in between sends it again rather than losing it. Every consumer in this system deduplicates on
+- the stamp marking an event published is written *after* the broker confirms it, so a crash
+  in between republishes rather than loses. Every consumer in this system deduplicates on
   `event_id`, so a duplicate costs nothing while a lost event costs an applicant;
 - **delivery is at-least-once.** Consumers must be idempotent. This one is.
 
@@ -573,15 +598,15 @@ removes them.
 
 ## 10. Interaction flows
 
-Every arrow below passes through the Gateway: the caller sends `{gateway}/api/v1/<prefix>/...`, and
+Every REST call below passes through the Gateway (events travel through RabbitMQ): the caller sends `{gateway}/api/v1/<prefix>/...`, and
 the paths shown are the service's own (see the CPR README "Gateway").
 
 ### 10.1 Session Service asks Applicant Service for the next applicant
 
 ```
 Session → Applicant:   POST /api/v1/applicants/next
-Applicant → Credential: POST /api/v1/events  applicant.initialized
-Credential:             builds the bundle from `claimed`, marks forgeries against `actual`
+Applicant → broker:    applicant.initialized
+broker → Credential:   builds the bundle from `claimed`, marks forgeries against `actual`
 ```
 
 Between the `201` and the bundle existing here there is a window of a few milliseconds. The
@@ -612,7 +637,7 @@ A forged document is evidence; the verdict is Moderation's and the ruleset's.
 
 ### 10.4 Credential meets the applicant first
 
-`POST /api/v1/applicants/next` here generates the whole person and pushes
+`POST /api/v1/applicants/next` here generates the whole person and publishes
 `applicant.initialized` with `"initialized_by": "credential-service"`. Applicant Service and
 University Record Service build their own records from it. This path is implemented and
 tested end to end against the running Applicant Service.
@@ -625,10 +650,10 @@ Raise these in the CPR before integration.
 
 | # | Divergence | Who is affected |
 | --- | --- | --- |
-| 1 | **No HTTP event delivery in image `2.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Applicant and University Record, and no `POST /api/v1/events` of its own; it still delivers events through the transport the contract dropped on 2026-10-05 | Applicant and University Record Service |
+| 1 | **No HTTP event delivery in image `2.0.0`.** It has no relay pushing `applicant.initialized` to `POST /api/v1/events` on Applicant and University Record, and no `POST /api/v1/events` of its own; it still publishes to and consumes from RabbitMQ ([§8](#8-events)), which the contract dropped on 2026-10-05. The team's `docker-compose.yml` runs no broker, so until the service is reworked no peer receives its applicants and it receives none of theirs | Applicant and University Record Service |
 | 2 | **`GET .../documents/validation` is protected only by the Gateway** and by this port being unpublished. Reading no credential in the service is correct under the contract | Gateway, Lab 2 grading |
 | 3 | **`422 VALIDATION_ERROR`** for an impossible person. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | generic clients |
-| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, with course codes matching `^[A-Z]{2,4}$`. Image `2.0.0` ships the copy taken from Applicant Service before that file existed; whether it matches is unverified | University Record Service, Moderation |
+| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, with course codes matching `^[A-Z]{2,4}$`. Image `2.0.0` ships the copy taken from Applicant Service before that file existed, and it does not match: 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format. Its `fake_courses.json` (`ELSE-NET`, `QBIT-101`, `WEB5`, …) does not follow the format either | University Record Service, Moderation |
 | 5 | **Five CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `GET`, `PATCH`, `DELETE`) | gateway and auth — see [§13](#13-gateway-requirements) |
 | 6 | **`POST /api/v1/applicants` does not produce `applicant.initialized`** | anyone expecting every applicant to be announced |
 | 7 | **The contract read endpoints do not use the `{items, total}` list envelope.** The API conventions prescribe it for lists; both document endpoints are specified with `{applicant_id, documents}` and the endpoint spec wins. The extension list endpoint does use `{items, total}` | anyone writing a generic client |
@@ -659,17 +684,17 @@ deviation here.
 ### 12.1 The eventual-consistency window
 
 Right after a peer creates an applicant, `GET /documents` answers `404` until the event
-arrives — milliseconds normally, longer if the producer could not reach this service. Clients retry. This
+arrives — milliseconds normally, longer if the broker is busy or was down. Clients retry. This
 is the documented cost of no cross-service writes.
 
-### 12.2 A consumer is away
+### 12.2 The broker is away
 
 The service starts, serves every endpoint and keeps creating applicants. Their events
-accumulate in the outbox and drain automatically when the consumer answers again;
-`/health/ready` stays `200` with a climbing `pending_events`. The other consumer is not held
-back — delivery is tracked per consumer.
+accumulate in the outbox and drain automatically when the broker returns. `/health/ready`
+reports `degraded` with a climbing `pending_events`, and the log complains once a minute
+rather than on every attempt.
 
-Events that peers produce for this service while it is down wait in *their* outboxes.
+No peer events are consumed while it is away; they wait in the durable queue.
 
 ### 12.3 MongoDB is away
 
@@ -712,7 +737,7 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 
 - **`GET .../documents/validation` must never reach a player.** It is the answer key. The
   Gateway admits it only with `X-Service-Token`, together with `POST /applicants/next` and
-  `POST /events`; `GET .../documents` takes the player's `Authorization: Bearer <jwt>`. This
+  `POST /events` (a contract endpoint image `2.0.0` does not serve); `GET .../documents` takes the player's `Authorization: Bearer <jwt>`. This
   service checks nothing itself, so the Gateway is the only guard.
 - The five extension endpoints are administrative: service token only. `POST` and `PATCH` can
   manufacture any applicant at all.

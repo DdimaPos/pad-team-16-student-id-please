@@ -17,7 +17,7 @@
 6. [The condition DSL](#6-the-condition-dsl)
 7. [Divergences from the CPR contract](#7-divergences-from-the-cpr-contract)
 8. [Edge cases](#8-edge-cases)
-9. [Notes for a gateway](#9-notes-for-a-gateway)
+9. [Gateway requirements](#9-gateway-requirements)
 10. [Recipes for testing against it](#10-recipes-for-testing-against-it)
 
 ---
@@ -47,12 +47,12 @@ service, publishes no event, consumes no event, and stores nothing about applica
 | --- | --- |
 | **Language / framework** | C# / .NET 10, ASP.NET Core minimal APIs |
 | **Container port** | `8080` (mapped to host `8083` by convention) |
-| **Base path** | `/api/v1` |
+| **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/server-rules/...` |
 | **Health** | `GET /health` (liveness), `GET /health/ready` (readiness) |
 | **Database** | PostgreSQL, `rules_db` (own container, host port `5434`) |
-| **Broker** | none - this service never touches RabbitMQ |
-| **Authentication** | Public endpoints are open. Admin endpoints (`/api/v1/admin/*`) require `X-Service-Token` |
-| **Docker image** | `d1vinexd/server-rules-service:0.1.0` (also tagged `:latest`), public on Docker Hub |
+| **Events** | none - this service neither produces nor receives events |
+| **Authentication** | Checked by the Gateway, not here: `GET /rulesets/current`, `POST /rulesets/{v}/evaluations` and `/admin/*` only with the service token, `GET /rulesets/{version}` with a player JWT. The service validates no token and reads no header; only `/admin/*` and `/dev/*` refuse a request that carries `X-Player-Id` (`403 SERVICE_TOKEN_REQUIRED`), because a service call arrives without it |
+| **Docker image** | `d1vinexd/server-rules-service:2.1.0` (also tagged `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
 | **Architecture** | Clean Architecture, five projects: `Domain` (pure - the condition DSL, evaluator, channel resolver), `Repositories` (interfaces), `Services` (use cases), `Infrastructure` (EF Core + Npgsql), `Api` (minimal APIs) |
 
 ---
@@ -66,8 +66,7 @@ docker network create student-id-net   # once, if it does not already exist
 docker run -d --name server-rules-service --network student-id-net \
   -p 8083:8080 \
   -e ConnectionStrings__RulesDb="Host=<postgres-host>;Port=5432;Database=rules_db;Username=rules_user;Password=<password>" \
-  -e Auth__ServiceToken="<shared-secret>" \
-  d1vinexd/server-rules-service:0.1.0
+  d1vinexd/server-rules-service:2.1.0
 ```
 
 Or use the team compose in the CPR root (`docker-compose.yml`), which wires this service and
@@ -96,7 +95,11 @@ Moderation Session Service keeps a shift in the lobby otherwise.
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
 | `ConnectionStrings__RulesDb` | - | **yes** | Npgsql connection string |
-| `Auth__ServiceToken` | - | **yes** (for admin routes) | Shared secret required as `X-Service-Token` on `/api/v1/admin/*` |
+| `HTTP_REQUEST_TIMEOUT` | `5` | no | Task timeout in seconds (`5` or `5s`): a longer request is cancelled and answered `408 REQUEST_TIMEOUT`. `/health*` is exempt |
+| `MAX_CONCURRENT_TASKS` | `100` | no | Concurrent task limit: one more request is refused at once with `429 TOO_MANY_REQUESTS` and `Retry-After: 1`, no work done. `/health*` is exempt. The team compose sets `64` |
+| `Dev__EnableTestEndpoints` | `false` | no | Mounts `GET /api/v1/dev/slow?ms=` (service-only, sleeps `ms` milliseconds, at most a minute) to demonstrate the two limits above. The team compose enables it |
+
+`Auth__ServiceToken` of `0.1.0` is gone: the service reads no credential (§2).
 | `Rules__StrictFactShape` | `false` | no | See [§7](#7-divergences-from-the-cpr-contract) - whether an inconsistent fact (e.g. `major` on a `staff` applicant) is a `422` or silently nulled out |
 
 ---
@@ -117,8 +120,9 @@ ruleset is the resource being addressed, so a bad version wins over bad facts.
 
 ### 5.2 Extension endpoints (beyond contract - Lab 1 CRUD requirement)
 
-All under `/api/v1/admin/rulesets`, guarded by `X-Service-Token`. **Never exposed to
-players.**
+All under `/api/v1/admin/rulesets`, for services only: the Gateway lets in the service token alone
+(never a player JWT), removes it, and forwards the request without `X-Player-Id`; the service refuses
+a request that carries one. **Never exposed to players.**
 
 | Method | Path | Notes |
 | --- | --- | --- |
@@ -135,8 +139,10 @@ players.**
 
 Standard envelope `{ "error": { "code", "message", "details" } }`. Codes used:
 `VALIDATION_ERROR` (400), `INVALID_DIFFICULTY` / `INVALID_FACTS` / `INVALID_RULESET` (422),
-`RULESET_NOT_FOUND` (404), `LAST_ACTIVE_RULESET` (409), `UNAUTHENTICATED` /
-`INVALID_SERVICE_TOKEN` (401), `INTERNAL_ERROR` (500).
+`RULESET_NOT_FOUND` (404), `LAST_ACTIVE_RULESET` (409), `SERVICE_TOKEN_REQUIRED` (403, `/admin/*` and
+`/dev/*` called with `X-Player-Id`), `REQUEST_TIMEOUT` (408), `TOO_MANY_REQUESTS` (429, with
+`Retry-After`), `INTERNAL_ERROR` (500). The Gateway answers `401` / `403` for a missing or wrong credential
+before the service is called.
 
 ---
 
@@ -197,12 +203,15 @@ to grants/denies and can never "fail".
 
 ---
 
-## 9. Notes for a gateway
+## 9. Gateway requirements
 
-- Every contract endpoint (`/rulesets/*`, `/evaluations`) is open - no authentication, matching
-  the team-wide "authentication is out of scope for now" convention.
-- Admin endpoints require `X-Service-Token` and must never be routed to a player-facing
-  gateway path.
+What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, prefix `server-rules`:
+
+- `GET /rulesets/current` and `POST /rulesets/{v}/evaluations`: service token only (Session and
+  Moderation call them). `GET /rulesets/{version}`: player JWT.
+- `/admin/*` and `/dev/*`: service token only, never on a player JWT alone. The service refuses a
+  request that carries `X-Player-Id`, as a second line.
+- This service checks no credential on its contract endpoints, so the Gateway is the only guard.
 - No CORS headers, no rate limiting, no `Idempotency-Key` support. `POST /evaluations` and
   `POST /admin/rulesets` are not idempotent - two identical requests create two things (a log
   line; a new ruleset version, respectively). Safe to retry: every `GET`, `PATCH`, `DELETE`.
@@ -210,6 +219,11 @@ to grants/denies and can never "fail".
 ---
 
 ## 10. Recipes for testing against it
+
+The recipes call the service's own port `8083`, which the team compose does not publish: run the image alone
+with `-p 8083:8080`. On the team stack, through the Gateway, replace
+`$BASE/api/v1/` with `http://localhost:8080/api/v1/server-rules/` and send `X-Service-Token` on
+`/admin/*`, `/dev/*`, `rulesets/current` and evaluations.
 
 ```bash
 BASE=http://localhost:8083
@@ -222,6 +236,9 @@ curl -s -X POST "$BASE/api/v1/rulesets/3/evaluations" -H 'Content-Type: applicat
              "years_enrolled": 1, "currently_enrolled": true, "previously_banned": false }
 }' | jq
 # => { "ruleset_version": 3, "admitted": true, "violated_rules": [], "allowed_channels": ["general"] }
+
+# The limits: with HTTP_REQUEST_TIMEOUT=2, this sleeps past it and is answered 408 REQUEST_TIMEOUT
+curl -s "$BASE/api/v1/dev/slow?ms=4000" -H "X-Service-Token: $SERVICE_TOKEN" | jq
 ```
 
 The full Postman collection (`postman/server-rules-service.postman_collection.json` in the

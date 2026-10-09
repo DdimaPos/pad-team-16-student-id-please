@@ -5,8 +5,37 @@
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "base_url", "value": "http://localhost:8083" },
-    { "key": "service_token", "value": "dev-service-token-12345" }
+    { "key": "base_url", "value": "http://localhost:8080/api/v1/server-rules", "description": "The Gateway with the service prefix; the Gateway forwards {{base_url}}/<rest> to the service as /api/v1/<rest> (health as /health)" },
+    { "key": "service_token", "value": "change_me_too", "description": "The stack's SERVICE_TOKEN; the Gateway requires it on /health/ready, rulesets/current, evaluations and /admin/*" },
+    { "key": "jwt_secret", "value": "change_me_to_a_random_string_of_32_chars_or_more", "description": "JWT_SECRET of the Gateway in the stack's .env; the pre-request script signs the player token with it" }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Through the Gateway a player is identified by a JWT (HS256, JWT_SECRET shared with Player Service),",
+          "// never by X-Player-Id: the Gateway checks the token, discards any client-sent X-Player-Id and sets",
+          "// its own from the token's sub. GET rulesets/{version} is a player route, so this script signs the",
+          "// token itself: every request that names a player in X-Player-Id gets",
+          "// Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id header is dropped.",
+          "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
+          "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
+          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
+          "  const CryptoJS = require('crypto-js');",
+          "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
+          "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
+          "  const now = Math.floor(Date.now() / 1000);",
+          "  const sub = pm.variables.replaceIn(playerHeader.value);",
+          "  const unsigned = part({ alg: 'HS256', typ: 'JWT' }) + '.' + part({ sub: sub, iat: now, exp: now + 300 });",
+          "  const signature = b64url(CryptoJS.HmacSHA256(unsigned, pm.variables.get('jwt_secret')));",
+          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + unsigned + '.' + signature });",
+          "  pm.request.headers.remove('X-Player-Id');",
+          "}"
+        ]
+      }
+    }
   ],
   "item": [
     {
@@ -18,38 +47,40 @@
         },
         {
           "name": "GET /health/ready (readiness)",
-          "request": { "method": "GET", "url": "{{base_url}}/health/ready" }
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }], "url": "{{base_url}}/health/ready" }
         }
       ]
     },
     {
-      "name": "rulesets (public, contract)",
+      "name": "rulesets (contract)",
       "item": [
         {
           "name": "current - difficulty 3 (contract example ruleset)",
           "request": {
             "method": "GET",
-            "url": { "raw": "{{base_url}}/api/v1/rulesets/current?difficulty=3", "host": ["{{base_url}}"], "path": ["api", "v1", "rulesets", "current"], "query": [{ "key": "difficulty", "value": "3" }] }
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": { "raw": "{{base_url}}/rulesets/current?difficulty=3", "host": ["{{base_url}}"], "path": ["rulesets", "current"], "query": [{ "key": "difficulty", "value": "3" }] }
           }
         },
         {
           "name": "current - missing difficulty (422 INVALID_DIFFICULTY)",
-          "request": { "method": "GET", "url": "{{base_url}}/api/v1/rulesets/current" }
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }], "url": "{{base_url}}/rulesets/current" }
         },
         {
           "name": "current - difficulty out of range (422 INVALID_DIFFICULTY)",
           "request": {
             "method": "GET",
-            "url": { "raw": "{{base_url}}/api/v1/rulesets/current?difficulty=9", "host": ["{{base_url}}"], "path": ["api", "v1", "rulesets", "current"], "query": [{ "key": "difficulty", "value": "9" }] }
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": { "raw": "{{base_url}}/rulesets/current?difficulty=9", "host": ["{{base_url}}"], "path": ["rulesets", "current"], "query": [{ "key": "difficulty", "value": "9" }] }
           }
         },
         {
           "name": "by version - 3",
-          "request": { "method": "GET", "url": "{{base_url}}/api/v1/rulesets/3" }
+          "request": { "method": "GET", "header": [{ "key": "X-Player-Id", "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10" }], "url": "{{base_url}}/rulesets/3" }
         },
         {
           "name": "by version - unknown (404 RULESET_NOT_FOUND)",
-          "request": { "method": "GET", "url": "{{base_url}}/api/v1/rulesets/999999" }
+          "request": { "method": "GET", "header": [{ "key": "X-Player-Id", "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10" }], "url": "{{base_url}}/rulesets/999999" }
         }
       ]
     },
@@ -73,8 +104,8 @@
           ],
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{base_url}}/rulesets/3/evaluations",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"faf_student\",\n    \"major\": \"FAF\",\n    \"year\": 1,\n    \"years_enrolled\": 1,\n    \"currently_enrolled\": true,\n    \"previously_banned\": false\n  }\n}"
@@ -85,8 +116,8 @@
           "name": "evaluate - previously banned (admission violation, no channels)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{base_url}}/rulesets/3/evaluations",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"faf_student\",\n    \"major\": \"FAF\",\n    \"year\": 3,\n    \"years_enrolled\": 3,\n    \"currently_enrolled\": true,\n    \"previously_banned\": true\n  }\n}"
@@ -97,8 +128,8 @@
           "name": "evaluate - outsider (violates only-faf-or-teachers)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{base_url}}/rulesets/3/evaluations",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"outsider\",\n    \"major\": null,\n    \"year\": null,\n    \"years_enrolled\": 0,\n    \"currently_enrolled\": false,\n    \"previously_banned\": false\n  }\n}"
@@ -109,8 +140,8 @@
           "name": "evaluate - staff (null major/year is legal)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{base_url}}/rulesets/3/evaluations",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"staff\",\n    \"major\": null,\n    \"year\": null,\n    \"years_enrolled\": 5,\n    \"currently_enrolled\": true,\n    \"previously_banned\": false\n  }\n}"
@@ -121,8 +152,8 @@
           "name": "evaluate - unknown version (404, checked before facts)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/rulesets/999999/evaluations",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{base_url}}/rulesets/999999/evaluations",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": { \"university_status\": \"nonsense\" }\n}"
@@ -133,8 +164,8 @@
           "name": "evaluate - bad facts (422 INVALID_FACTS)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{base_url}}/rulesets/3/evaluations",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": { \"university_status\": \"wizard\", \"years_enrolled\": 1, \"currently_enrolled\": true, \"previously_banned\": false }\n}"
@@ -145,8 +176,8 @@
           "name": "evaluate - malformed body (400 VALIDATION_ERROR)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/rulesets/3/evaluations",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{base_url}}/rulesets/3/evaluations",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"applicant_id\": \"not-a-uuid\",\n  \"facts\": {}\n}" }
           }
         }
@@ -159,7 +190,7 @@
           "name": "list rulesets",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/admin/rulesets?limit=10",
+            "url": "{{base_url}}/admin/rulesets?limit=10",
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
           }
         },
@@ -167,7 +198,7 @@
           "name": "get ruleset detail (with jsonb conditions)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/admin/rulesets/3",
+            "url": "{{base_url}}/admin/rulesets/3",
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
           }
         },
@@ -181,7 +212,7 @@
           ],
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/admin/rulesets",
+            "url": "{{base_url}}/admin/rulesets",
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"difficulty\": 3,\n  \"clone_from_version\": 3,\n  \"notes\": \"Postman clone test\",\n  \"rules\": []\n}" }
           }
@@ -190,7 +221,7 @@
           "name": "patch notes on the cloned version",
           "request": {
             "method": "PATCH",
-            "url": "{{base_url}}/api/v1/admin/rulesets/{{cloned_version}}",
+            "url": "{{base_url}}/admin/rulesets/{{cloned_version}}",
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{ \"notes\": \"renamed via Postman\" }" }
           }
@@ -199,14 +230,14 @@
           "name": "invalid ruleset - channel rule grants nothing (422 INVALID_RULESET)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/admin/rulesets",
+            "url": "{{base_url}}/admin/rulesets",
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"difficulty\": 2,\n  \"rules\": [{ \"rule_id\": \"noop\", \"kind\": \"channel\", \"description\": \"does nothing\", \"when\": {\"op\":\"always\"}, \"grant\": [], \"deny\": [] }]\n}" }
           }
         },
         {
-          "name": "admin route without a service token (401 UNAUTHENTICATED)",
-          "request": { "method": "GET", "url": "{{base_url}}/api/v1/admin/rulesets" }
+          "name": "admin route called with X-Player-Id (403 SERVICE_TOKEN_REQUIRED)",
+          "request": { "method": "GET", "header": [{ "key": "X-Player-Id", "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10" }], "url": "{{base_url}}/admin/rulesets" }
         }
       ]
     }

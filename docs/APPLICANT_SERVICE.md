@@ -5,9 +5,9 @@
 > cross-cutting system pieces. It documents what this service does, how to run it, how to
 > talk to it, what it guarantees, and — importantly — what it does **not** do.
 >
-> Everything here is stated from the implementation, not from the design documents. Where
-> the implementation diverges from the team's Common Public Repository (CPR) contract, the
-> divergence is called out explicitly in [§12](#12-divergences-from-the-cpr-contract).
+> Everything here is stated from the implementation shipped as image `2.1.0`, not from the design
+> documents. Where that image diverges from the team's Common Public Repository (CPR) contract,
+> the divergence is called out explicitly in [§12](#12-divergences-from-the-cpr-contract).
 
 ---
 
@@ -26,7 +26,7 @@
 11. [Use cases and interaction flows](#11-use-cases-and-interaction-flows)
 12. [Divergences from the CPR contract](#12-divergences-from-the-cpr-contract)
 13. [Edge cases and failure modes](#13-edge-cases-and-failure-modes)
-14. [Notes for a gateway, load balancer or auth layer](#14-notes-for-a-gateway-load-balancer-or-auth-layer)
+14. [Gateway requirements](#14-gateway-requirements)
 15. [Scaling, concurrency and statefulness](#15-scaling-concurrency-and-statefulness)
 16. [Observability](#16-observability)
 17. [Known gaps — deliberately not implemented](#17-known-gaps--deliberately-not-implemented)
@@ -76,17 +76,17 @@ non-negotiable for anyone integrating:
 | **Language / framework** | Go 1.25, Gin |
 | **Container port** | `8081` |
 | **Default host port** | `8081` |
-| **Base path** | `/api/v1` |
+| **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/applicant/...` |
 | **Health (liveness)** | `GET /health` |
 | **Health (readiness)** | `GET /health/ready` |
 | **Database** | PostgreSQL 16, `applicant_db` (private — no other service may connect) |
-| **Broker** | RabbitMQ, topic exchange `student-id.events` |
-| **Publishes** | `applicant.initialized` |
+| **Events** | HTTP push through the Gateway, no broker (CPR README "Event delivery"): produced from a transactional outbox to `{gateway}/api/v1/<consumer>/events`, received on `POST /api/v1/events` |
+| **Produces** | `applicant.initialized`, pushed to Credential and University Record Service |
 | **Consumes** | `applicant.initialized` (from Credential / University Record only) |
-| **Authentication** | **None.** See [§14](#14-notes-for-a-gateway-load-balancer-or-auth-layer) |
-| **Outbound HTTP calls** | None |
-| **Docker image** | `stewdh/applicant-service:1.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
-| **Hard dependency** | PostgreSQL only. RabbitMQ is soft — the service runs fully without it |
+| **Authentication** | Checked by the Gateway, not here: callers send `Authorization: Bearer <jwt>` or `X-Service-Token` to the Gateway, which forwards only `X-Player-Id`. The service validates no token - see [§14](#14-gateway-requirements) |
+| **Outbound HTTP calls** | Only the event pushes: `POST {gateway}/api/v1/credential/events` and `POST {gateway}/api/v1/university-record/events`, with `X-Service-Token` |
+| **Docker image** | `stewdh/applicant-service:2.1.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
+| **Hard dependency** | PostgreSQL only. The Gateway and the consumers are soft — the service runs fully without them and events wait in the outbox |
 
 ---
 
@@ -104,14 +104,15 @@ non-negotiable for anyone integrating:
 ### Start it
 
 ```bash
-./scripts/run.sh                # build image, start postgres + rabbitmq + service, wait for ready
+./scripts/run.sh                # build image, start postgres + service, wait for ready
 ./scripts/run.sh --local        # run from source against the containerised dependencies
 ./scripts/run.sh --down         # stop (add --volumes to drop data)
 ./scripts/run.sh --logs         # follow logs
 ```
 
-On first run the script creates `.env` from `.env.example` **with randomly generated
-passwords**. `.env` is gitignored.
+On first run the script creates `.env` from `.env.example` **with a randomly generated
+database password**. `SERVICE_TOKEN` stays the placeholder: it has to equal the Gateway's, so
+set it by hand before integrating. `.env` is gitignored.
 
 ### Start it from the published image only
 
@@ -122,11 +123,14 @@ into the team-wide compose file; it lets anyone run Applicant Service without cl
 
 ### Minimum viable configuration
 
-The only required variable is `DATABASE_URL`. Everything else has a working default.
+The only required variable is `DATABASE_URL`. Everything else has a working default - but
+without `SERVICE_TOKEN` and the consumer URLs the relay is off and no event leaves the outbox.
 
 ```bash
 DATABASE_URL=postgres://user:pass@host:5432/applicant_db?sslmode=disable \
-RABBITMQ_URL=amqp://user:pass@rabbit:5672/ \
+SERVICE_TOKEN=<the stack's token> \
+CREDENTIAL_URL=http://gateway-service:8080/api/v1/credential \
+UNIVERSITY_RECORD_URL=http://gateway-service:8080/api/v1/university-record \
   ./applicantd
 ```
 
@@ -137,8 +141,8 @@ RABBITMQ_URL=amqp://user:pass@rabbit:5672/ \
 2. Connect to PostgreSQL, retrying with backoff for up to `DB_CONNECT_TIMEOUT` (30s default).
    **If the database is not reachable within that window, the process exits non-zero.**
 3. Apply embedded migrations under a PostgreSQL advisory lock (safe with concurrent replicas).
-4. Start the background workers: dial RabbitMQ with capped backoff, and start the consumer
-   and the outbox relay. Failure here never blocks or fails startup.
+4. Start the outbox relay, when `SERVICE_TOKEN` and at least one consumer URL are set. It
+   needs nothing to be up: an unreachable Gateway or consumer is retried with backoff.
 5. Start the HTTP server — **the service is now serving**.
 
 Typical cold start against a warm database is well under a second.
@@ -151,11 +155,11 @@ Typical cold start against a warm database is well under a second.
 | --- | --- | --- |
 | `8081` | Applicant Service HTTP | Set by `APP_PORT` (default `8081`); the shipped compose file pins the container to `8081` and maps it with `APP_HOST_PORT` |
 | `5433` → `5432` | PostgreSQL | **Host port is 5433 on purpose.** During integration several teammates' databases run on one laptop and 5432 is taken first |
-| `5672` | RabbitMQ AMQP | Shared with the whole team |
-| `15672` | RabbitMQ management UI | Useful for inspecting the exchange and queues |
 
-The compose network is named **`student-id-net`** so other teams' stacks can join it. Inside
-that network the service is reachable as `http://applicant-service:8081`.
+The compose network is named **`student-id-net`** so other teams' stacks and the Gateway can
+join it. Inside that network the service is reachable as `http://applicant-service:8081`, and
+it reaches its consumers at `http://gateway-service:8080/api/v1/<prefix>` - the Gateway, never
+a peer's own address.
 
 **Host ports are deliberately non-default (8081, 5433).** If you are writing a gateway or a
 compose file, do not assume 8080/5432.
@@ -176,33 +180,43 @@ A misconfiguration fails fast with the offending variable named.
 | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn`, `error` — anything else fails validation |
 | `HTTP_READ_TIMEOUT` | `10s` | no | Server read timeout |
 | `HTTP_WRITE_TIMEOUT` | `10s` | no | Server write timeout |
-| `HTTP_REQUEST_TIMEOUT` | `5s` | no | Per-request context deadline (see the caveat below) |
+| `HTTP_REQUEST_TIMEOUT` | `5s` | no | Task timeout: a request running longer is stopped and answered `408 REQUEST_TIMEOUT` (see below). `0` disables it |
+| `MAX_CONCURRENT_TASKS` | `64` | no | Concurrent task limit for `/api/v1`: a request above it is refused with `429 TOO_MANY_REQUESTS`. Must be ≥ 1 |
+| `DEV_ENDPOINTS` | `false` | no | Mounts `GET /api/v1/dev/slow?ms=` (see below). Keep `false` in shared deployments |
 | `SHUTDOWN_TIMEOUT` | `10s` | no | Grace period for in-flight requests on SIGTERM |
 | `DB_MAX_CONNS` | `10` | no | pgx pool size. Must be ≥ 1 |
 | `DB_CONNECT_TIMEOUT` | `30s` | no | How long to retry the database at boot before giving up |
 | `MIGRATE_ON_START` | `true` | no | Apply embedded migrations at startup |
-| `RABBITMQ_URL` | *(empty)* | no | **Empty disables messaging entirely** — events accumulate in the outbox and none are consumed |
-| `RABBITMQ_EXCHANGE` | `student-id.events` | no | Shared topic exchange |
-| `RABBITMQ_QUEUE` | `applicant-service.applicant-initialized` | no | This service's queue |
-| `RABBITMQ_DLX` | `student-id.dlx` | no | Dead-letter exchange |
-| `RABBITMQ_DLQ` | `applicant-service.dlq` | no | Dead-letter queue |
-| `RABBITMQ_PREFETCH` | `10` | no | Unacknowledged messages in flight. Must be ≥ 1 |
-| `PUBLISH_CONFIRM_TIMEOUT` | `2s` | no | How long to wait for a publisher confirm |
-| `OUTBOX_POLL_INTERVAL` | `500ms` | no | How often the relay drains the outbox |
-| `OUTBOX_BATCH_SIZE` | `50` | no | Events per drain batch. Must be ≥ 1 |
-| `RABBITMQ_RECONNECT_MAX_BACKOFF` | `30s` | no | Cap on reconnect backoff |
+| `SERVICE_TOKEN` | *(empty)* | for delivery | The stack's one `X-Service-Token`, sent on every event push and checked by the Gateway. **Empty switches the relay off**: applicants are still created and their events wait in the outbox |
+| `CREDENTIAL_URL` | *(empty)* | for delivery | Gateway base URL of Credential Service, `http://gateway-service:8080/api/v1/credential`. The relay appends `/events`. Empty: that consumer's deliveries stay pending and `/health/ready` says `not_configured` |
+| `UNIVERSITY_RECORD_URL` | *(empty)* | for delivery | Same for University Record Service, `http://gateway-service:8080/api/v1/university-record` |
+| `EVENT_PUSH_TIMEOUT` | `15s` | no | One push as a whole. Above the Gateway's `10s`, so its `408` comes back as an answer rather than a cut connection |
+| `OUTBOX_POLL_INTERVAL` | `500ms` | no | How often the relay looks for deliveries that are due |
+| `OUTBOX_BATCH_SIZE` | `50` | no | Deliveries taken per consumer per pass. Must be ≥ 1 |
+| `EVENT_RETRY_MAX_BACKOFF` | `30s` | no | Cap on the wait between two attempts at one delivery (1 s, 2 s, 4 s, ... up to this) |
 | `REFERENCE_YEAR` | `2026` | no | The calendar year the generator treats as "now". Must be 1900–2999. **Must match across all three applicant-data services** — see [§7.3](#73-admission-year-and-study-year) |
 | `GENERATOR_SEED` | `0` | no | `0` = a fresh random sequence per boot. Non-zero = reproducible applicants. **See the replica warning in [§15](#15-scaling-concurrency-and-statefulness)** |
 
-**An empty string counts as unset** for every variable, so `RABBITMQ_EXCHANGE=""` silently
-falls back to the default rather than failing. The one place this is load-bearing is
-`RABBITMQ_URL`, where empty deliberately means "messaging off".
+**An empty string counts as unset** for every variable, so `OUTBOX_BATCH_SIZE=""` silently
+falls back to the default rather than failing. The places this is load-bearing are
+`SERVICE_TOKEN` and the consumer URLs, where empty deliberately means "do not push". A consumer
+URL that is set must be an `http(s)` URL with a host, or startup fails naming the variable.
 
-**Caveat on `HTTP_REQUEST_TIMEOUT`:** it installs a context deadline; it does **not** emit a
-504. When it fires, in-flight database work is cancelled and the request surfaces as
-`500 DEPENDENCY_UNAVAILABLE` with `details.dependency = "postgres"`. A gateway timeout should
-therefore be comfortably above 5s, or it will cut the connection before the service can
-produce that body.
+**Task timeout (`HTTP_REQUEST_TIMEOUT`).** Every request gets a deadline. When it fires,
+in-flight database work is cancelled, the open transaction is rolled back and the service answers
+`408 REQUEST_TIMEOUT` - nothing was changed. A transaction is never committed after the deadline,
+and a commit that did succeed is never reported as a timeout, so `408` always means "not stored".
+The Gateway's own timeout (`10s`) is above it, so this answer reaches the caller.
+
+**Concurrent task limit (`MAX_CONCURRENT_TASKS`).** At most that many requests under `/api/v1` are
+in progress at once. One more is refused at once - not queued - with `429 TOO_MANY_REQUESTS` and
+`Retry-After: 1`, before any work is done. `/health` and `/health/ready` are not counted.
+
+**Dev endpoint (`DEV_ENDPOINTS=true`).** `GET /api/v1/dev/slow?ms=<0..60000>` does nothing for `ms`
+milliseconds and answers `200 { "slept_ms": <ms> }`; it counts as a task. `?ms=6000` answers `408`
+after the timeout, and with `MAX_CONCURRENT_TASKS` of them open one more request to `/api/v1`
+answers `429` while `/health` still answers `200`. Without the flag the path is `404 NOT_FOUND`.
+A bad `ms` (not an integer, or outside `0..60000`) answers `400 VALIDATION_ERROR`.
 
 ---
 
@@ -223,6 +237,8 @@ Conventions, all inherited from the team contract:
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/applicants/next` | **contract** | Server Moderation Session Service | service-to-service |
 | `GET` | `/api/v1/applicants/{applicant_id}` | **contract** | Moderation Service, game client | player-safe |
+| `POST` | `/api/v1/events` | **contract** | Credential, University Record Service | service-to-service |
+| `GET` | `/api/v1/dev/slow?ms=` | dev (`DEV_ENDPOINTS`) | demo / tests | service token at the Gateway |
 | `GET` | `/api/v1/applicants` | extension | admin / tests | **not player-safe** |
 | `POST` | `/api/v1/applicants` | extension | admin / tests | **not player-safe** |
 | `PATCH` | `/api/v1/applicants/{applicant_id}` | extension | admin / tests | **not player-safe** |
@@ -231,12 +247,13 @@ Conventions, all inherited from the team contract:
 | `GET` | `/health/ready` | infra | orchestrator / LB | internal |
 
 "Extension" means **beyond the CPR contract** — added because Lab 1 requires a CRUD service.
-See the exposure warning in [§14](#14-notes-for-a-gateway-load-balancer-or-auth-layer).
+See the exposure warning in [§14](#14-gateway-requirements).
 
 ### 6.2 `POST /api/v1/applicants/next`
 
 Creates the next applicant for a session: invents both profiles, stores them, queues
-`applicant.initialized`, returns the identifiers.
+`applicant.initialized` for delivery to Credential and University Record, returns the
+identifiers.
 
 **Request**
 
@@ -356,6 +373,35 @@ becomes available again**. Publishes nothing; peers are not told.
 Deleting an already-deleted applicant returns `404 APPLICANT_NOT_FOUND`, so the call is
 repeatable but not strictly idempotent in its status code.
 
+### 6.7b `POST /api/v1/events`
+
+The consumer side of the contract's event delivery. Credential Service or University Record
+Service, having met an applicant first, relays its `applicant.initialized` here through the
+Gateway as `POST {gateway}/api/v1/applicant/events` with `X-Service-Token`; the Gateway checks
+the token, strips it and forwards the envelope unchanged. This service reads no credential.
+
+**Request body:** the envelope of [§9.2](#92-envelope), with the payload of
+[§9.3](#93-published-applicantinitialized).
+
+**Answers** - exactly those of the CPR README "Event delivery", because the producer's relay
+keys its behaviour on them:
+
+| HTTP | Body | When | The producer then |
+| --- | --- | --- | --- |
+| `200` | `{ "event_id": "...", "duplicate": false }` | The applicant was created from `claimed` and the `event_id` recorded, in one transaction, which has committed | Marks the delivery done |
+| `200` | `{ "event_id": "...", "duplicate": true }` | That `event_id` had already been applied. Nothing changed - a repeat is the dedup working, not an error | Marks the delivery done |
+| `200` | `{ "event_id": "...", "duplicate": false }` | `initialized_by` is `applicant-service`: our own event, which the contract never pushes back. Ignored, nothing stored | Marks the delivery done |
+| `422` | `INVALID_EVENT` | The envelope cannot be parsed, has no `event_id`, `event_type`, `producer` or `payload`, names an `event_type` other than `applicant.initialized` or a `version` other than `1`, or its payload fails validation (no `applicant_id`, no `initialized_by`, no claimed `name`, or a row the database refuses). `details.reason` says which | Parks the delivery and logs it - a retry cannot succeed |
+| `408` | `REQUEST_TIMEOUT` | The task ran past `HTTP_REQUEST_TIMEOUT`; the transaction was rolled back | Retries later |
+| `429` | `TOO_MANY_REQUESTS` | The concurrent task limit is reached | Retries later |
+| `500` | `DEPENDENCY_UNAVAILABLE` | PostgreSQL did not answer. Nothing was changed | Retries later |
+
+A pushed event is a task like any other: it sits under `/api/v1`, so the task timeout and the
+concurrent task limit apply to it. Through the Gateway, `403 SERVICE_TOKEN_REQUIRED` and
+`401 INVALID_SERVICE_TOKEN` are answered by the Gateway before the push reaches this service.
+
+What the event does to the store is in [§9.4](#94-consumed-applicantinitialized).
+
 ### 6.8 Health
 
 **`GET /health`** — liveness. **Always `200` while the process is serving.** It deliberately
@@ -363,7 +409,7 @@ does not check dependencies: a liveness probe that fails on a dependency restart
 container because somebody else is having a bad day.
 
 ```json
-{ "status": "ok", "service": "applicant-service", "version": "1.0.0" }
+{ "status": "ok", "service": "applicant-service", "version": "2.1.0" }
 ```
 
 **`GET /health/ready`** — readiness.
@@ -372,33 +418,40 @@ container because somebody else is having a bad day.
 {
   "status": "ok",
   "service": "applicant-service",
-  "version": "1.0.0",
+  "version": "2.1.0",
   "components": {
     "postgres": { "status": "up" },
-    "rabbitmq": { "status": "up" }
+    "event_relay": { "status": "up" }
   },
-  "pending_events": 0
+  "consumers": {
+    "credential": { "status": "configured", "pending": 0, "parked": 0 },
+    "university-record": { "status": "configured", "pending": 2, "parked": 0 }
+  },
+  "pending_events": 2
 }
 ```
 
-| Condition | HTTP | `status` | `components.rabbitmq.status` |
+| Condition | HTTP | `status` | Where it shows |
 | --- | --- | --- | --- |
-| Everything up | `200` | `ok` | `up` |
-| **RabbitMQ down** | **`200`** | `degraded` | `down` |
-| **`RABBITMQ_URL` unset** | **`200`** | **`ok`** | `disabled` |
-| **PostgreSQL down** | **`503`** | `unavailable` | *(unchanged)* |
+| Everything configured | `200` | `ok` | |
+| **`SERVICE_TOKEN` or every consumer URL unset** | **`200`** | `degraded` | `components.event_relay.status: "disabled"` |
+| **A consumer URL unset** | **`200`** | `degraded` | `consumers.<name>.status: "not_configured"` |
+| **The Gateway or a consumer not answering** | **`200`** | **`ok`** | `consumers.<name>.pending` keeps climbing |
+| **PostgreSQL down** | **`503`** | `unavailable` | `components.postgres` |
 
-`components.rabbitmq.status` is one of `up`, `down`, `disabled`. Note the third row: messaging
-being *switched off* is treated as a deliberate configuration, not a fault, so the overall
-status stays `ok`. Watch for `disabled` explicitly if you want to catch a missing
-`RABBITMQ_URL` — otherwise events accumulate in the outbox indefinitely and nothing says so.
+`consumers.<name>.pending` is that consumer's backlog: deliveries due or waiting out a retry
+backoff. `parked` counts deliveries the consumer refused with `422 INVALID_EVENT`; they are
+never retried and somebody has to look at them (`outbox_deliveries.last_error` says why).
+`pending_events` is the backlog across consumers. **Both are omitted from the body when the
+count cannot be taken**, which is precisely when PostgreSQL is down.
 
-`components.<name>.details` carries the last error. `pending_events` is the outbox backlog —
-a number that keeps climbing means the broker has been away for a while. **It is omitted from
-the body when the count cannot be taken**, which is precisely when PostgreSQL is down.
+A consumer that does not answer is not a configuration fault, so the status stays `ok` - the
+contract expects it, and the outbox is what makes it safe. The number to watch is `pending`:
+a count that keeps climbing means the Gateway, or that consumer behind it, has been away for a
+while, or does not serve `POST /events` (a `404`, which is retried).
 
 > **Do not remove an instance from the load-balancer pool on `degraded`.** The REST surface is
-> fully functional without RabbitMQ; events simply queue until it returns.
+> fully functional; only the delivery of events is affected, and they wait in the outbox.
 
 ### 6.8b What the API deliberately does not expose
 
@@ -418,16 +471,20 @@ downstream:
 | HTTP | `code` | When |
 | --- | --- | --- |
 | `400` | `VALIDATION_ERROR` | Malformed JSON, missing/invalid field, bad UUID, out-of-range pagination |
+| `408` | `REQUEST_TIMEOUT` | The request ran longer than `HTTP_REQUEST_TIMEOUT` and was stopped. `details` empty. **Nothing was changed** |
+| `429` | `TOO_MANY_REQUESTS` | `MAX_CONCURRENT_TASKS` requests are already in progress. Header `Retry-After: 1`. `details` empty. **Nothing was changed** |
 | `404` | `APPLICANT_NOT_FOUND` | No applicant with that id |
 | `404` | `NOT_FOUND` | Unknown route |
 | `405` | `METHOD_NOT_ALLOWED` | Known path, wrong method |
-| `422` | `VALIDATION_ERROR` | Well-formed, but the profile is not internally coherent. `details.invariant`, `details.side`, `details.reason`. `invariant` is usually an `I1`–`I12` id, but is the literal `"DB"` (with `side: "row"`) when a database constraint rejected the row |
-| `500` | `DEPENDENCY_UNAVAILABLE` | PostgreSQL unreachable or the request deadline fired. `details.dependency`. **Nothing was changed** |
+| `422` | `VALIDATION_ERROR` | Well-formed, but the profile is not internally coherent. `details.invariant`, `details.side`, `details.reason`. `invariant` is usually an `I1`–`I12` id, but is the literal `"DB"` (with `side: "row"`) when a database constraint rejected the row. The contract reserves `422` for endpoint-specific codes; this one is a divergence, see [§12](#12-divergences-from-the-cpr-contract) |
+| `422` | `INVALID_EVENT` | `POST /api/v1/events` only: the event can never be applied by this service. `details.reason`, and `details.event_id` / `details.event_type` when the envelope parsed. See [§6.7b](#67b-post-apiv1events) |
+| `500` | `DEPENDENCY_UNAVAILABLE` | PostgreSQL unreachable. A request stopped by the task timeout answers `408`, not this. `details.dependency`. **Nothing was changed** |
 | `500` | `INTERNAL_ERROR` | A bug, or a panic (recovered). `details` empty |
 
-Both `400` and `422` use the code `VALIDATION_ERROR`, matching the contract's vocabulary; the
-status distinguishes "could not parse this" from "parsed it, and it describes an impossible
-person".
+Both `400` and `422` use the code `VALIDATION_ERROR`; the status distinguishes "could not parse
+this" from "parsed it, and it describes an impossible person". The contract keeps
+`VALIDATION_ERROR` for `400` only, so the `422` case needs its own code (for example
+`INCOHERENT_PROFILE`) - an open divergence.
 
 ---
 
@@ -540,16 +597,20 @@ being identical if you generate addresses yourself.
 
 ### 7.5 Courses
 
-Course codes come from an embedded curriculum keyed by `(major, year)`. A profile's courses
+Course codes come from an embedded curriculum keyed by `(major, year)`: 2-4 uppercase letters
+(`POO`, `SDA`, `PAD`), with one exception, `LEN1`. A profile's courses
 normally belong to that person's own year of their own programme. Properties you can rely on:
 
 - `courses` is **always an array**, never `null`. Empty for `staff`, `alumni` and `outsider`.
 - Sorted ascending, no duplicates, at most **5** entries.
-- The curriculum is shipped as `internal/generator/catalog/data/courses.json`. **University
-  Record Service must agree on this list**, or a fabricated registration and an honest one
-  become indistinguishable. Treat a change to it as a contract change.
-- A separate `fake_courses.json` holds codes that exist nowhere (`ELSE-NET`, `QBIT-101`, …).
-  These are what a naive fabrication uses, so University Record should answer `exists: false`.
+- The curriculum is shipped as `internal/generator/catalog/data/courses.json`: 53 entries, the 49
+  of the CPR's [`shared/courses.json`](../shared/courses.json) plus `LEN1` ("Limba Engleză I",
+  year 1, spring) for each of the four majors. The contract requires a byte-identical copy of the
+  CPR file and codes matching `^[A-Z]{2,4}$`; image `2.1.0` still meets neither
+  ([§12](#12-divergences-from-the-cpr-contract)). Credential Service ships the same file.
+- A separate `fake_courses.json` holds eight codes that exist nowhere (`ELSE-NET`, `QBIT-101`,
+  `WEB5`, …). They do not follow the catalog format, so a fabrication can be told apart at a
+  glance. University Record should answer `exists: false` for them.
 
 ---
 
@@ -641,19 +702,27 @@ record generation. `P(lie)` by difficulty: `1 → 0.15`, `2 → 0.35`, `3 → 0.
 
 ### 9.1 Transport
 
-- Exchange **`student-id.events`**, type `topic`, **durable**, not auto-deleted.
-- Routing key **`applicant.initialized`**.
-- This service's queue: `applicant-service.applicant-initialized`, durable, dead-lettered to
-  `student-id.dlx` with routing key `applicant.initialized.dead`.
-- Dead-letter queue `applicant-service.dlq`, bound to `student-id.dlx` with `#`.
-- Publishes are **persistent** with **publisher confirms**; `mandatory` is `false` (during
-  integration peer queues often do not exist yet, and flagging every publish unroutable would
-  bury the real failures).
+Direct HTTP push through the Gateway, as the CPR README "Event delivery" defines it. There is
+no broker.
 
-> **Every service must declare the shared exchange identically** (`topic`, durable, not
-> auto-delete). One mismatched declaration gives everyone `PRECONDITION_FAILED (406)`, and
-> amqp091-go reports that by *closing the channel*, after which publishes fail quietly. This
-> service watches both connection and channel closure and surfaces it in `/health/ready`.
+- **Producer side.** `POST /applicants/next` writes the applicant and the envelope of its
+  `applicant.initialized` to the outbox **in the same transaction**, with one pending delivery
+  per consumer. A background relay then pushes the stored bytes, unchanged, to
+  `POST {gateway}/api/v1/credential/events` and `POST {gateway}/api/v1/university-record/events`
+  with `X-Service-Token` and `Content-Type: application/json`, and records the answer per
+  consumer:
+
+  | Answer | The relay |
+  | --- | --- |
+  | `2xx` | Marks that consumer delivered |
+  | `422` | Parks the delivery for that consumer, with the reason, and never retries it |
+  | Any other `4xx` (`404` from a consumer that does not serve the endpoint yet, the Gateway's `408`, `429`, `502`), any `5xx`, a timeout, a refused connection | Retries after a backoff that doubles from 1 s and is capped at `EVENT_RETRY_MAX_BACKOFF` (30 s) |
+
+  The two consumers are pushed independently and at the same time: one being down, slow or
+  absent never delays the other.
+- **Consumer side.** `POST /api/v1/events` ([§6.7b](#67b-post-apiv1events)), reached as
+  `{gateway}/api/v1/applicant/events`, service token only.
+- **No ordering guarantee**, and at-least-once delivery ([§9.5](#95-delivery-guarantees)).
 
 ### 9.2 Envelope
 
@@ -708,11 +777,11 @@ contacted first.
 - **Build from the right half.** Credential Service builds documents from `claimed` and marks
   as `forged` whatever supports a claim that `actual` contradicts. University Record Service
   builds the university's records from `actual` — an outsider gets no enrollment row at all.
-- **Ignore your own.** Your queue is bound to the exchange you publish on, so your own events
-  come back. Drop any event whose `initialized_by` equals your own service name.
+- **Ignore your own.** The contract never pushes an event back to its producer, but drop any
+  event whose `initialized_by` equals your own service name all the same.
 - **Deduplicate on `event_id`.** Delivery is at-least-once (see [§9.5](#95-delivery-guarantees)).
 - **Do not require `actual`.** It is always sent by this service, but a lenient reader is what
-  keeps an integration day from being lost to a dead-letter queue full of usable messages.
+  keeps an integration day from being lost to a backlog of parked, perfectly usable events.
 
 ### 9.4 Consumed: `applicant.initialized`
 
@@ -721,42 +790,46 @@ Accepted from Credential Service and University Record Service (i.e. any event w
 same `applicant_id` from the `claimed` profile, and registers the `actual` university address
 so its own generator will not later hand the same address to someone else.
 
-Handling policy:
+Handling policy, as `POST /api/v1/events` answers it:
 
-| Situation | Action |
+| Situation | Answer |
 | --- | --- |
-| Unparseable envelope, or `event_type` ≠ `applicant.initialized` | Dead-letter immediately (it will never succeed) |
-| `initialized_by == "applicant-service"` | Acknowledge and drop — our own |
-| Unknown/empty `initialized_by`, unusable payload | Dead-letter |
-| Already-seen `event_id` | Acknowledge, do nothing |
-| Transient failure, first delivery | Requeue (exactly one retry) |
-| Payload the database refuses (wrong shape for our schema) | Dead-letter immediately |
-| Transient failure, redelivered | Dead-letter |
+| Unparseable envelope, `event_type` ≠ `applicant.initialized`, `version` ≠ `1` | `422 INVALID_EVENT` - it will never succeed, the producer parks it |
+| `initialized_by == "applicant-service"` | `200`, `duplicate: false` - our own, ignored |
+| Unknown/empty `initialized_by`, unusable payload | `422 INVALID_EVENT` |
+| Already-seen `event_id` | `200`, `duplicate: true` - nothing changes |
+| Payload the database refuses (wrong shape for our schema) | `422 INVALID_EVENT` |
+| PostgreSQL unavailable, or the task timeout | `500` / `408` - the producer retries later |
 
 **A peer's `difficulty` is silently clamped into 1–5** before storage; an out-of-range value
 is not a reason to reject an otherwise usable applicant.
 
-The retry bound uses the AMQP `Redelivered` flag rather than a counter. Without a bound, a
-permanently failing message is requeued thousands of times a second and looks from outside
-exactly like a healthy, busy consumer.
+The `event_id` is recorded in `processed_events` **in the same transaction** as the applicant
+row, and `200` is answered only after that transaction commits - so a redelivery is a true
+no-op rather than a partial repeat, and a `200` that was sent is never for work that was lost.
 
 ### 9.5 Delivery guarantees
 
-Publishing uses a **transactional outbox**: the applicant row and the event are written in one
-database transaction, and a relay publishes from the outbox afterwards.
+Publishing uses a **transactional outbox**: the applicant row, the event and one pending
+delivery per consumer are written in one database transaction, and the relay pushes from the
+outbox afterwards.
 
 | Property | Guarantee |
 | --- | --- |
 | An applicant exists but no event was ever queued | **Impossible** — same transaction |
-| An event is published for an applicant that does not exist | **Impossible** — same transaction |
-| The same event published more than once | **Possible** — a crash between a confirmed publish and the bookkeeping update republishes it |
-| Ordering | Best-effort (oldest first within a batch); **do not rely on it** |
+| An event is pushed for an applicant that does not exist | **Impossible** — same transaction |
+| One consumer being down holds back the other | **Impossible** — delivery state is per consumer, and the two are pushed concurrently |
+| The same event pushed more than once to one consumer | **Possible** — a crash between a `2xx` and the bookkeeping update, or a claim whose lease ran out mid-push, sends it again |
+| An event pushed after a `422` | **Never** — the delivery is parked |
+| Ordering | Best-effort (oldest due first); **do not rely on it** |
 
 So: **at-least-once, never at-most-once.** Every consumer must deduplicate on `event_id`.
 
 **Consequences you can build on:** `POST /api/v1/applicants/next` returns `201` whether or not
-RabbitMQ is reachable, and the backlog drains automatically on reconnect. `/health/ready`
-reports `pending_events` so you can watch the backlog.
+the Gateway and the consumers are reachable, and each consumer's backlog drains on its own
+once it answers `2xx`. `/health/ready` reports `pending` and `parked` per consumer so you can
+watch it. Everything image `2.0.0` left waiting for a broker is delivered by the first `2.1.0`
+that starts against the same database: migration `0004` opens the deliveries for it.
 
 ---
 
@@ -771,7 +844,8 @@ by convention.
 | `applicants` | One row per applicant: both profiles, `session_id`, `difficulty`, `origin`, `initialized_by`, the lie metadata, timestamps |
 | `university_emails` | The university email namespace. Primary key is the address itself, which is what arbitrates concurrent allocation. Cascades on applicant delete |
 | `processed_events` | Consumed `event_id`s, for idempotency |
-| `outbox_events` | Events written with their applicant, awaiting publication |
+| `outbox_events` | The envelope of every event, written with its applicant. `published_at` is set once every consumer has it |
+| `outbox_deliveries` | One row per event and consumer: `attempts`, `next_attempt_at`, `delivered_at`, `parked_at`, `last_status`, `last_error`. The relay's unit of work |
 | `schema_migrations` | Applied migration versions |
 | **`applicants_claimed`** *(view)* | **The only relation the read path touches** |
 
@@ -795,12 +869,12 @@ line:
 The split is deliberate: the left column is the **shared vocabulary** from the contract's
 "Shared values", where an out-of-set value is a genuine contract violation. The right column
 encodes **this service's own formatting choices**, and a peer must never have its events
-dead-lettered merely for spelling a student ID differently.
+answered `422` merely for spelling a student ID differently.
 
 > This was wrong until migration `0003`: the column-level checks applied to every row, so a
-> peer sending the CPR's six-digit `FAF231017` had *every* event rejected, retried once and
-> parked — which from their side looks like this service silently ignoring them. Fixed and
-> verified end to end.
+> peer sending the CPR's six-digit `FAF231017` had *every* event rejected and parked — which
+> from their side looks like this service silently ignoring them. Fixed and verified end to
+> end.
 
 ### Deliberate non-constraints
 
@@ -811,9 +885,10 @@ dead-lettered merely for spelling a student ID differently.
 
 ### Retention
 
-Nothing is deleted automatically. Applicants, processed event ids and published outbox rows
+Nothing is deleted automatically. Applicants, processed event ids and delivered outbox rows
 accumulate. For a course project that is fine; for a long-lived deployment, `processed_events`
-and published `outbox_events` are the two tables that would want pruning.
+and the delivered rows of `outbox_events` (cascading to `outbox_deliveries`) are what would
+want pruning.
 
 ### Migrations
 
@@ -826,6 +901,10 @@ change would silently never apply.
 
 ## 11. Use cases and interaction flows
 
+Every call below, event pushes included, passes through the Gateway: the caller sends
+`{gateway}/api/v1/<prefix>/...`, and the paths shown are the service's own (see the CPR README
+"Gateway").
+
 ### 11.1 Server Moderation Session Service — "give me the next applicant"
 
 ```
@@ -834,7 +913,9 @@ Session Service     →  Applicant Service: POST /api/v1/applicants/next
                                           { session_id, difficulty }
 Applicant Service   →  Session Service:   201 { applicant_id, session_id, created_at }
 Session Service     :  stores applicant_id as the session's current_applicant_id
-Applicant Service   →  (async) publishes applicant.initialized
+Applicant Service   →  (async) pushes applicant.initialized to
+                       POST {gateway}/api/v1/credential/events and
+                       POST {gateway}/api/v1/university-record/events
 ```
 
 - `difficulty` is the session's own difficulty (derived from player levels).
@@ -852,6 +933,8 @@ Client → Credential Service: GET /api/v1/applicants/{applicant_id}/documents
 Both may answer `404` for a moment right after creation. The client should retry briefly.
 
 ### 11.3 Moderation Service — "check this decision"
+
+All five calls go through the Gateway with `X-Service-Token`, never with the Moderator's token.
 
 ```
 Moderation → Session Service:          GET /api/v1/sessions/{id}        (current applicant, ruleset_version)
@@ -882,8 +965,9 @@ The student ID encodes the group ([§7.2](#72-student-id--majoryygnn)), so
 
 ### 11.6 Applicant Service as a *consumer*
 
-If Credential or University Record is contacted first, it publishes the event and **this**
-service creates its record from `claimed`. That path is implemented and tested. Today no
+If Credential or University Record is contacted first, it pushes the event to
+`POST {gateway}/api/v1/applicant/events` and **this** service creates its record from
+`claimed` ([§6.7b](#67b-post-apiv1events)). That path is implemented and tested. Today no
 service calls their `POST /applicants/next`, but the contract is identical on all three, so
 Session Service could switch without any change on its side.
 
@@ -895,12 +979,10 @@ Raise these in the CPR before integration; they are the parts other services mus
 
 | # | Divergence | Who is affected |
 | --- | --- | --- |
-| 1 | **Student ID is `{MAJOR}{yy}{g}{nn}` (5 digits, `FAF23314`)**, not the CPR's 6-digit examples (`FAF231017`). This service *accepts* either from a peer — it only *issues* the five-digit form | University Record Service parses these. Credential Service prints them |
-| 2 | **Admission year and study year are independent**, related by the two-value window in [§7.3](#73-admission-year-and-study-year). `REFERENCE_YEAR` must be shared | All three applicant-data services |
-| 3 | **University emails are numbered only on collision**; alumni/outsiders always carry a two-digit suffix | University Record Service's `email-groups` |
-| 4 | **Four CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `PATCH`, `DELETE`) | Gateway and auth — see [§14](#14-notes-for-a-gateway-load-balancer-or-auth-layer) |
-| 5 | **`POST /api/v1/applicants` does not publish `applicant.initialized`** | Anyone expecting every applicant to be announced |
-| 6 | The curriculum (`courses.json`) is a **shared artifact** that University Record must match | University Record Service |
+| 2 | **`422 VALIDATION_ERROR`** for an incoherent profile. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | Generic clients |
+| 3 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, and the fake codes must follow `^[A-Z]{2,4}$`. Image `2.1.0` still does not match: its catalog has 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format - and none of its eight fake codes (`ELSE-NET`, `QBIT-101`, `WEB5`, …) follow the format. Credential Service ships the same two files | University Record and Credential Service, Moderation |
+| 5 | **Four CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `PATCH`, `DELETE`) | Gateway and auth — see [§14](#14-gateway-requirements) |
+| 6 | **`POST /api/v1/applicants` does not produce `applicant.initialized`** | Anyone expecting every applicant to be announced |
 
 ---
 
@@ -911,7 +993,8 @@ Raise these in the CPR before integration; they are the parts other services mus
 Right after an applicant is created by **another** service, `GET /api/v1/applicants/{id}`
 returns `404 APPLICANT_NOT_FOUND` until the event arrives. This is normal and expected by the
 contract. Clients should retry briefly rather than treating it as an error. Typical window is
-milliseconds; it is unbounded if the broker is down.
+the relay's poll interval plus one round trip; it is unbounded while the Gateway, or the
+service that met the applicant first, is down.
 
 ### 13.2 `POST /applicants/next` is not idempotent
 
@@ -923,15 +1006,19 @@ or retry policy to know about this service.
 `identity_theft` deliberately produces two applicants claiming the same identifier. Never key
 on `claimed.student_id`.
 
-### 13.4 Broker outage
+### 13.4 Gateway or consumer outage
 
-- `POST /applicants/next` still returns `201`; events queue in the outbox.
-- `/health/ready` returns `200` with `status: "degraded"` and a rising `pending_events`.
-- Peers receive nothing until the broker returns; their view of applicants goes stale.
-- On reconnect the backlog publishes automatically. Confirmed by hand against the running
-  stack — three applicants created with RabbitMQ stopped, backlog of three, drained to zero on
-  restart with no intervention. **No automated integration test covers this**; the unit tests
-  use fakes.
+- `POST /applicants/next` still returns `201`; the event's deliveries wait in the outbox.
+- `/health/ready` stays `200 ok`; `consumers.<name>.pending` rises for the consumer that
+  cannot be reached, and only for that one. The other consumer is served all along.
+- Peers that are unreachable receive nothing until they are back; their view of applicants
+  goes stale. The relay retries with a backoff that doubles up to 30 s, so a consumer that is
+  down for a minute sees a handful of attempts rather than hundreds.
+- A consumer that answers `404` because it does not serve `POST /events` is treated the
+  same: retried until it does.
+- When the consumer returns, its backlog drains in the order it built up, oldest first, with
+  no intervention. Covered by the relay's unit tests against a fake Gateway; **no automated
+  integration test** runs the real stack.
 
 ### 13.5 Database outage
 
@@ -943,15 +1030,17 @@ on `claimed.student_id`.
 - At *startup*, an unreachable database for longer than `DB_CONNECT_TIMEOUT` (30s) exits the
   process non-zero — rely on the orchestrator's restart policy.
 
-### 13.6 Poison messages
+### 13.6 Poison events
 
-An unreadable or wrong-typed message goes straight to `applicant-service.dlq` and never
-retries. A payload the database refuses is also parked immediately, since it would fail
-identically on a redelivery. Only a genuinely transient failure is retried, exactly once.
+An event this service cannot read, of a type or version it does not consume, or whose payload
+it cannot store is answered `422 INVALID_EVENT` and never retried by the producer. The same
+happens in the other direction: a consumer that answers `422` to one of this service's events
+gets that delivery parked, with `last_status` and `last_error` kept on its
+`outbox_deliveries` row and `parked` counted in `/health/ready`.
 
-**Inspect the DLQ first if a peer reports that its applicants never appear here.** The most
-likely cause is a payload shape this service cannot store — see the constraint split in
-[§10](#10-what-and-how-it-stores).
+**Look at `parked` first if a peer reports that its applicants never appear here, or that
+ours never appear there.** The most likely cause is a payload shape one side cannot store —
+see the constraint split in [§10](#10-what-and-how-it-stores).
 
 ### 13.7 Email namespace exhaustion
 
@@ -982,17 +1071,25 @@ JSON. Do not rely on this service to reject a malformed client.
 
 ---
 
-## 14. Notes for a gateway, load balancer or auth layer
+## 14. Gateway requirements
 
-### Authentication — there is none
+What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, prefix `applicant`.
 
-**Every endpoint is open.** No JWT parsing, no service-token check, no `player_id` extraction.
-The team contract says authentication is out of scope "for now"; this service takes that
-literally. Anything guarding it must be in front of it.
+### Authentication
 
-When auth arrives, the contract's shape is: a player request carries the player's JWT, a
-service request carries a service token, and the receiver tells them apart. Applicant Service
-does not currently need `player_id` for any decision.
+Callers authenticate at the Gateway, never here: a player sends `Authorization: Bearer <jwt>`, a
+service sends `X-Service-Token`, and the Gateway forwards only `X-Player-Id` (for player calls). The
+Gateway enforces, for this service:
+
+| Endpoint | Credential |
+| --- | --- |
+| `POST /api/v1/applicants/next`, `POST /api/v1/events` | service token only |
+| `GET /api/v1/applicants/{id}` | player or service |
+| The CRUD extensions, `/health/ready` | service token only (admin) |
+
+Applicant Service does not need `player_id` for any decision, and reads no credential at all - which
+is exactly what the contract asks of it. It is therefore safe **only** behind the Gateway, with its
+port unpublished.
 
 ### Endpoint exposure — read this before routing anything publicly
 
@@ -1000,13 +1097,14 @@ does not currently need `player_id` for any decision.
 | --- | --- | --- |
 | `GET /api/v1/applicants/{id}` | **Yes** | Claimed profile only. This is what the game shows |
 | `POST /api/v1/applicants/next` | **No — service only** | Creates an applicant and an event. A player could spam applicants and desynchronise sessions |
+| `POST /api/v1/events` | **No — service only** | A player could inject applicants |
 | `GET /api/v1/applicants` | **No — admin only** | Enumerates every applicant across every session. A player could pre-read applicants they have not met |
 | `POST`, `PATCH`, `DELETE /api/v1/applicants` | **No — admin only** | A player could edit the applicant they are being judged on |
 | `/health`, `/health/ready` | **No — internal** | Leaks dependency state and version |
 
-A reasonable default gateway policy: expose `GET /api/v1/applicants/{id}` to authenticated
-players; restrict `POST /api/v1/applicants/next` to the Session Service's service identity;
-put everything else behind an admin scope or do not route it publicly at all.
+The Gateway policy above follows from this table: `GET /api/v1/applicants/{id}` for authenticated
+players; `POST /api/v1/applicants/next` and `POST /api/v1/events` for the service token only;
+everything else behind the service token or not routed at all.
 
 ### Retries
 
@@ -1025,10 +1123,11 @@ There is no `Idempotency-Key` support.
 | --- | --- |
 | Server read / write | 10s |
 | Server idle (keep-alive) | 60s |
-| Per-request context deadline | 5s → surfaces as `500 DEPENDENCY_UNAVAILABLE`, not `504` |
+| Task timeout (`HTTP_REQUEST_TIMEOUT`) | 5s → `408 REQUEST_TIMEOUT`, transaction rolled back |
+| Concurrent task limit (`MAX_CONCURRENT_TASKS`) | 64 → `429 TOO_MANY_REQUESTS` + `Retry-After: 1` |
 | Graceful shutdown | 10s |
 
-Set the gateway timeout above 5s so the service's own error body reaches the client.
+The Gateway's timeout (`10s`) is above 5s, so the service's own error body reaches the client.
 
 ### Headers
 
@@ -1055,15 +1154,16 @@ is a few hundred bytes.
 | Liveness / restart | `GET /health` | The process is wedged. Restart |
 | Readiness / pool membership | `GET /health/ready` | `503` = PostgreSQL unreachable. Remove from pool |
 
-**Treat `200` + `status: "degraded"` as healthy.** It means only RabbitMQ is away, and the
-REST surface is fully functional.
+**Treat `200` + `status: "degraded"` as healthy.** It means only the event relay is not fully
+configured, and the REST surface is fully functional.
 
 ### Graceful shutdown
 
 On `SIGTERM` / `SIGINT` the service stops accepting HTTP, drains in-flight requests (up to
-`SHUTDOWN_TIMEOUT`), then stops the consumer and relay, then closes the broker and the
-database pool — in that order, so a consumer holding a message is never cut off from the
-database. Give the orchestrator a termination grace period **above** `SHUTDOWN_TIMEOUT`.
+`SHUTDOWN_TIMEOUT`), then stops the relay, then closes the database pool — in that order, so
+a push whose answer is being recorded is never cut off from the database. A push interrupted
+by shutdown is simply made again later. Give the orchestrator a termination grace period
+**above** `SHUTDOWN_TIMEOUT`.
 
 ---
 
@@ -1077,8 +1177,8 @@ Replicas are safe:
 | Concern | Behaviour |
 | --- | --- |
 | Migrations | Guarded by a PostgreSQL advisory lock — concurrent starts serialise |
-| Consumer | All replicas share one queue → competing consumers, each message handled once |
-| Outbox relay | `SELECT … FOR UPDATE SKIP LOCKED` — a second relay takes different rows rather than waiting or double-publishing |
+| `POST /api/v1/events` | Stateless like every endpoint; the `event_id` dedup lives in the database, so two replicas receiving the same event apply it once |
+| Outbox relay | A claim is `UPDATE … FOR UPDATE SKIP LOCKED` with a lease — a second relay takes different rows rather than waiting or double-pushing, and a relay that dies mid-push hands its rows back when the lease runs out |
 | Email allocation | Arbitrated by a unique index, correct across processes |
 | Generator RNG | Mutex-protected; race-clean under `-race` |
 
@@ -1087,12 +1187,14 @@ Replicas are safe:
 > `GENERATOR_SEED=0` (the default) in any multi-replica deployment; reserve a fixed seed for
 > single-instance demos and reproducible debugging.
 
-**Connection budget:** each replica opens up to `DB_MAX_CONNS` (10) PostgreSQL connections and
-2 AMQP channels on 1 connection. Size the database's `max_connections` accordingly.
+**Connection budget:** each replica opens up to `DB_MAX_CONNS` (10) PostgreSQL connections, and
+the relay keeps one outgoing HTTP connection per consumer alive. Size the database's
+`max_connections` accordingly.
 
 **Cost per applicant:** one `POST /applicants/next` performs roughly — one victim-pool query,
-one or more email reservation attempts, one applicant insert, one outbox insert, all in a
-single transaction. It is cheap; the generator itself does no I/O.
+one or more email reservation attempts, one applicant insert, one outbox insert and one
+delivery insert per consumer, all in a single transaction, plus two HTTP pushes from the
+relay afterwards. It is cheap; the generator itself does no I/O.
 
 ---
 
@@ -1108,16 +1210,18 @@ Events worth alerting on:
 
 | Log message | Meaning |
 | --- | --- |
-| `broker unreachable, retrying` | RabbitMQ down; outbox is filling |
-| `broker unavailable, events are queued in the outbox` | Same, throttled to once a minute |
-| `parking message …` | A message went to the DLQ — investigate |
+| `event not delivered, will retry` | The Gateway or a consumer did not accept the push; `status`, `err` and `retry_at` say more. One line per attempt, with the backoff growing to 30 s |
+| `event parked: the consumer says it can never accept it` | A consumer answered `422` — investigate the `reason` |
+| `event rejected` | This service answered `422` to a push — the producer's payload is unusable here |
+| `consumer URL is not set` (at startup) | That consumer's deliveries will pile up until the URL is configured |
+| `event relay is disabled` (at startup) | No `SERVICE_TOKEN` or no consumer URL: nothing leaves the outbox |
 | `archetype could not be applied, retrying` | A rare generator sampling edge; harmless unless frequent |
 | `falling back to an honest applicant` | **A generator bug** — every archetype attempt failed |
 | `request failed` at `error` level | A 5xx |
 
 **No metrics endpoint and no tracing.** There is no `/metrics`, no Prometheus, no OpenTelemetry.
-`/health/ready` exposes `pending_events`, which is the single most useful number to scrape if
-you are building a dashboard.
+`/health/ready` exposes `pending` and `parked` per consumer, which are the most useful numbers
+to scrape if you are building a dashboard.
 
 ---
 
@@ -1125,7 +1229,7 @@ you are building a dashboard.
 
 Do not assume these exist:
 
-- **Authentication and authorisation** — none at all ([§14](#14-notes-for-a-gateway-load-balancer-or-auth-layer)).
+- **Authentication and authorisation** — none in the service, by design: the Gateway checks every credential ([§14](#14-gateway-requirements)).
 - **CORS** — no headers emitted.
 - **Rate limiting** — none.
 - **Request body size limits** — none.
@@ -1144,6 +1248,11 @@ Do not assume these exist:
 
 ## 18. Recipes for testing against it
 
+The recipes use `BASE=http://localhost:8081`, the service's own port, which is published only during
+Lab 2 development. Through the Gateway, replace `$BASE/api/v1/` with
+`http://localhost:8080/api/v1/applicant/` and send the credential the route needs (`X-Service-Token`
+for `POST /applicants/next`).
+
 ### Create and read an applicant
 
 ```bash
@@ -1159,36 +1268,50 @@ curl -sS $BASE/api/v1/applicants/$ID | jq
 
 ### Watch what a peer service would receive
 
-Bind a spy queue to the exchange, then create an applicant:
+Play a consumer: point the relay at a listener of your own, then create an applicant and watch
+the envelope arrive as `POST /api/v1/credential/events` with the service token.
 
 ```bash
-RU=<rabbit-user>; RP=<rabbit-pass>
-curl -sS -u "$RU:$RP" -X PUT http://localhost:15672/api/queues/%2F/spy.peer \
-  -H 'content-type: application/json' -d '{"durable":true}'
-curl -sS -u "$RU:$RP" -X POST http://localhost:15672/api/bindings/%2F/e/student-id.events/q/spy.peer \
-  -H 'content-type: application/json' -d '{"routing_key":"applicant.initialized"}'
+# A throwaway "Gateway" that prints every push and answers 200.
+python3 - <<'EOF' &
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def do_POST(self):
+        print(self.path, self.headers.get('X-Service-Token'))
+        print(self.rfile.read(int(self.headers['Content-Length'])).decode())
+        self.send_response(200); self.send_header('Content-Type', 'application/json'); self.end_headers()
+        self.wfile.write(b'{"event_id":"x","duplicate":false}')
+HTTPServer(('0.0.0.0', 9999), H).serve_forever()
+EOF
 
-# ... create an applicant ...
-
-curl -sS -u "$RU:$RP" -X POST http://localhost:15672/api/queues/%2F/spy.peer/get \
-  -H 'content-type: application/json' \
-  -d '{"count":1,"ackmode":"ack_requeue_false","encoding":"auto"}' | jq -r '.[0].payload' | jq
+# In .env: CREDENTIAL_URL=http://host.docker.internal:9999/api/v1/credential (Docker Desktop),
+# then restart the service and create an applicant.
 ```
+
+With the real stack, the same thing is visible in the Gateway's access log and in
+`consumers.credential.pending` on `/health/ready` dropping back to `0`.
 
 ### Pretend to be Credential Service
 
-Publish an event and watch this service create its own record. Publish the **same `event_id`**
-twice to prove idempotency:
+Push an event and watch this service create its own record. Push the **same `event_id`**
+twice to prove idempotency: the second answer is `200` with `"duplicate": true`.
 
 ```bash
-curl -sS -u "$RU:$RP" -X POST http://localhost:15672/api/exchanges/%2F/student-id.events/publish \
-  -H 'content-type: application/json' -d '{
-  "properties": {"content_type":"application/json","delivery_mode":2},
-  "routing_key": "applicant.initialized",
-  "payload_encoding": "string",
-  "payload": "{\"event_id\":\"aaaa1111-2222-4333-8444-555566667777\",\"event_type\":\"applicant.initialized\",\"occurred_at\":\"2026-09-13T11:00:00Z\",\"producer\":\"credential-service\",\"version\":1,\"payload\":{\"applicant_id\":\"7c1e4a90-1111-4222-8333-444455556666\",\"session_id\":\"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\"initialized_by\":\"credential-service\",\"difficulty\":2,\"claimed\":{\"name\":\"Ana Rusu\",\"student_id\":\"FAF24214\",\"email\":\"ana.rusu@isa.utm.md\",\"major\":\"FAF\",\"year\":2,\"university_status\":\"faf_student\",\"courses\":[\"POO\",\"SDA\"],\"role\":\"student\"},\"actual\":{\"name\":\"Ana Rusu\",\"student_id\":\"FAF24214\",\"email\":\"ana.rusu@isa.utm.md\",\"major\":\"FAF\",\"year\":2,\"university_status\":\"faf_student\",\"courses\":[\"POO\",\"SDA\"],\"role\":\"student\"}}}"
-}'
+curl -sS -X POST $BASE/api/v1/events -H 'Content-Type: application/json' -d '{
+  "event_id":"aaaa1111-2222-4333-8444-555566667777","event_type":"applicant.initialized",
+  "occurred_at":"2026-09-13T11:00:00Z","producer":"credential-service","version":1,
+  "payload":{"applicant_id":"7c1e4a90-1111-4222-8333-444455556666",
+    "session_id":"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e","initialized_by":"credential-service","difficulty":2,
+    "claimed":{"name":"Ana Rusu","student_id":"FAF24214","email":"ana.rusu@isa.utm.md","major":"FAF","year":2,
+      "university_status":"faf_student","courses":["POO","SDA"],"role":"student"},
+    "actual":{"name":"Ana Rusu","student_id":"FAF24214","email":"ana.rusu@isa.utm.md","major":"FAF","year":2,
+      "university_status":"faf_student","courses":["POO","SDA"],"role":"student"}}}' | jq
+
+curl -sS $BASE/api/v1/applicants/7c1e4a90-1111-4222-8333-444455556666 | jq
 ```
+
+Through the Gateway the same call is `POST $GW/api/v1/applicant/events` with
+`-H "X-Service-Token: $TOKEN"`. A `"version": 2` envelope answers `422 INVALID_EVENT`.
 
 ### Reproducible applicants for a demo
 

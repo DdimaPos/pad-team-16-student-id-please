@@ -3,31 +3,45 @@
     "name": "Discord DMs Service",
     "_postman_id": "1f8c3a2d-7b4e-4c5f-9a6d-2e3f4a5b6c7d",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Team 16, Student ID, please. Replays session.started through the dev endpoint (the same code path a broker consumer will use), lists channels per player, sends messages over REST, reads history, ends the session and checks that channels are archived. The WebSocket itself is tested with a Postman WebSocket request: ws://localhost:8086/api/v1/ws?session_id={{session_id}}&access_token={{moderator_token}}, then send {\"type\":\"message.send\",\"channel_id\":\"...\",\"content\":\"hi\"}. Requires DEV_ENDPOINTS=true."
+    "description": "Discord DMs Service through the Gateway. Set base_url to the Gateway (http://localhost:8080) and service_token to the stack's SERVICE_TOKEN; every request carries the service prefix /api/v1/discord-dms. The Setup folder delivers session.started through POST /events as Session's relay would, so every run gets a fresh session. The WebSocket itself is opened outside Postman: folder 3 prints the ws_url to connect to directly."
   },
   "variable": [
     {
       "key": "base_url",
-      "value": "http://localhost:8086"
+      "value": "http://localhost:8080",
+      "description": "The Gateway. Every request below carries the service prefix /api/v1/discord-dms"
+    },
+    {
+      "key": "jwt_secret",
+      "value": "change_me_to_a_random_string_of_32_chars_or_more",
+      "description": "JWT_SECRET of the Gateway in the stack's .env; the pre-request script signs the player token with it"
     },
     {
       "key": "service_token",
-      "value": "change_me"
+      "value": "change_me_too",
+      "description": "The stack's SERVICE_TOKEN; the Gateway checks it on POST /events, /admin/* and /dev/*"
+    },
+    {
+      "key": "moderator_id",
+      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+      "description": "Sent as X-Player-Id: in the real flow the Gateway sets it from the JWT and discards a client value"
+    },
+    {
+      "key": "junior_a_id",
+      "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
+      "description": "Junior with the enrollment and courses scopes"
+    },
+    {
+      "key": "junior_b_id",
+      "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
+      "description": "Junior with the email-groups and fcim-logs scopes"
     },
     {
       "key": "session_id",
       "value": ""
     },
     {
-      "key": "moderator_token",
-      "value": ""
-    },
-    {
-      "key": "junior_a_token",
-      "value": ""
-    },
-    {
-      "key": "junior_b_token",
+      "key": "started_event_id",
       "value": ""
     },
     {
@@ -41,6 +55,15 @@
     {
       "key": "last_message_id",
       "value": ""
+    },
+    {
+      "key": "ws_url",
+      "value": ""
+    },
+    {
+      "key": "max_concurrent_tasks",
+      "value": "64",
+      "description": "The service's MAX_CONCURRENT_TASKS; the 429 demo fires this many slow requests first"
     }
   ],
   "item": [
@@ -58,11 +81,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/health",
+              "raw": "{{base_url}}/api/v1/discord-dms/health",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
+                "v1",
+                "discord-dms",
                 "health"
               ]
             },
@@ -89,14 +115,22 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}",
+                "description": "Readiness is a service route at the Gateway (it reports dependency state)"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/health/ready",
+              "raw": "{{base_url}}/api/v1/discord-dms/health/ready",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
+                "v1",
+                "discord-dms",
                 "health",
                 "ready"
               ]
@@ -119,151 +153,10 @@
       ]
     },
     {
-      "name": "1. Setup (dev endpoints)",
+      "name": "1. Setup: session.started through POST /events",
       "item": [
         {
-          "name": "mint Moderator token",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/dev/tokens?player_id=8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "dev",
-                "tokens"
-              ],
-              "query": [
-                {
-                  "key": "player_id",
-                  "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.collectionVariables.set('moderator_token', pm.response.json().token);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "mint Junior A token",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/dev/tokens?player_id=b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "dev",
-                "tokens"
-              ],
-              "query": [
-                {
-                  "key": "player_id",
-                  "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.collectionVariables.set('junior_a_token', pm.response.json().token);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "mint Junior B token",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/dev/tokens?player_id=c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "dev",
-                "tokens"
-              ],
-              "query": [
-                {
-                  "key": "player_id",
-                  "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.collectionVariables.set('junior_b_token', pm.response.json().token);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "replay session.started",
+          "name": "session.started arrives through POST /events (what Session's relay sends through the Gateway)",
           "request": {
             "method": "POST",
             "header": [
@@ -277,22 +170,21 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/events/session-started",
+              "raw": "{{base_url}}/api/v1/discord-dms/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "dev",
-                "events",
-                "session-started"
+                "discord-dms",
+                "events"
               ]
             },
             "description": "Same handler a broker consumer will use. Creates the four channels of {{session_id}} with the access mapping.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ]\n  }\n}",
+              "raw": "{\n  \"event_id\": \"{{started_event_id}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ]\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -306,9 +198,10 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// A fresh session on every run: replaying session.ended in folder 4 archives the previous one for good.",
+                  "// A fresh session on every run: session.ended in folder 4 archives the previous one for good.",
                   "const g = () => 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => { const r = Math.random() * 16 | 0; return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16); });",
-                  "pm.collectionVariables.set('session_id', g());"
+                  "pm.collectionVariables.set('session_id', g());",
+                  "pm.collectionVariables.set('started_event_id', g());"
                 ]
               }
             },
@@ -317,14 +210,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 202', () => pm.response.to.have.status(202));"
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('applied, not a duplicate', () => { const b = pm.response.json(); pm.expect(b.event_id).to.eql(pm.variables.get('started_event_id')); pm.expect(b.duplicate).to.eql(false); });"
                 ]
               }
             }
           ]
         },
         {
-          "name": "replay session.started again is idempotent",
+          "name": "the same event_id again is a duplicate: 200, nothing changes",
           "request": {
             "method": "POST",
             "header": [
@@ -338,22 +232,21 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/events/session-started",
+              "raw": "{{base_url}}/api/v1/discord-dms/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "dev",
-                "events",
-                "session-started"
+                "discord-dms",
+                "events"
               ]
             },
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ]\n  }\n}",
+              "raw": "{\n  \"event_id\": \"{{started_event_id}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ]\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -367,11 +260,112 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 202', () => pm.response.to.have.status(202));"
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('duplicate', () => pm.expect(pm.response.json().duplicate).to.eql(true));"
                 ]
               }
             }
           ]
+        },
+        {
+          "name": "an unknown event_type is refused for good: 422 INVALID_EVENT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('INVALID_EVENT', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "events"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "an unknown envelope version is refused: 422 INVALID_EVENT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 422', () => pm.response.to.have.status(422));",
+                  "pm.test('INVALID_EVENT', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "events"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 2,\n  \"payload\": { \"session_id\": \"{{session_id}}\" }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
         }
       ]
     },
@@ -388,18 +382,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "raw": "{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "sessions",
                 "{{session_id}}",
                 "channels"
@@ -434,18 +429,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{junior_a_token}}"
+                "key": "X-Player-Id",
+                "value": "{{junior_a_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "raw": "{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "sessions",
                 "{{session_id}}",
                 "channels"
@@ -477,18 +473,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{junior_b_token}}"
+                "key": "X-Player-Id",
+                "value": "{{junior_b_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "raw": "{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "sessions",
                 "{{session_id}}",
                 "channels"
@@ -519,18 +516,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiI1ZDJjOGU0YS03YjFmLTRjM2QtOWU2YS0wYjhmMmQ0YzZlMTMifQ."
+                "key": "X-Player-Id",
+                "value": "5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13",
+                "description": "a player who is not in the session"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "raw": "{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "sessions",
                 "{{session_id}}",
                 "channels"
@@ -552,7 +551,7 @@
           ]
         },
         {
-          "name": "no token",
+          "name": "no player identity: neither the Gateway nor the caller identified a player",
           "request": {
             "method": "GET",
             "header": [
@@ -562,13 +561,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "raw": "{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "sessions",
                 "{{session_id}}",
                 "channels"
@@ -582,7 +582,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 401', () => pm.response.to.have.status(401));"
+                  "pm.test('status 401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
                 ]
               }
             }
@@ -591,7 +592,212 @@
       ]
     },
     {
-      "name": "3. Messages over REST",
+      "name": "3. WebSocket negotiation (the Gateway authorizes, the client connects directly)",
+      "item": [
+        {
+          "name": "POST /ws-tickets: the Moderator asks for a chat connection",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.test('ws_url points at the service directly with a one-time ticket', () => { pm.expect(b.ws_url).to.match(/^wss?:\\/\\/.+\\/api\\/v1\\/ws\\?ticket=[0-9a-f]{32}$/); pm.expect(b.ws_url.split('/api/')[0]).to.not.include(':8080'); });",
+                  "pm.test('expires_at is about 30 s away', () => { const d = (new Date(b.expires_at) - Date.now()) / 1000; pm.expect(d).to.be.within(20, 31); });",
+                  "pm.collectionVariables.set('ws_url', b.ws_url);",
+                  "console.log('connect directly, once, within 30 s: ' + b.ws_url);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "ws-tickets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "The ticket is bound to this player and session, valid 30 s, usable once. Open the printed ws_url with a WebSocket client (for example `wscat -c \"<ws_url>\"`) and send {\"type\":\"message.send\",\"channel_id\":\"...\",\"content\":\"...\"}."
+          },
+          "response": []
+        },
+        {
+          "name": "a stranger gets no ticket: 403 NOT_IN_SESSION",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 403', () => pm.response.to.have.status(403));",
+                  "pm.test('NOT_IN_SESSION', () => pm.expect(pm.response.json().error.code).to.eql('NOT_IN_SESSION'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "ws-tickets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "a ticket without a session_id: 400 VALIDATION_ERROR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "ws-tickets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"not-a-uuid\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "no player identity: 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "ws-tickets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "4. Messages over REST",
       "item": [
         {
           "name": "Junior B writes in #faculty-check",
@@ -603,18 +809,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{junior_b_token}}"
+                "key": "X-Player-Id",
+                "value": "{{junior_b_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{faculty_channel_id}}/messages",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{faculty_channel_id}}",
                 "messages"
@@ -656,18 +863,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{junior_a_token}}"
+                "key": "X-Player-Id",
+                "value": "{{junior_a_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{faculty_channel_id}}/messages",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{faculty_channel_id}}",
                 "messages"
@@ -707,18 +915,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{junior_b_token}}"
+                "key": "X-Player-Id",
+                "value": "{{junior_b_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages/{{last_message_id}}",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{faculty_channel_id}}/messages/{{last_message_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{faculty_channel_id}}",
                 "messages",
@@ -760,18 +969,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages/{{last_message_id}}",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{faculty_channel_id}}/messages/{{last_message_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{faculty_channel_id}}",
                 "messages",
@@ -803,7 +1013,7 @@
           ]
         },
         {
-          "name": "empty content is refused",
+          "name": "empty content is malformed: 400 VALIDATION_ERROR",
           "request": {
             "method": "POST",
             "header": [
@@ -812,18 +1022,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{general_channel_id}}/messages",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{general_channel_id}}/messages",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{general_channel_id}}",
                 "messages"
@@ -846,7 +1057,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 422', () => pm.response.to.have.status(422));"
+                  "pm.test('status 400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
                 ]
               }
             }
@@ -862,18 +1074,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{general_channel_id}}/messages",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{general_channel_id}}/messages",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{general_channel_id}}",
                 "messages"
@@ -912,18 +1125,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages?limit=10",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{faculty_channel_id}}/messages?limit=10",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{faculty_channel_id}}",
                 "messages"
@@ -960,18 +1174,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{junior_a_token}}"
+                "key": "X-Player-Id",
+                "value": "{{junior_a_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{faculty_channel_id}}/messages",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{faculty_channel_id}}/messages",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{faculty_channel_id}}",
                 "messages"
@@ -994,10 +1209,10 @@
       ]
     },
     {
-      "name": "4. Session end",
+      "name": "5. Session end",
       "item": [
         {
-          "name": "replay session.ended",
+          "name": "session.ended arrives through POST /events",
           "request": {
             "method": "POST",
             "header": [
@@ -1011,16 +1226,15 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/events/session-ended",
+              "raw": "{{base_url}}/api/v1/discord-dms/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "dev",
-                "events",
-                "session-ended"
+                "discord-dms",
+                "events"
               ]
             },
             "description": "Archives the channels and closes every WebSocket of the session.",
@@ -1040,7 +1254,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 202', () => pm.response.to.have.status(202));"
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('applied', () => pm.expect(pm.response.json().duplicate).to.eql(false));"
                 ]
               }
             }
@@ -1056,18 +1271,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/channels",
+              "raw": "{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "sessions",
                 "{{session_id}}",
                 "channels"
@@ -1089,7 +1305,7 @@
           ]
         },
         {
-          "name": "writing is refused after the shift",
+          "name": "writing is refused after the shift: 409 SESSION_NOT_ACTIVE",
           "request": {
             "method": "POST",
             "header": [
@@ -1098,18 +1314,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{general_channel_id}}/messages",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{general_channel_id}}/messages",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{general_channel_id}}",
                 "messages"
@@ -1133,7 +1350,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status 409', () => pm.response.to.have.status(409));",
-                  "pm.test('CHANNEL_ARCHIVED', () => pm.expect(pm.response.json().error.code).to.eql('CHANNEL_ARCHIVED'));"
+                  "pm.test('SESSION_NOT_ACTIVE', () => pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_ACTIVE'));"
                 ]
               }
             }
@@ -1149,18 +1366,19 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{junior_a_token}}"
+                "key": "X-Player-Id",
+                "value": "{{junior_a_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/channels/{{general_channel_id}}/messages",
+              "raw": "{{base_url}}/api/v1/discord-dms/channels/{{general_channel_id}}/messages",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "channels",
                 "{{general_channel_id}}",
                 "messages"
@@ -1179,11 +1397,61 @@
               }
             }
           ]
+        },
+        {
+          "name": "no ticket after the shift: 409 SESSION_NOT_ACTIVE",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 409', () => pm.response.to.have.status(409));",
+                  "pm.test('SESSION_NOT_ACTIVE', () => pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_ACTIVE'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "ws-tickets"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": []
         }
       ]
     },
     {
-      "name": "5. Admin",
+      "name": "6. Admin",
       "item": [
         {
           "name": "DELETE /admin/messages/{id}",
@@ -1200,13 +1468,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/messages/{{last_message_id}}",
+              "raw": "{{base_url}}/api/v1/discord-dms/admin/messages/{{last_message_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "discord-dms",
                 "admin",
                 "messages",
                 "{{last_message_id}}"
@@ -1225,45 +1494,253 @@
               }
             }
           ]
-        },
+        }
+      ]
+    },
+    {
+      "name": "7. Task timeout and concurrent task limit",
+      "item": [
         {
-          "name": "admin without token is refused",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/admin/messages/{{last_message_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "messages",
-                "{{last_message_id}}"
-              ]
-            },
-            "description": ""
-          },
+          "name": "GET /dev/slow?ms=200 answers normally",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 403', () => pm.response.to.have.status(403));"
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('slept', () => pm.expect(pm.response.json().slept_ms).to.eql(200));"
                 ]
               }
             }
-          ]
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/dev/slow?ms=200",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "200"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /dev/slow?ms=7000 is stopped by the task timeout: 408 REQUEST_TIMEOUT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 408', () => pm.response.to.have.status(408));",
+                  "pm.test('REQUEST_TIMEOUT with the timeout in details', () => { const e = pm.response.json().error; pm.expect(e.code).to.eql('REQUEST_TIMEOUT'); pm.expect(e.details.timeout_ms).to.be.a('number'); });",
+                  "pm.test('answered at the service timeout (5 s), not after 7 s', () => pm.expect(pm.response.responseTime).to.be.below(6500));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/dev/slow?ms=7000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "7000"
+                }
+              ]
+            },
+            "description": "The Gateway allows 10 s, the service 5 s: the service gives up first and the Gateway passes its 408 through unchanged."
+          },
+          "response": []
+        },
+        {
+          "name": "the request above MAX_CONCURRENT_TASKS is refused at once: 429 TOO_MANY_REQUESTS",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fill every slot with slow tasks, then send the request above the limit and keep its answer for the tests.",
+                  "const n = Number(pm.variables.get('max_concurrent_tasks'));",
+                  "const slow = pm.variables.get('base_url') + '/api/v1/discord-dms/dev/slow?ms=3000';",
+                  "const headers = [{ key: 'X-Service-Token', value: pm.variables.get('service_token') }];",
+                  "pm.variables.set('overflow', '');",
+                  "for (let i = 0; i < n; i++) pm.sendRequest({ url: slow, method: 'GET', header: headers }, () => {});",
+                  "// A moment for the burst to reach the service, then the one request too many.",
+                  "setTimeout(() => {",
+                  "  const started = Date.now();",
+                  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/v1/discord-dms/dev/slow?ms=100', method: 'GET', header: headers }, (err, res) => {",
+                  "    let body = null; try { body = res.json(); } catch (e) {}",
+                  "    pm.variables.set('overflow', JSON.stringify({ error: err ? String(err) : null, status: res && res.code, retryAfter: res && res.headers.get('Retry-After'), body, ms: Date.now() - started }));",
+                  "  });",
+                  "}, 400);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const overflow = JSON.parse(pm.variables.get('overflow') || '{}');",
+                  "pm.test('the request above the limit got 429', () => { pm.expect(overflow.error, 'request error').to.eql(null); pm.expect(overflow.status).to.eql(429); });",
+                  "pm.test('TOO_MANY_REQUESTS with Retry-After', () => { pm.expect(overflow.body.error.code).to.eql('TOO_MANY_REQUESTS'); pm.expect(overflow.retryAfter).to.eql('1'); });",
+                  "pm.test('refused at once, no queueing', () => pm.expect(overflow.ms).to.be.below(1500));",
+                  "pm.test('liveness stays exempt while the service is full', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "health"
+              ]
+            },
+            "description": "The whole check runs from the scripts, because a script waits for its own pm.sendRequest calls before the request itself is sent: the pre-request fills every slot with slow tasks, sends one more shortly after and keeps its answer; the tests check that answer. The request of this item is only the liveness check, which stays exempt while the service is full."
+          },
+          "response": []
+        },
+        {
+          "name": "after the burst the service accepts work again",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/dev/slow?ms=50",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "50"
+                }
+              ]
+            }
+          },
+          "response": []
         }
       ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Through the Gateway a player is identified by a JWT (HS256, JWT_SECRET shared with Player Service),",
+          "// never by X-Player-Id: the Gateway checks the token, discards any client-sent X-Player-Id and sets",
+          "// its own from the token's sub. Rather than logging in through Player Service, this script signs",
+          "// the token itself: every request that names a player in X-Player-Id gets",
+          "// Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id header is dropped.",
+          "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
+          "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
+          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
+          "  const CryptoJS = require('crypto-js');",
+          "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
+          "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
+          "  const now = Math.floor(Date.now() / 1000);",
+          "  const sub = pm.variables.replaceIn(playerHeader.value);",
+          "  const unsigned = part({ alg: 'HS256', typ: 'JWT' }) + '.' + part({ sub: sub, iat: now, exp: now + 300 });",
+          "  const signature = b64url(CryptoJS.HmacSHA256(unsigned, pm.variables.get('jwt_secret')));",
+          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + unsigned + '.' + signature });",
+          "  pm.request.headers.remove('X-Player-Id');",
+          "}"
+        ]
+      }
     }
   ]
 }

@@ -3,20 +3,28 @@
     "name": "Moderation Service",
     "_postman_id": "9d2f7c1e-6a4b-4f3e-8b2d-1c5e7a9f0b34",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Team 16, Student ID, please. Runs the demo end to end against the mock upstreams: mint a Moderator token, point the mock session at each fixture applicant, submit decisions, read them back, search the ban list. Set base_url and service_token; DEV_ENDPOINTS=true is required on the service."
+    "description": "Moderation Service through the Gateway. Set base_url to the Gateway (http://localhost:8080) and service_token to the stack's SERVICE_TOKEN; every request carries the service prefix /api/v1/moderation. The scenarios use the built-in mocks (SESSION_URL, APPLICANT_URL, CREDENTIAL_URL, UNIVERSITY_RECORD_URL and RULES_URL empty, DEV_ENDPOINTS=true). Run the folders in order; the Setup folder resets the session so the run can be repeated."
   },
   "variable": [
     {
       "key": "base_url",
-      "value": "http://localhost:8085"
+      "value": "http://localhost:8080",
+      "description": "The Gateway. Every request below carries the service prefix /api/v1/moderation"
+    },
+    {
+      "key": "jwt_secret",
+      "value": "change_me_to_a_random_string_of_32_chars_or_more",
+      "description": "JWT_SECRET of the Gateway in the stack's .env; the pre-request script signs the player token with it"
     },
     {
       "key": "service_token",
-      "value": "change_me"
+      "value": "change_me_too",
+      "description": "The stack's SERVICE_TOKEN (.env of the team compose); the Gateway checks it on /admin/* and /dev/*"
     },
     {
-      "key": "moderator_token",
-      "value": ""
+      "key": "moderator_id",
+      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+      "description": "The Moderator of the mock session. Sent as X-Player-Id, the header the Gateway sets after validating the player's JWT"
     },
     {
       "key": "last_decision_id",
@@ -29,6 +37,11 @@
     {
       "key": "session_id",
       "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
+    },
+    {
+      "key": "max_concurrent_tasks",
+      "value": "64",
+      "description": "The service's MAX_CONCURRENT_TASKS; the 429 demo fires this many slow requests first"
     }
   ],
   "item": [
@@ -46,11 +59,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/health",
+              "raw": "{{base_url}}/api/v1/moderation/health",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
+                "v1",
+                "moderation",
                 "health"
               ]
             },
@@ -77,14 +93,22 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}",
+                "description": "Readiness is a service route at the Gateway (it reports dependency state)"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/health/ready",
+              "raw": "{{base_url}}/api/v1/moderation/health/ready",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "api",
+                "v1",
+                "moderation",
                 "health",
                 "ready"
               ]
@@ -110,53 +134,6 @@
       "name": "1. Setup (dev endpoints)",
       "item": [
         {
-          "name": "mint Moderator token",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/dev/tokens?player_id=8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "dev",
-                "tokens"
-              ],
-              "query": [
-                {
-                  "key": "player_id",
-                  "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.collectionVariables.set('moderator_token', pm.response.json().token);"
-                ]
-              }
-            }
-          ]
-        },
-        {
           "name": "list mock applicants",
           "request": {
             "method": "GET",
@@ -171,13 +148,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/applicants",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/applicants",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "applicants"
@@ -212,13 +190,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/sessions",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "sessions"
@@ -244,18 +223,20 @@
             "method": "GET",
             "header": [
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions?session_id={{session_id}}&limit=100",
+              "raw": "{{base_url}}/api/v1/moderation/decisions?session_id={{session_id}}&limit=100",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ],
               "query": [
@@ -280,14 +261,22 @@
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
                   "const base = pm.variables.get('base_url');",
                   "const svcHeaders = [{ key: 'X-Service-Token', value: pm.variables.get('service_token') }];",
-                  "const playerHeaders = [{ key: 'Authorization', value: 'Bearer ' + pm.variables.get('moderator_token') }];",
+                  "// GET /bans is a player route: the Gateway wants a JWT, not X-Player-Id. pm.sendRequest skips the",
+                  "// collection pre-request script, so the token is signed here the same way.",
+                  "const cryptoJs = require('crypto-js');",
+                  "const b64url = (words) => cryptoJs.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
+                  "const part = (obj) => b64url(cryptoJs.enc.Utf8.parse(JSON.stringify(obj)));",
+                  "const now = Math.floor(Date.now() / 1000);",
+                  "const unsigned = part({ alg: 'HS256', typ: 'JWT' }) + '.' + part({ sub: pm.variables.get('moderator_id'), iat: now, exp: now + 300 });",
+                  "const playerHeaders = [{ key: 'Authorization', value: 'Bearer ' + unsigned + '.' + b64url(cryptoJs.HmacSHA256(unsigned, pm.variables.get('jwt_secret'))) }];",
                   "const sid = pm.variables.get('session_id');",
                   "const items = pm.response.json().items || [];",
                   "console.log('reset: deleting ' + items.length + ' decision(s) of session ' + sid);",
-                  "items.forEach(d => pm.sendRequest({ url: base + '/api/v1/admin/decisions/' + d.decision_id, method: 'DELETE', header: svcHeaders }, (err, res) => console.log('delete decision', d.decision_id.slice(0, 8), err ? String(err) : res.code)));",
-                  "pm.sendRequest({ url: base + '/api/v1/bans?q=FAF23104&limit=100', method: 'GET', header: playerHeaders }, (err, res) => {",
+                  "items.forEach(d => pm.sendRequest({ url: base + '/api/v1/moderation/admin/decisions/' + d.decision_id, method: 'DELETE', header: svcHeaders }, (err, res) => console.log('delete decision', d.decision_id.slice(0, 8), err ? String(err) : res.code)));",
+                  "pm.sendRequest({ url: base + '/api/v1/moderation/bans?q=FAF23104&limit=100', method: 'GET', header: playerHeaders }, (err, res) => {",
                   "  if (err || !res) { console.log('ban lookup failed', String(err)); return; }",
-                  "  (res.json().items || []).filter(b => b.session_id === sid).forEach(b => pm.sendRequest({ url: base + '/api/v1/admin/bans/' + b.ban_id, method: 'DELETE', header: svcHeaders }, (e, r) => console.log('delete ban', b.ban_id.slice(0, 8), e ? String(e) : r.code)));",
+                  "  pm.test('ban lookup succeeded', () => pm.expect(res.code).to.eql(200));",
+                  "  (res.json().items || []).filter(b => b.session_id === sid).forEach(b => pm.sendRequest({ url: base + '/api/v1/moderation/admin/bans/' + b.ban_id, method: 'DELETE', header: svcHeaders }, (e, r) => console.log('delete ban', b.ban_id.slice(0, 8), e ? String(e) : r.code)));",
                   "});",
                   "pm.collectionVariables.set('last_decision_id', '');",
                   "pm.collectionVariables.set('ban_id', '');"
@@ -316,13 +305,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "sessions",
@@ -363,18 +353,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -417,18 +409,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -471,13 +465,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "sessions",
@@ -518,18 +513,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -577,13 +574,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "sessions",
@@ -624,18 +622,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -683,13 +683,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "sessions",
@@ -730,18 +731,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -789,13 +792,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "sessions",
@@ -836,18 +840,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -895,13 +901,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "sessions",
@@ -942,18 +949,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -1001,13 +1010,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "sessions",
@@ -1048,18 +1058,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -1107,13 +1119,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "dev",
                 "mock",
                 "sessions",
@@ -1154,18 +1167,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -1213,18 +1228,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -1253,7 +1270,7 @@
           ]
         },
         {
-          "name": "reject with granted_channels",
+          "name": "reject with granted_channels is malformed: 400 VALIDATION_ERROR",
           "request": {
             "method": "POST",
             "header": [
@@ -1262,18 +1279,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -1294,8 +1313,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 422', () => pm.response.to.have.status(422));",
-                  "pm.test('error code GRANTED_CHANNELS_NOT_ALLOWED', () => pm.expect(pm.response.json().error.code).to.eql('GRANTED_CHANNELS_NOT_ALLOWED'));"
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR naming granted_channels', () => { const e = pm.response.json().error; pm.expect(e.code).to.eql('VALIDATION_ERROR'); pm.expect(e.details.granted_channels).to.be.a('string'); });"
                 ]
               }
             }
@@ -1311,18 +1330,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -1351,7 +1372,7 @@
           ]
         },
         {
-          "name": "no player token",
+          "name": "no player identity: neither the Gateway nor the caller identified a player",
           "request": {
             "method": "POST",
             "header": [
@@ -1361,13 +1382,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -1405,18 +1427,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions",
+              "raw": "{{base_url}}/api/v1/moderation/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ]
             },
@@ -1459,18 +1483,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions?session_id=3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e&limit=20",
+              "raw": "{{base_url}}/api/v1/moderation/decisions?session_id=3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e&limit=20",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions"
               ],
               "query": [
@@ -1509,18 +1535,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/decisions/{{last_decision_id}}",
+              "raw": "{{base_url}}/api/v1/moderation/decisions/{{last_decision_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "decisions",
                 "{{last_decision_id}}"
               ]
@@ -1555,13 +1583,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/decisions/{{last_decision_id}}",
+              "raw": "{{base_url}}/api/v1/moderation/admin/decisions/{{last_decision_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "admin",
                 "decisions",
                 "{{last_decision_id}}"
@@ -1592,18 +1621,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/bans?q=lungu",
+              "raw": "{{base_url}}/api/v1/moderation/bans?q=lungu",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "bans"
               ],
               "query": [
@@ -1638,18 +1669,20 @@
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{moderator_token}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/bans?q=FAF23104",
+              "raw": "{{base_url}}/api/v1/moderation/bans?q=FAF23104",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "bans"
               ],
               "query": [
@@ -1674,7 +1707,7 @@
           ]
         },
         {
-          "name": "GET /admin/events (outbox, oldest first)",
+          "name": "GET /admin/events (outbox with the delivery state per consumer, oldest first)",
           "request": {
             "method": "GET",
             "header": [
@@ -1688,13 +1721,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/events?limit=10",
+              "raw": "{{base_url}}/api/v1/moderation/admin/events?limit=10",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "admin",
                 "events"
               ],
@@ -1705,7 +1739,7 @@
                 }
               ]
             },
-            "description": "Every decision.recorded event with its envelope. Hand a row to Server Moderation Session Service's POST /api/v1/dev/events/decision-recorded until the team broker exists."
+            "description": "Every decision.recorded event with its envelope and the delivery state per consumer: the relay pushes it to Server Moderation Session Service's POST /api/v1/events through the Gateway (2xx = delivered, 422 = parked, anything else retried with backoff)."
           },
           "event": [
             {
@@ -1715,11 +1749,167 @@
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
                   "pm.test('events listed', () => pm.expect(pm.response.json().total).to.be.at.least(1));",
-                  "pm.test('routing key', () => pm.expect(pm.response.json().items[0].routing_key).to.eql('decision.recorded'));"
+                  "const e = pm.response.json().items[0];",
+                  "pm.test('event type', () => pm.expect(e.event_type).to.eql('decision.recorded'));",
+                  "pm.test('envelope', () => { pm.expect(e.event.producer).to.eql('moderation-service'); pm.expect(e.event.version).to.eql(1); pm.expect(e.event.payload.decision_id).to.be.a('string'); });",
+                  "pm.test('one delivery per consumer, addressed to session', () => { pm.expect(e.deliveries).to.have.lengthOf(1); pm.expect(e.deliveries[0].consumer).to.eql('session'); pm.expect(['pending', 'delivered']).to.include(e.deliveries[0].status); });"
                 ]
               }
             }
           ]
+        },
+        {
+          "name": "GET /dev/mock/events (the relay delivered decision.recorded to the mock Session)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The relay pushes the outbox every RELAY_INTERVAL (1 s by default); give it a moment.",
+                  "setTimeout(() => {}, 1500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('the mock Session accepted the events of this run', () => pm.expect(body.total).to.be.at.least(1));",
+                  "pm.test('they are decision.recorded envelopes', () => pm.expect(body.items[0].event_type).to.eql('decision.recorded'));",
+                  "pm.test('the last one is the first-year decision', () => pm.expect(body.items[body.items.length - 1].payload.decision_id).to.eql(pm.variables.get('last_decision_id')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "moderation",
+                "dev",
+                "mock",
+                "events"
+              ]
+            },
+            "description": "Only meaningful while SESSION_URL is empty (mock Session). With the real Session, check its own session object instead."
+          },
+          "response": []
+        },
+        {
+          "name": "GET /dev/mock/sessions (the relayed event marked the current applicant as decided)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const s = pm.response.json().items.find(x => x.session_id === pm.variables.get('session_id'));",
+                  "pm.test('current applicant decided', () => pm.expect(s.current_applicant_decided).to.eql(true));",
+                  "pm.test('applications counted', () => pm.expect(s.applications_processed).to.be.at.least(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "moderation",
+                "dev",
+                "mock",
+                "sessions"
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /admin/events again: the delivery to session is now delivered",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json().items;",
+                  "const mine = items.find(e => e.event.payload.decision_id === pm.variables.get('last_decision_id'));",
+                  "pm.test('delivered to session', () => { pm.expect(mine.deliveries[0].status).to.eql('delivered'); pm.expect(mine.deliveries[0].last_status).to.eql(200); });",
+                  "pm.test('published once every consumer accepted it', () => pm.expect(mine.published_at).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/moderation/admin/events?limit=100",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "moderation",
+                "admin",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "100"
+                }
+              ]
+            }
+          },
+          "response": []
         }
       ]
     },
@@ -1741,13 +1931,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/bans",
+              "raw": "{{base_url}}/api/v1/moderation/admin/bans",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "admin",
                 "bans"
               ]
@@ -1791,13 +1982,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/bans/{{ban_id}}",
+              "raw": "{{base_url}}/api/v1/moderation/admin/bans/{{ban_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "admin",
                 "bans",
                 "{{ban_id}}"
@@ -1843,13 +2035,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/bans/{{ban_id}}",
+              "raw": "{{base_url}}/api/v1/moderation/admin/bans/{{ban_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "admin",
                 "bans",
                 "{{ban_id}}"
@@ -1870,51 +2063,6 @@
           ]
         },
         {
-          "name": "admin without token is refused",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/admin/bans",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "admin",
-                "bans"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"name\": \"x\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('403', () => pm.response.to.have.status(403));"
-                ]
-              }
-            }
-          ]
-        },
-        {
           "name": "DELETE /admin/decisions/{id} (reset for a re-run)",
           "request": {
             "method": "DELETE",
@@ -1929,13 +2077,14 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/admin/decisions/{{last_decision_id}}",
+              "raw": "{{base_url}}/api/v1/moderation/admin/decisions/{{last_decision_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
+                "moderation",
                 "admin",
                 "decisions",
                 "{{last_decision_id}}"
@@ -1956,6 +2105,251 @@
           ]
         }
       ]
+    },
+    {
+      "name": "6. Task timeout and concurrent task limit",
+      "item": [
+        {
+          "name": "GET /dev/slow?ms=200 answers normally",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test('slept', () => pm.expect(pm.response.json().slept_ms).to.eql(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/moderation/dev/slow?ms=200",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "moderation",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "200"
+                }
+              ]
+            }
+          },
+          "response": []
+        },
+        {
+          "name": "GET /dev/slow?ms=7000 is stopped by the task timeout: 408 REQUEST_TIMEOUT",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 408', () => pm.response.to.have.status(408));",
+                  "pm.test('REQUEST_TIMEOUT with the timeout in details', () => { const e = pm.response.json().error; pm.expect(e.code).to.eql('REQUEST_TIMEOUT'); pm.expect(e.details.timeout_ms).to.be.a('number'); });",
+                  "pm.test('answered at the service timeout (5 s), not after 7 s', () => pm.expect(pm.response.responseTime).to.be.below(6500));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/moderation/dev/slow?ms=7000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "moderation",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "7000"
+                }
+              ]
+            },
+            "description": "The Gateway allows 10 s, the service 5 s: the service gives up first and the Gateway passes its 408 through unchanged."
+          },
+          "response": []
+        },
+        {
+          "name": "the request above MAX_CONCURRENT_TASKS is refused at once: 429 TOO_MANY_REQUESTS",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fill every slot with slow tasks, then send the request above the limit and keep its answer for the tests.",
+                  "const n = Number(pm.variables.get('max_concurrent_tasks'));",
+                  "const slow = pm.variables.get('base_url') + '/api/v1/moderation/dev/slow?ms=3000';",
+                  "const headers = [{ key: 'X-Service-Token', value: pm.variables.get('service_token') }];",
+                  "pm.variables.set('overflow', '');",
+                  "for (let i = 0; i < n; i++) pm.sendRequest({ url: slow, method: 'GET', header: headers }, () => {});",
+                  "// A moment for the burst to reach the service, then the one request too many.",
+                  "setTimeout(() => {",
+                  "  const started = Date.now();",
+                  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/v1/moderation/dev/slow?ms=100', method: 'GET', header: headers }, (err, res) => {",
+                  "    let body = null; try { body = res.json(); } catch (e) {}",
+                  "    pm.variables.set('overflow', JSON.stringify({ error: err ? String(err) : null, status: res && res.code, retryAfter: res && res.headers.get('Retry-After'), body, ms: Date.now() - started }));",
+                  "  });",
+                  "}, 400);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const overflow = JSON.parse(pm.variables.get('overflow') || '{}');",
+                  "pm.test('the request above the limit got 429', () => { pm.expect(overflow.error, 'request error').to.eql(null); pm.expect(overflow.status).to.eql(429); });",
+                  "pm.test('TOO_MANY_REQUESTS with Retry-After', () => { pm.expect(overflow.body.error.code).to.eql('TOO_MANY_REQUESTS'); pm.expect(overflow.retryAfter).to.eql('1'); });",
+                  "pm.test('refused at once, no queueing', () => pm.expect(overflow.ms).to.be.below(1500));",
+                  "pm.test('liveness stays exempt while the service is full', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/moderation/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "moderation",
+                "health"
+              ]
+            },
+            "description": "The whole check runs from the scripts, because a script waits for its own pm.sendRequest calls before the request itself is sent: the pre-request fills every slot with slow tasks, sends one more shortly after and keeps its answer; the tests check that answer. The request of this item is only the liveness check, which stays exempt while the service is full."
+          },
+          "response": []
+        },
+        {
+          "name": "after the burst the service accepts work again",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "setTimeout(() => {}, 3500);"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/moderation/dev/slow?ms=50",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "moderation",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "50"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Through the Gateway a player is identified by a JWT (HS256, JWT_SECRET shared with Player Service),",
+          "// never by X-Player-Id: the Gateway checks the token, discards any client-sent X-Player-Id and sets",
+          "// its own from the token's sub. Rather than logging in through Player Service, this script signs",
+          "// the token itself: every request that names a player in X-Player-Id gets",
+          "// Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id header is dropped.",
+          "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
+          "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
+          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
+          "  const CryptoJS = require('crypto-js');",
+          "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
+          "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
+          "  const now = Math.floor(Date.now() / 1000);",
+          "  const sub = pm.variables.replaceIn(playerHeader.value);",
+          "  const unsigned = part({ alg: 'HS256', typ: 'JWT' }) + '.' + part({ sub: sub, iat: now, exp: now + 300 });",
+          "  const signature = b64url(CryptoJS.HmacSHA256(unsigned, pm.variables.get('jwt_secret')));",
+          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + unsigned + '.' + signature });",
+          "  pm.request.headers.remove('X-Player-Id');",
+          "}"
+        ]
+      }
     }
   ]
 }

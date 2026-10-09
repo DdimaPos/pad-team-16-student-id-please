@@ -1,34 +1,34 @@
 {
   "info": {
     "name": "Server Moderation Session Service",
-    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> sessions (contract) -> dev - decision.recorded -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> cleanup.\n\nRequests that act for a player send `Authorization: Bearer <jwt>` - an unsigned, JWT-shaped token carrying the player id as its `sub` claim, which is what University Record Service also accepts. The collection's pre-request script mints them, so there is nothing to set up. `X-Player-Id` still works as a fallback; see the 'caller identity' folder.\n\nSet `base_url` if the service is not on http://localhost:8088. The player ids are pre-filled with the ones Player Service seeds, so they resolve whether this service is pointed at the real Player Service or using its built-in stub.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
+    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`. Service-only routes (POST /events, /dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env.\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
-      "value": "http://localhost:8088",
-      "description": "Container port 8080, mapped to host 8088 by the team convention."
+      "value": "http://localhost:8080/api/v1",
+      "description": "The Gateway. Session routes are under /session, login under /player."
+    },
+    {
+      "key": "service_token",
+      "value": "change_me_too",
+      "description": "SERVICE_TOKEN from the CPR .env, for the service-only routes (/events, /dev/*, /health/ready)."
     },
     {
       "key": "moderator_id",
-      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
-      "description": "dima_mod, level 4. Seeded by Player Service and known to the stub."
+      "value": "",
+      "description": "Captured when the 'auth' folder registers the moderator (level 1)."
     },
     {
       "key": "junior_a_id",
-      "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
-      "description": "maxim_jr, level 2."
+      "value": "",
+      "description": "Captured when the 'auth' folder registers the first junior (level 1)."
     },
     {
       "key": "junior_b_id",
-      "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
-      "description": "vlad_jr, level 3. Levels 4, 2 and 3 average 3 - the contract's own example difficulty."
-    },
-    {
-      "key": "unknown_player_id",
-      "value": "00000000-0000-4000-8000-000000000000",
-      "description": "A valid UUID that no player has, for the PLAYER_NOT_FOUND case."
+      "value": "",
+      "description": "Captured when the 'auth' folder registers the second junior (level 1)."
     },
     {
       "key": "absent_session_id",
@@ -47,13 +47,13 @@
     },
     {
       "key": "decision_id",
-      "value": "e4f5a6b7-c8d9-4e0f-a1b2-c3d4e5f6a7b8",
-      "description": "Fixed so the replay request re-sends the same decision."
+      "value": "",
+      "description": "Regenerated before the first decision of every run, so the replay request re-sends the same decision."
     },
     {
       "key": "replay_event_id",
-      "value": "4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23",
-      "description": "Unused on its own - the replay request reuses the first event's id instead. Kept for a manual replay."
+      "value": "",
+      "description": "Regenerated before the first decision of every run; the replay request re-sends this event id."
     },
     {
       "key": "session_id",
@@ -77,8 +77,8 @@
     },
     {
       "key": "solo_player_id",
-      "value": "d4f6b8ca-3e5a-4c7d-9f1b-2a4c6e8fab32",
-      "description": "rookie_one, level 1. Kept out of the main flow so it can hold a one-player lobby for the NOT_ENOUGH_PLAYERS case."
+      "value": "",
+      "description": "Captured when the 'auth' folder registers the solo player, who opens a lobby alone."
     },
     {
       "key": "solo_session_id",
@@ -106,9 +106,29 @@
       "description": "Minted from solo_player_id."
     },
     {
-      "key": "jwt_unknown",
+      "key": "moderator_username",
       "value": "",
-      "description": "Minted from unknown_player_id."
+      "description": "Generated per run by the 'auth' folder."
+    },
+    {
+      "key": "junior_a_username",
+      "value": "",
+      "description": "Generated per run by the 'auth' folder."
+    },
+    {
+      "key": "junior_b_username",
+      "value": "",
+      "description": "Generated per run by the 'auth' folder."
+    },
+    {
+      "key": "solo_username",
+      "value": "",
+      "description": "Generated per run by the 'auth' folder."
+    },
+    {
+      "key": "player_password",
+      "value": "session-test-password",
+      "description": "Password of the players the 'auth' folder registers."
     }
   ],
   "item": [
@@ -122,11 +142,12 @@
             "method": "GET",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/health",
+              "raw": "{{base_url}}/session/health",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "session",
                 "health"
               ]
             },
@@ -150,13 +171,19 @@
           "name": "GET /health/ready -> 200",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/health/ready",
+              "raw": "{{base_url}}/session/health/ready",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
+                "session",
                 "health",
                 "ready"
               ]
@@ -186,96 +213,382 @@
       ]
     },
     {
+      "name": "auth - run first (registers four fresh players through Player Service, stores their ids and tokens)",
+      "item": [
+        {
+          "name": "POST /player/players -> 201 (registers the moderator, stores moderator_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{moderator_username}}\",\n  \"email\": \"{{moderator_username}}@example.test\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new username every run, so the collection never collides with an earlier run.",
+                  "pm.collectionVariables.set('moderator_username', 'sess_mod_' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('moderator_id', b.player_id);",
+                  "pm.test('a new player starts at level 1', () => pm.expect(b.level).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/auth/login as the moderator -> 200 (stores jwt_moderator)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{moderator_username}}\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('jwt_moderator', pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/players -> 201 (registers the first junior, stores junior_a_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{junior_a_username}}\",\n  \"email\": \"{{junior_a_username}}@example.test\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new username every run, so the collection never collides with an earlier run.",
+                  "pm.collectionVariables.set('junior_a_username', 'sess_jra_' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('junior_a_id', b.player_id);",
+                  "pm.test('a new player starts at level 1', () => pm.expect(b.level).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/auth/login as the first junior -> 200 (stores jwt_junior_a)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{junior_a_username}}\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('jwt_junior_a', pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/players -> 201 (registers the second junior, stores junior_b_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{junior_b_username}}\",\n  \"email\": \"{{junior_b_username}}@example.test\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new username every run, so the collection never collides with an earlier run.",
+                  "pm.collectionVariables.set('junior_b_username', 'sess_jrb_' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('junior_b_id', b.player_id);",
+                  "pm.test('a new player starts at level 1', () => pm.expect(b.level).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/auth/login as the second junior -> 200 (stores jwt_junior_b)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{junior_b_username}}\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('jwt_junior_b', pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/players -> 201 (registers the solo player, stores solo_player_id)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{solo_username}}\",\n  \"email\": \"{{solo_username}}@example.test\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A new username every run, so the collection never collides with an earlier run.",
+                  "pm.collectionVariables.set('solo_username', 'sess_solo_' + Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('201', () => pm.response.to.have.status(201));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set('solo_player_id', b.player_id);",
+                  "pm.test('a new player starts at level 1', () => pm.expect(b.level).to.eql(1));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /player/auth/login as the solo player -> 200 (stores jwt_solo)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/auth/login",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "auth",
+                "login"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{solo_username}}\",\n  \"password\": \"{{player_password}}\"\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set('jwt_solo', pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "caller identity",
       "description": "Proves how this service decides which player a request acts for, without creating anything: each request either fails authentication outright, or gets past it to a Player Service lookup that 404s. Safe to run at any point.\n\nThe primary mechanism is `Authorization: Bearer <jwt>` with the player id in the `sub` claim, unverified - matching University Record Service. `X-Player-Id` is kept as a fallback because a bare UUID is easier to type into curl than a JWT.",
       "item": [
         {
-          "name": "Bearer token for an unknown player -> 404 PLAYER_NOT_FOUND",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{jwt_unknown}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "sessions"
-              ]
-            },
-            "description": "A 404 rather than a 401 is the proof: the token was read and its `sub` claim was taken as the caller, then Player Service was asked about that player and did not know them."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('404 - the token was read', () => pm.response.to.have.status(404));",
-                  "pm.test('PLAYER_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('PLAYER_NOT_FOUND'));"
-                ]
-              }
-            }
-          ],
-          "response": []
-        },
-        {
-          "name": "X-Player-Id fallback for an unknown player -> 404 PLAYER_NOT_FOUND",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "X-Player-Id",
-                "value": "{{unknown_player_id}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "sessions"
-              ]
-            },
-            "description": "The same proof for the fallback header."
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('404 - the fallback header was read', () => pm.response.to.have.status(404));",
-                  "pm.test('PLAYER_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('PLAYER_NOT_FOUND'));"
-                ]
-              }
-            }
-          ],
-          "response": []
-        },
-        {
-          "name": "no identity at all -> 401 MISSING_PLAYER_IDENTITY",
+          "name": "no token at all -> 401 UNAUTHENTICATED (Gateway)",
           "request": {
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
+              "raw": "{{base_url}}/session/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ]
             },
@@ -288,7 +601,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('401', () => pm.response.to.have.status(401));",
-                  "pm.test('MISSING_PLAYER_IDENTITY', () => pm.expect(pm.response.json().error.code).to.eql('MISSING_PLAYER_IDENTITY'));"
+                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
                 ]
               }
             }
@@ -296,7 +609,7 @@
           "response": []
         },
         {
-          "name": "a token that is not JWT-shaped -> 401",
+          "name": "a token that is not a JWT -> 401 UNAUTHENTICATED (Gateway)",
           "request": {
             "method": "POST",
             "header": [
@@ -306,13 +619,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
+              "raw": "{{base_url}}/session/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ]
             },
@@ -325,7 +637,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('401', () => pm.response.to.have.status(401));",
-                  "pm.test('MISSING_PLAYER_IDENTITY', () => pm.expect(pm.response.json().error.code).to.eql('MISSING_PLAYER_IDENTITY'));"
+                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
                 ]
               }
             }
@@ -333,7 +645,7 @@
           "response": []
         },
         {
-          "name": "the wrong scheme -> 401",
+          "name": "the wrong scheme -> 401 UNAUTHENTICATED (Gateway)",
           "request": {
             "method": "POST",
             "header": [
@@ -343,13 +655,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
+              "raw": "{{base_url}}/session/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ]
             },
@@ -361,7 +672,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401', () => pm.response.to.have.status(401));"
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
                 ]
               }
             }
@@ -385,13 +697,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
+              "raw": "{{base_url}}/session/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ]
             },
@@ -441,13 +752,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/players",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/players",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}",
                 "players"
@@ -480,13 +790,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/players",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/players",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}",
                 "players"
@@ -523,13 +832,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/start",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/start",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}",
                 "start"
@@ -557,8 +865,8 @@
                   "const b = pm.response.json();",
                   "pm.test('active', () => pm.expect(b.status).to.eql('active'));",
                   "// difficulty is the mean level rounded and clamped to 1-5.",
-                  "// The seeded players are level 4, 2 and 3, so: 3 - the contract's own example.",
-                  "pm.test('difficulty is the rounded mean level', () => pm.expect(b.difficulty).to.eql(3));",
+                  "// The registered players are all level 1, so: 1. The contract's own example (3) is checked on the seeded session, in 'sessions (beyond contract)'.",
+                  "pm.test('difficulty is the rounded mean level', () => pm.expect(b.difficulty).to.eql(1));",
                   "pm.test('a ruleset version was stored', () => pm.expect(b.ruleset_version).to.be.a('number'));",
                   "pm.test('the Moderator is the one that was named', () =>",
                   "  pm.expect(b.moderator_id).to.eql(pm.collectionVariables.get('moderator_id')));",
@@ -586,13 +894,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/applicants/next",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/applicants/next",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}",
                 "applicants",
@@ -626,15 +933,19 @@
           "name": "6. GET /sessions/{id} -> 200 (what Moderation Service reads)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}"
               ]
@@ -674,13 +985,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/applicants/next",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/applicants/next",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}",
                 "applicants",
@@ -707,8 +1017,8 @@
       ]
     },
     {
-      "name": "dev - decision.recorded (mocks Moderation Service)",
-      "description": "Moderation Service has not been written, and the team is writing its own message broker to replace RabbitMQ, so nothing delivers decision.recorded. This endpoint accepts the exact envelope a broker would carry and runs it through the same handler a broker client will call. It is mounted only when ENABLE_DEV_ENDPOINTS is true, and it moves a session's score with no credential - so it is off outside a demo.",
+      "name": "events - decision.recorded, as Moderation Service pushes it (contract)",
+      "description": "Until POST /api/v1/events exists, nothing delivers decision.recorded from Moderation Service. This endpoint accepts the exact envelope Moderation's relay will push and runs it through the same handler POST /api/v1/events will call. It is mounted only when ENABLE_DEV_ENDPOINTS is true, and it moves a session's score with no credential - so it is off outside a demo.",
       "item": [
         {
           "name": "1. POST a correct decision -> 200",
@@ -718,19 +1028,20 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "raw": "{{base_url}}/session/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
-                "dev",
-                "events",
-                "decision-recorded"
+                "session",
+                "events"
               ]
             },
             "description": "A correct decision adds SCORE_PER_CORRECT * difficulty to the score, increments applications_processed, and marks the current applicant decided so the Moderator may ask for the next one.",
@@ -747,6 +1058,18 @@
           "response": [],
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Fresh ids every run: request 2 replays this exact event, and a fixed id would already be",
+                  "// recorded by an earlier run against the same database.",
+                  "pm.collectionVariables.set('replay_event_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('decision_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -754,8 +1077,7 @@
                   "pm.test('200', () => pm.response.to.have.status(200));",
                   "const b = pm.response.json();",
                   "pm.test('applied, not a duplicate', () => pm.expect(b.duplicate).to.eql(false));",
-                  "// 10 per correct call, times the difficulty of 3.",
-                  "pm.test('score_delta is 10 x difficulty', () => pm.expect(b.score_delta).to.eql(30));"
+                  "pm.test('the contract answer', () => pm.expect(Object.keys(b).sort()).to.eql(['duplicate','event_id']));"
                 ]
               }
             }
@@ -769,19 +1091,20 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "raw": "{{base_url}}/session/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
-                "dev",
-                "events",
-                "decision-recorded"
+                "session",
+                "events"
               ]
             },
             "description": "The contract requires every consumer to dedupe by event_id, because an event may be delivered more than once. A replay is a success, not an error - and the 'duplicate' flag is how a caller can see the deduplication fire. Run request 1 and this one, then check the session: the counters must have moved once.",
@@ -804,11 +1127,7 @@
                 "exec": [
                   "pm.test('200 - a replay is a success', () => pm.response.to.have.status(200));",
                   "pm.test('reported as a duplicate', () =>",
-                  "  pm.expect(pm.response.json().duplicate).to.eql(true));",
-                  "pm.test('nothing moved', () => {",
-                  "  pm.expect(pm.response.json().score_delta).to.eql(0);",
-                  "  pm.expect(pm.response.json().penalty_delta).to.eql(0);",
-                  "});"
+                  "  pm.expect(pm.response.json().duplicate).to.eql(true));"
                 ]
               }
             }
@@ -818,15 +1137,19 @@
           "name": "3. GET /sessions/{id} -> 200 (the replay counted once)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}"
               ]
@@ -844,7 +1167,8 @@
                   "const b = pm.response.json();",
                   "pm.test('exactly one application was processed', () =>",
                   "  pm.expect(b.applications_processed).to.eql(1));",
-                  "pm.test('the score moved once', () => pm.expect(b.score).to.eql(30));",
+                  "// ScorePerCorrect (10) times the shift's difficulty (1).",
+                  "pm.test('the score moved once', () => pm.expect(b.score).to.eql(10));",
                   "pm.test('the applicant is now decided', () =>",
                   "  pm.expect(b.current_applicant_decided).to.eql(true));"
                 ]
@@ -860,19 +1184,20 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "raw": "{{base_url}}/session/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
-                "dev",
-                "events",
-                "decision-recorded"
+                "session",
+                "events"
               ]
             },
             "description": "An incorrect decision earns nothing; the cost arrives separately, as the penalty the event carries.",
@@ -895,34 +1220,34 @@
                 "exec": [
                   "pm.test('200', () => pm.response.to.have.status(200));",
                   "const b = pm.response.json();",
-                  "pm.test('no award for a wrong call', () => pm.expect(b.score_delta).to.eql(0));",
-                  "pm.test('the penalty is applied', () => pm.expect(b.penalty_delta).to.eql(20));"
+                  "pm.test('applied, not a duplicate', () => pm.expect(b.duplicate).to.eql(false));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "5. POST with the wrong event_type -> 422 VALIDATION_ERROR",
+          "name": "5. POST with the wrong event_type -> 422 INVALID_EVENT",
           "request": {
             "method": "POST",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "raw": "{{base_url}}/session/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
-                "dev",
-                "events",
-                "decision-recorded"
+                "session",
+                "events"
               ]
             },
             "description": "",
@@ -944,34 +1269,35 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('422', () => pm.response.to.have.status(422));",
-                  "pm.test('VALIDATION_ERROR', () =>",
-                  "  pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                  "pm.test('INVALID_EVENT', () =>",
+                  "  pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "6. POST for an unknown session -> 404 SESSION_NOT_FOUND",
+          "name": "6. POST for an unknown session -> 422 INVALID_EVENT",
           "request": {
             "method": "POST",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/dev/events/decision-recorded",
+              "raw": "{{base_url}}/session/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
-                "dev",
-                "events",
-                "decision-recorded"
+                "session",
+                "events"
               ]
             },
             "description": "",
@@ -992,9 +1318,93 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('404', () => pm.response.to.have.status(404));",
-                  "pm.test('SESSION_NOT_FOUND', () =>",
-                  "  pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_FOUND'));"
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('INVALID_EVENT', () =>",
+                  "  pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "7. POST an unknown envelope version -> 422 INVALID_EVENT",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/session/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "events"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 2,\n  \"payload\": {\n    \"decision_id\": \"{{$guid}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"expected_action\": \"accept\",\n    \"violated_rules\": [],\n    \"penalty\": 0\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('INVALID_EVENT', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "8. POST with a player token -> 403 SERVICE_TOKEN_REQUIRED (Gateway)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/session/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "events"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{decision_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"expected_action\": \"accept\",\n    \"violated_rules\": [],\n    \"penalty\": 0\n  }\n}"
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
                 ]
               }
             }
@@ -1004,7 +1414,7 @@
     },
     {
       "name": "ending the shift and the outbox",
-      "description": "Ending the shift freezes the per-player result and writes session.ended. There is no broker yet, so the event goes to an outbox table in the same transaction as the state change - and the events endpoint is how you prove that what this service would publish is what Player Service expects to consume.",
+      "description": "Ending the shift freezes the per-player result and writes session.ended. The event goes to an outbox table in the same transaction as the state change, and is relayed from there to the consumers' POST /api/v1/events - the events endpoint is how you prove that what this service produces is what Player Service expects to receive.",
       "item": [
         {
           "name": "1. POST /sessions/{id}/end -> 200",
@@ -1017,13 +1427,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/end",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/end",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}",
                 "end"
@@ -1062,21 +1471,25 @@
           "name": "2. GET /sessions/{id}/events -> 200 (the outbox)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/events",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}",
                 "events"
               ]
             },
-            "description": "BEYOND CONTRACT. The envelopes this service published for the session, oldest first - the order they happened in, and the order a broker would replay them in. A row from here can be posted to Player Service's own dev endpoint unchanged."
+            "description": "BEYOND CONTRACT. The envelopes this service published for the session, oldest first - the order they happened in, and the order the relay sends them in. A row from here can be posted to Player Service's own dev endpoint unchanged."
           },
           "response": [],
           "event": [
@@ -1106,8 +1519,7 @@
                   "    .forEach(k => pm.expect(ended.payload).to.have.property(k));",
                   "});",
                   "pm.test('the score matches the response', () =>",
-                  "  pm.expect(ended.payload.score).to.eql(pm.collectionVariables.get('ended_score')));",
-                  "console.log('Post this to Player Service:', JSON.stringify(ended));"
+                  "  pm.expect(ended.payload.score).to.eql(pm.collectionVariables.get('ended_score')));"
                 ]
               }
             }
@@ -1117,15 +1529,19 @@
           "name": "3. GET /sessions/{id}/decisions -> 200",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/decisions",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/decisions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}",
                 "decisions"
@@ -1153,6 +1569,46 @@
           ]
         },
         {
+          "name": "3a. GET /sessions/{id}/deliveries -> 200 (one per consumer and event)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/deliveries",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "sessions",
+                "{{session_id}}",
+                "deliveries"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json().items;",
+                  "// session.started: university-record, discord-dms; session.ended: player, discord-dms, university-record.",
+                  "pm.test('five deliveries', () => pm.expect(items.length).to.eql(5));",
+                  "pm.test('each is pending, delivered or parked', () => items.forEach(d =>",
+                  "  pm.expect(['pending','delivered','parked']).to.include(d.status)));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "4. POST /sessions/{id}/end again -> 409 SESSION_NOT_ACTIVE",
           "request": {
             "method": "POST",
@@ -1163,13 +1619,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}/end",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}/end",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}",
                 "end"
@@ -1209,13 +1664,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
+              "raw": "{{base_url}}/session/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ]
             },
@@ -1246,13 +1700,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}/players",
+              "raw": "{{base_url}}/session/sessions/{{lobby_session_id}}/players",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{lobby_session_id}}",
                 "players"
@@ -1284,13 +1737,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
+              "raw": "{{base_url}}/session/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ]
             },
@@ -1320,15 +1772,19 @@
           "name": "GET /sessions/{unknown} -> 404 SESSION_NOT_FOUND",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{absent_session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{absent_session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{absent_session_id}}"
               ]
@@ -1352,18 +1808,22 @@
           ]
         },
         {
-          "name": "GET /sessions/not-a-uuid -> 400 INVALID_SESSION_ID",
+          "name": "GET /sessions/not-a-uuid -> 400 VALIDATION_ERROR",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/not-a-uuid",
+              "raw": "{{base_url}}/session/sessions/not-a-uuid",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "not-a-uuid"
               ]
@@ -1378,25 +1838,24 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('400', () => pm.response.to.have.status(400));",
-                  "pm.test('INVALID_SESSION_ID', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SESSION_ID'));"
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "POST /sessions with no identity -> 401 MISSING_PLAYER_IDENTITY",
+          "name": "POST /sessions with no token -> 401 UNAUTHENTICATED (Gateway)",
           "request": {
             "method": "POST",
             "header": [],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
+              "raw": "{{base_url}}/session/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ]
             },
@@ -1410,44 +1869,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('401', () => pm.response.to.have.status(401));",
-                  "pm.test('MISSING_PLAYER_IDENTITY', () => pm.expect(pm.response.json().error.code).to.eql('MISSING_PLAYER_IDENTITY'));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "POST /sessions as an unknown player -> 404 PLAYER_NOT_FOUND",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{jwt_unknown}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "sessions"
-              ]
-            },
-            "description": "Session calls Player Service first. The 404 is propagated verbatim as this service's own PLAYER_NOT_FOUND."
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('404', () => pm.response.to.have.status(404));",
-                  "pm.test('PLAYER_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('PLAYER_NOT_FOUND'));"
+                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
                 ]
               }
             }
@@ -1464,13 +1886,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
+              "raw": "{{base_url}}/session/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ]
             },
@@ -1505,13 +1926,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}/start",
+              "raw": "{{base_url}}/session/sessions/{{lobby_session_id}}/start",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{lobby_session_id}}",
                 "start"
@@ -1557,13 +1977,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{solo_session_id}}/start",
+              "raw": "{{base_url}}/session/sessions/{{solo_session_id}}/start",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{solo_session_id}}",
                 "start"
@@ -1595,18 +2014,22 @@
           ]
         },
         {
-          "name": "GET /sessions?status=paused -> 422 VALIDATION_ERROR",
+          "name": "GET /sessions?status=paused -> 400 VALIDATION_ERROR",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions?status=paused",
+              "raw": "{{base_url}}/session/sessions?status=paused",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ],
               "query": [
@@ -1625,7 +2048,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('400', () => pm.response.to.have.status(400));",
                   "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
                   "pm.test('details names the offending field', () =>",
                   "  pm.expect(pm.response.json().error.details.field).to.eql('status'));"
@@ -1635,18 +2058,22 @@
           ]
         },
         {
-          "name": "GET /sessions?limit=lots -> 422 VALIDATION_ERROR",
+          "name": "GET /sessions?limit=lots -> 400 VALIDATION_ERROR",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions?limit=lots",
+              "raw": "{{base_url}}/session/sessions?limit=lots",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ],
               "query": [
@@ -1665,7 +2092,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('422', () => pm.response.to.have.status(422));",
+                  "pm.test('400', () => pm.response.to.have.status(400));",
                   "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
                 ]
               }
@@ -1673,18 +2100,22 @@
           ]
         },
         {
-          "name": "GET /api/v1/nothing-here -> 404 NOT_FOUND",
+          "name": "GET /api/v1/session/nothing-here -> 404 NOT_FOUND",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/nothing-here",
+              "raw": "{{base_url}}/session/nothing-here",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "nothing-here"
               ]
             },
@@ -1708,15 +2139,19 @@
           "name": "PUT /sessions/{id} -> 405 METHOD_NOT_ALLOWED",
           "request": {
             "method": "PUT",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}"
               ]
@@ -1741,21 +2176,25 @@
     },
     {
       "name": "sessions (beyond contract)",
-      "description": "Read and admin endpoints that are NOT in the CPR contract. Nothing else in the system calls them; they exist for the Lab 1 CRUD requirement and to make the outbox inspectable while no broker exists.",
+      "description": "Read and admin endpoints that are NOT in the CPR contract. Nothing else in the system calls them; they exist for the Lab 1 CRUD requirement and to make the outbox inspectable while the relay does not exist.",
       "item": [
         {
           "name": "GET /sessions -> 200 (all)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions",
+              "raw": "{{base_url}}/session/sessions",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ]
             },
@@ -1783,15 +2222,19 @@
           "name": "GET /sessions?status=ended -> 200 (filtered)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions?status=ended",
+              "raw": "{{base_url}}/session/sessions?status=ended",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ],
               "query": [
@@ -1822,15 +2265,19 @@
           "name": "GET /sessions?limit=1&offset=0 -> 200 (paginated)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions?limit=1&offset=0",
+              "raw": "{{base_url}}/session/sessions?limit=1&offset=0",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions"
               ],
               "query": [
@@ -1867,15 +2314,19 @@
           "name": "GET /sessions/{seeded active} -> 200 (the contract's own example)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{seeded_session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{seeded_session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{seeded_session_id}}"
               ]
@@ -1908,15 +2359,19 @@
           "name": "GET /sessions/{seeded lobby} -> 200 (nulls, not zero values)",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{seeded_lobby_id}}",
+              "raw": "{{base_url}}/session/sessions/{{seeded_lobby_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{seeded_lobby_id}}"
               ]
@@ -1946,6 +2401,92 @@
       ]
     },
     {
+      "name": "dev - task timeout (beyond contract, service token)",
+      "item": [
+        {
+          "name": "GET /dev/slow?ms=100 -> 200",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/session/dev/slow?ms=100",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "100"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /dev/slow?ms=7000 -> 408 REQUEST_TIMEOUT (the service's 5s)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/session/dev/slow?ms=7000",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "7000"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('408', () => pm.response.to.have.status(408));",
+                  "pm.test('REQUEST_TIMEOUT', () => pm.expect(pm.response.json().error.code).to.eql('REQUEST_TIMEOUT'));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "cleanup (destructive - run last)",
       "description": "Removes what this collection created. A session that has started cannot be deleted - a shift that ran is history, and other services hold copies of it - so only the leftover lobby goes.",
       "item": [
@@ -1960,13 +2501,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}/players/{{junior_a_id}}",
+              "raw": "{{base_url}}/session/sessions/{{lobby_session_id}}/players/{{junior_a_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{lobby_session_id}}",
                 "players",
@@ -1999,13 +2539,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{lobby_session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{lobby_session_id}}"
               ]
@@ -2037,13 +2576,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{lobby_session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{lobby_session_id}}"
               ]
@@ -2067,15 +2605,19 @@
           "name": "GET /sessions/{deleted} -> 404 SESSION_NOT_FOUND",
           "request": {
             "method": "GET",
-            "header": [],
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{lobby_session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{lobby_session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{lobby_session_id}}"
               ]
@@ -2107,13 +2649,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{session_id}}"
               ]
@@ -2145,13 +2686,12 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/sessions/{{solo_session_id}}",
+              "raw": "{{base_url}}/session/sessions/{{solo_session_id}}",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
+                "session",
                 "sessions",
                 "{{solo_session_id}}"
               ]
@@ -2170,51 +2710,144 @@
             }
           ],
           "response": []
+        },
+        {
+          "name": "DELETE /player/players/{id} -> 204 (removes the registered moderator)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players/{{moderator_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players",
+                "{{moderator_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /player/players/{id} -> 204 (removes the registered first junior)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_a}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players/{{junior_a_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players",
+                "{{junior_a_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /player/players/{id} -> 204 (removes the registered second junior)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_b}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players/{{junior_b_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players",
+                "{{junior_b_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "DELETE /player/players/{id} -> 204 (removes the registered solo player)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_solo}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/player/players/{{solo_player_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "player",
+                "players",
+                "{{solo_player_id}}"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
         }
       ]
-    }
-  ],
-  "event": [
-    {
-      "listen": "prerequest",
-      "script": {
-        "type": "text/javascript",
-        "exec": [
-          "// Mint the unsigned, JWT-shaped tokens this collection sends.",
-          "//",
-          "// The CPR contract says a player's request carries their JWT and the endpoint",
-          "// takes player_id from the `sub` claim. No token issuer exists in the system yet,",
-          "// so the token is read but never verified - the same arrangement University Record",
-          "// Service uses, which is why the game client can identify a player to both",
-          "// services the same way.",
-          "//",
-          "// This is NOT authentication: anything below mints a token for anyone.",
-          "",
-          "function b64url(text) {",
-          "  return CryptoJS.enc.Base64",
-          "    .stringify(CryptoJS.enc.Utf8.parse(text))",
-          "    .replace(/\\+/g, '-')",
-          "    .replace(/\\//g, '_')",
-          "    .replace(/=+$/, '');",
-          "}",
-          "",
-          "const header = b64url(JSON.stringify({ alg: 'none', typ: 'JWT' }));",
-          "const iat = Math.floor(Date.now() / 1000);",
-          "",
-          "function mint(playerId) {",
-          "  // The signature segment is left empty: nothing checks it.",
-          "  return header + '.' + b64url(JSON.stringify({ sub: playerId, iat: iat })) + '.';",
-          "}",
-          "",
-          "[['moderator_id', 'jwt_moderator'],",
-          " ['junior_a_id', 'jwt_junior_a'],",
-          " ['junior_b_id', 'jwt_junior_b'],",
-          " ['solo_player_id', 'jwt_solo'],",
-          " ['unknown_player_id', 'jwt_unknown']].forEach(([idVar, jwtVar]) => {",
-          "  pm.collectionVariables.set(jwtVar, mint(pm.collectionVariables.get(idVar)));",
-          "});"
-        ]
-      }
     }
   ]
 }

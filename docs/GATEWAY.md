@@ -1,7 +1,7 @@
 # Gateway Service - Integration Reference
 
-> **Status:** skeleton. Lab 2, issue #39. Python gateway, single entry point of the system.
-> Sections marked *TBD* are filled in by the PRs that implement them.
+> **Status:** published as `stewdh/gateway-service:2.2.0` and run by the team `docker-compose.yml`.
+> Python gateway, single entry point of the system.
 
 ## 1. What this service is
 
@@ -20,19 +20,64 @@ It owns no data and publishes no events.
 
 ## 3. Running it
 
-*TBD* - see the service repository README.
+The team stack runs the published image: `docker compose up -d` in the CPR, with `JWT_SECRET` and
+`SERVICE_TOKEN` set in `.env`. Standalone, on the `student-id-net` network so the default peer URLs
+resolve:
+
+```bash
+docker run --rm --network student-id-net -p 8080:8080 \
+  -e JWT_SECRET=... -e SERVICE_TOKEN=... stewdh/gateway-service:2.2.0
+curl http://localhost:8080/health
+# {"status":"ok","service":"gateway-service","version":"2.2.0"}
+```
+
+Building from source and the test suite are in the service repository README.
 
 ## 4. Configuration
 
-*TBD* - route table, peer URLs, `JWT_SECRET`, `SERVICE_TOKEN`, timeout and concurrency variables.
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `JWT_SECRET` | none, required | Verifies the player JWT (HS256). Same value as Player Service's, at least 32 characters, or the Gateway does not start |
+| `SERVICE_TOKEN` | none, required | The one `X-Service-Token` of the stack. Must not be empty |
+| `JWT_LEEWAY_SECONDS` | `5` | Clock skew tolerated on the token's `exp` |
+| `HTTP_REQUEST_TIMEOUT` | `10` | Task timeout in seconds (`10` or `10s`), see §7 |
+| `MAX_CONCURRENT_TASKS` | `64` | Concurrent task limit, see §7 |
+| `RETRY_AFTER_SECONDS` | `1` | The `Retry-After` of the Gateway's `429` |
+| `APP_PORT`, `LOG_LEVEL` | `8080`, `info` | |
+| `PLAYER_URL`, `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `SERVER_RULES_URL`, `UNIVERSITY_RECORD_URL`, `MODERATION_URL`, `DISCORD_DMS_URL` | the container names and ports of the team compose (`http://player-service:8080`, `http://applicant-service:8081`, `http://moderation-service:8085`, ...) | Base URL of each routed service |
 
 ## 5. Routing
 
-*TBD* (issue #40, section 1).
+`{gateway}/api/v1/<prefix>/<rest>` is forwarded to the service as `/api/v1/<rest>`. `<prefix>` is one
+of `player`, `session`, `applicant`, `credential`, `server-rules`, `university-record`, `moderation`,
+`discord-dms`; the prefix tells apart paths that exist in several services, e.g.
+`/api/v1/applicant/applicants/next` and `/api/v1/university-record/applicants/next`.
+
+- A service's health checks are `GET /api/v1/<prefix>/health` and `/health/ready` (forwarded to
+  `/health` and `/health/ready`); events are pushed as `POST /api/v1/<prefix>/events`.
+- Method, query string, body and headers are forwarded, except hop-by-hop headers and the
+  credentials (§6). The Gateway adds `X-Request-ID` (kept if the caller sent one) and
+  `X-Forwarded-For`, and returns the service's answer unchanged: status, headers, body.
+- No retry: a request is sent to the service at most once.
 
 ## 6. Authorization
 
-*TBD* (issue #40, section 2): `Authorization` is validated here and not forwarded downstream.
+Each route accepts one kind of credential (`app/auth.py`, README "Authentication"). A player sends
+`Authorization: Bearer <jwt>` (HS256, `JWT_SECRET`, `sub` = player id, `exp` required); a service
+sends `X-Service-Token`. The Gateway removes both and any `X-Player-Id` of the caller, and for a
+player sets `X-Player-Id: <sub>`. No service sees a token.
+
+| Credential | Routes (service-side path, any prefix unless named) |
+| --- | --- |
+| None | `GET /health`; Player `POST /api/v1/auth/login` and `POST /api/v1/players` |
+| Service token | `GET /health/ready`, `/api/v1/dev/*`, `/api/v1/admin/*`, `POST /api/v1/events`; `POST /api/v1/applicants/next` (Applicant, Credential, University Record); Credential `GET /api/v1/applicants/{id}/documents/validation` and `GET /api/v1/applicants/{id}`; University Record `GET /api/v1/applicants/{id}/records`; Server Rules `GET /api/v1/rulesets/current` and `POST /api/v1/rulesets/{id}/evaluations`; Applicant and Credential `GET`/`POST /api/v1/applicants`, `PATCH`/`DELETE /api/v1/applicants/{id}` |
+| Player or service | Player `GET /api/v1/players/{id}`, Session `GET /api/v1/sessions/{id}`, Applicant `GET /api/v1/applicants/{id}` |
+| Player | Everything else |
+
+Paths are matched after percent-decoding, lower-casing and collapsing slashes, so `/ADMIN` or
+`/adm%69n` cannot slip past a service-only rule. Errors: `401 UNAUTHENTICATED` (no usable player
+token), `401 INVALID_SERVICE_TOKEN` (a wrong service token), `403 SERVICE_TOKEN_REQUIRED` (a
+service-only route without one).
 
 ## 7. Limits and error codes
 
@@ -67,4 +112,11 @@ service), `404 NOT_FOUND` (unknown prefix), `502 BAD_GATEWAY` (service unreachab
 
 ## 8. WebSocket negotiation
 
-*TBD* (issue #40, section 4).
+The Gateway negotiates the chat connection and never carries it.
+
+- `POST /api/v1/discord-dms/ws-tickets` is an ordinary player route: the JWT is checked,
+  `X-Player-Id` set, and Discord DMs answers `201 { "ws_url", "expires_at" }` with a one-time ticket
+  (valid 30 s, once), or its own `403 NOT_IN_SESSION` / `409 SESSION_NOT_ACTIVE`. Never retried.
+- The client opens `ws_url` on Discord DMs directly (host port `8086`).
+- `GET /api/v1/discord-dms/ws` sent to the Gateway is refused with `400 VALIDATION_ERROR` before any
+  service is called: forwarded as a plain GET it would only burn the ticket.

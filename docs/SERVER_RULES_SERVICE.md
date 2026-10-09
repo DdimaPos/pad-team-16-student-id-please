@@ -220,7 +220,8 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 
 ## 10. Recipes for testing against it
 
-Direct port `8083` is published only until the Gateway is in the team compose. Through the Gateway, replace
+The recipes call the service's own port `8083`, which the team compose does not publish: run the image alone
+with `-p 8083:8080`. On the team stack, through the Gateway, replace
 `$BASE/api/v1/` with `http://localhost:8080/api/v1/server-rules/` and send `X-Service-Token` on
 `/admin/*`, `/dev/*`, `rulesets/current` and evaluations.
 

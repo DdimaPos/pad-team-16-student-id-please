@@ -1,17 +1,21 @@
 {
   "info": {
     "name": "University Record Service",
-    "description": "University Record on its own port (8084), as the Gateway would see it: the service validates no token, a player's request carries X-Player-Id and a service's request carries none. Events are pushed to POST /api/v1/events, so the collection demonstrates the full ingest -> search -> Moderation-view loop without any producer running. Run the 'scenario' folder top to bottom. Through the Gateway, use {{gateway_url}}/api/v1/university-record, a player JWT as Authorization: Bearer on the player route and X-Service-Token on the service-only ones.",
+    "description": "University Record through the Gateway: base_url is {{gateway}}/api/v1/university-record. A player's request names the player in X-Player-Id, which the collection pre-request script turns into a signed Bearer JWT; a service's request carries X-Service-Token. Events are pushed to POST /api/v1/events, so the collection demonstrates the full ingest -> search -> Moderation-view loop without any producer running. Run the 'scenario' folder top to bottom.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
-      "value": "http://localhost:8084"
+      "value": "http://localhost:8080/api/v1/university-record"
     },
     {
       "key": "service_token",
-      "value": "dev-service-token-12345"
+      "value": "change_me_too"
+    },
+    {
+      "key": "jwt_secret",
+      "value": "change_me_to_a_random_string_of_32_chars_or_more"
     },
     {
       "key": "session_id",
@@ -42,6 +46,34 @@
       "value": ""
     }
   ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Through the Gateway a player is identified by a JWT (HS256, JWT_SECRET shared with Player Service),",
+          "// never by X-Player-Id: the Gateway checks the token, discards any client-sent X-Player-Id and sets",
+          "// its own from the token's sub. This script signs the token itself: every request that names a",
+          "// player in X-Player-Id gets Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id",
+          "// header is dropped.",
+          "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
+          "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
+          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
+          "  const CryptoJS = require('crypto-js');",
+          "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
+          "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
+          "  const now = Math.floor(Date.now() / 1000);",
+          "  const sub = pm.variables.replaceIn(playerHeader.value);",
+          "  const unsigned = part({ alg: 'HS256', typ: 'JWT' }) + '.' + part({ sub: sub, iat: now, exp: now + 300 });",
+          "  const signature = b64url(CryptoJS.HmacSHA256(unsigned, pm.variables.get('jwt_secret')));",
+          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + unsigned + '.' + signature });",
+          "  pm.request.headers.remove('X-Player-Id');",
+          "}"
+        ]
+      }
+    }
+  ],
   "item": [
     {
       "name": "health",
@@ -57,7 +89,13 @@
           "name": "GET /health/ready (readiness)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/health/ready"
+            "url": "{{base_url}}/health/ready",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
           }
         }
       ]
@@ -69,7 +107,7 @@
           "name": "3. ingest honest FAF student (applicant.initialized)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/events",
+            "url": "{{base_url}}/events",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -90,7 +128,7 @@
           "name": "4. session.started - A gets enrollment+courses, B gets email-groups+fcim-logs",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/events",
+            "url": "{{base_url}}/events",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -123,13 +161,11 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/v1/records/enrollment?session_id={{session_id}}&q=FAF23117",
+              "raw": "{{base_url}}/records/enrollment?session_id={{session_id}}&q=FAF23117",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "records",
                 "enrollment"
               ],
@@ -168,13 +204,11 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/v1/records/enrollment?session_id={{session_id}}&q=FAF23117",
+              "raw": "{{base_url}}/records/enrollment?session_id={{session_id}}&q=FAF23117",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "records",
                 "enrollment"
               ],
@@ -202,13 +236,11 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/v1/records/email-groups?session_id={{session_id}}&q=faf-231",
+              "raw": "{{base_url}}/records/email-groups?session_id={{session_id}}&q=faf-231",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "records",
                 "email-groups"
               ],
@@ -235,7 +267,7 @@
           "name": "8. ingest an identity thief claiming the victim's student_id",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/events",
+            "url": "{{base_url}}/events",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -270,7 +302,7 @@
           ],
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/applicants/{{thief_applicant_id}}/records",
+            "url": "{{base_url}}/applicants/{{thief_applicant_id}}/records",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -283,7 +315,7 @@
           "name": "10. session.ended",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/events",
+            "url": "{{base_url}}/events",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -315,13 +347,11 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/v1/records/enrollment?session_id={{session_id}}&q=FAF23117",
+              "raw": "{{base_url}}/records/enrollment?session_id={{session_id}}&q=FAF23117",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "records",
                 "enrollment"
               ],
@@ -353,7 +383,7 @@
           "name": "the same event twice: first applied, then duplicate: true",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/events",
+            "url": "{{base_url}}/events",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -396,7 +426,7 @@
           "name": "... and again with the same event_id",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/events",
+            "url": "{{base_url}}/events",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -443,6 +473,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -452,13 +486,11 @@
               "raw": "{ \"event_id\": \"{{$guid}}\", \"event_type\": \"player.created\", \"occurred_at\": \"2026-09-10T18:10:00Z\", \"producer\": \"player-service\", \"version\": 1, \"payload\": {} }"
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/events",
+              "raw": "{{base_url}}/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "events"
               ]
             }
@@ -482,6 +514,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -491,13 +527,11 @@
               "raw": "{ \"event_id\": \"{{$guid}}\", \"event_type\": \"session.ended\", \"occurred_at\": \"2026-09-10T18:10:00Z\", \"producer\": \"server-moderation-session-service\", \"version\": 9, \"payload\": {} }"
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/events",
+              "raw": "{{base_url}}/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "events"
               ]
             }
@@ -521,6 +555,10 @@
             "method": "POST",
             "header": [
               {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
                 "key": "Content-Type",
                 "value": "application/json"
               }
@@ -530,13 +568,11 @@
               "raw": "{ \"event_id\": \"{{$guid}}\", \"event_type\": \"applicant.initialized\", \"occurred_at\": \"2026-09-10T18:10:00Z\", \"producer\": \"applicant-service\", \"version\": 1, \"payload\": { \"applicant_id\": \"{{$guid}}\", \"session_id\": \"{{session_id}}\", \"initialized_by\": \"applicant-service\", \"difficulty\": 3, \"claimed\": { \"profile\": { \"name\": \"Ana Rusu\", \"university_status\": \"outsider\" } } } }"
             },
             "url": {
-              "raw": "{{base_url}}/api/v1/events",
+              "raw": "{{base_url}}/events",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "events"
               ]
             }
@@ -551,7 +587,7 @@
           "name": "ingest applicant claiming a real course and a fabricated one",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/events",
+            "url": "{{base_url}}/events",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -573,13 +609,11 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/v1/records/courses?session_id={{session_id}}&q=PAD",
+              "raw": "{{base_url}}/records/courses?session_id={{session_id}}&q=PAD",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "records",
                 "courses"
               ],
@@ -611,8 +645,12 @@
           "name": "generate a new applicant",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/applicants/next",
+            "url": "{{base_url}}/applicants/next",
             "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -628,8 +666,12 @@
           "name": "bad difficulty (400 VALIDATION_ERROR)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/applicants/next",
+            "url": "{{base_url}}/applicants/next",
             "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -651,13 +693,11 @@
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/v1/records/enrollment?session_id={{session_id}}&q=x",
+              "raw": "{{base_url}}/records/enrollment?session_id={{session_id}}&q=x",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "records",
                 "enrollment"
               ],
@@ -672,20 +712,30 @@
                 }
               ]
             }
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "player id that is not a UUID (401 UNAUTHENTICATED)",
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/v1/records/enrollment?session_id={{session_id}}&q=x",
+              "raw": "{{base_url}}/records/enrollment?session_id={{session_id}}&q=x",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "records",
                 "enrollment"
               ],
@@ -724,27 +774,37 @@
           "name": "player id on a service-only route (403 SERVICE_TOKEN_REQUIRED)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/admin/courses",
+            "url": "{{base_url}}/admin/courses",
             "header": [
               {
                 "key": "X-Player-Id",
                 "value": "{{player_a_id}}"
               }
             ]
-          }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "unknown category (422 UNKNOWN_CATEGORY)",
           "request": {
             "method": "GET",
             "url": {
-              "raw": "{{base_url}}/api/v1/records/not-a-category?session_id={{session_id}}&q=x",
+              "raw": "{{base_url}}/records/not-a-category?session_id={{session_id}}&q=x",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
                 "records",
                 "not-a-category"
               ],
@@ -776,7 +836,7 @@
           "name": "list catalog courses",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/admin/courses?limit=10",
+            "url": "{{base_url}}/admin/courses?limit=10",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -789,7 +849,7 @@
           "name": "create a course",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/admin/courses",
+            "url": "{{base_url}}/admin/courses",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -810,7 +870,7 @@
           "name": "delete a course with no registrations",
           "request": {
             "method": "DELETE",
-            "url": "{{base_url}}/api/v1/admin/courses/TEST101",
+            "url": "{{base_url}}/admin/courses/TEST101",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -823,7 +883,7 @@
           "name": "delete PAD - has registrations (409 COURSE_HAS_REGISTRATIONS)",
           "request": {
             "method": "DELETE",
-            "url": "{{base_url}}/api/v1/admin/courses/PAD",
+            "url": "{{base_url}}/admin/courses/PAD",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -836,7 +896,7 @@
           "name": "list applicants (reveals actual - service-only)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/admin/applicants?limit=10",
+            "url": "{{base_url}}/admin/applicants?limit=10",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -849,7 +909,7 @@
           "name": "list sessions",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/api/v1/admin/sessions?limit=10",
+            "url": "{{base_url}}/admin/sessions?limit=10",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -862,7 +922,7 @@
           "name": "set scopes manually (session-service mock)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/api/v1/admin/sessions/{{session_id}}/scopes",
+            "url": "{{base_url}}/admin/sessions/{{session_id}}/scopes",
             "header": [
               {
                 "key": "X-Service-Token",

@@ -448,8 +448,7 @@ count cannot be taken**, which is precisely when PostgreSQL is down.
 A consumer that does not answer is not a configuration fault, so the status stays `ok` - the
 contract expects it, and the outbox is what makes it safe. The number to watch is `pending`:
 a count that keeps climbing means the Gateway, or that consumer behind it, has been away for a
-while, or does not serve `POST /events` yet (University Record `0.1.0` answers `404`, which
-is retried).
+while, or does not serve `POST /events` (a `404`, which is retried).
 
 > **Do not remove an instance from the load-balancer pool on `degraded`.** The REST surface is
 > fully functional; only the delivery of events is affected, and they wait in the outbox.
@@ -1015,8 +1014,8 @@ on `claimed.student_id`.
 - Peers that are unreachable receive nothing until they are back; their view of applicants
   goes stale. The relay retries with a backoff that doubles up to 30 s, so a consumer that is
   down for a minute sees a handful of attempts rather than hundreds.
-- A consumer that answers `404` because it does not serve `POST /events` yet (University
-  Record `0.1.0`) is treated the same: retried until it does.
+- A consumer that answers `404` because it does not serve `POST /events` is treated the
+  same: retried until it does.
 - When the consumer returns, its backlog drains in the order it built up, oldest first, with
   no intervention. Covered by the relay's unit tests against a fake Gateway; **no automated
   integration test** runs the real stack.

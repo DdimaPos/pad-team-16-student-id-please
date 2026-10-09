@@ -20,7 +20,7 @@ x-reference-year: &reference_year "2026"
 
 services:
   gateway-service:
-    image: stewdh/gateway-service:2.2.0
+    image: stewdh/gateway-service:2.2.1
     restart: unless-stopped
     environment:
       # Verifies the player JWT signed by Player Service (same value) and the one service token.
@@ -30,6 +30,9 @@ services:
       HTTP_REQUEST_TIMEOUT: 10s
       MAX_CONCURRENT_TASKS: "64"
       # Peer base URLs default to the container names in this file (PLAYER_URL, SESSION_URL, ...).
+      # Discord DMs 2.1.0 serves its REST API on 8096 (its published 8086 is the WebSocket only); 2.2.1 defaults
+      # to this value, it is set here so that an older Gateway image still reaches Discord DMs.
+      DISCORD_DMS_URL: http://discord-dms-service:8096
     ports:
       - "8080:8080"
     networks:
@@ -184,7 +187,7 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:2.0.0
+    image: dmracovit/discord-dms-service:2.1.0
     restart: unless-stopped
     depends_on:
       dms-mongo:
@@ -199,8 +202,10 @@ services:
       # The address clients reach port 8086 at: the base of the ws_url a ticket comes with. The chat is
       # negotiated through the Gateway (POST /api/v1/discord-dms/ws-tickets) and connected here directly.
       WS_PUBLIC_URL: ${DMS_WS_PUBLIC_URL:-ws://localhost:8086}
+      # Two listeners: 8086 serves the WebSocket only and is the one published below; the REST API listens
+      # on 8096, never published, and the Gateway reaches it there (DISCORD_DMS_URL=http://discord-dms-service:8096).
     ports:
-      - "8086:8086"   # stays published in the final stack: the direct WebSocket connection
+      - "8086:8086"   # stays published in the final stack: the direct WebSocket connection, nothing else answers here
     networks:
       - student-id-net
 

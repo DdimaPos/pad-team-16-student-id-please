@@ -1,6 +1,6 @@
 # Gateway Service - Integration Reference
 
-> **Status:** published as `stewdh/gateway-service:2.2.0` and run by the team `docker-compose.yml`.
+> **Status:** published as `stewdh/gateway-service:2.2.1` and run by the team `docker-compose.yml`.
 > Python gateway, single entry point of the system.
 
 ## 1. What this service is
@@ -26,9 +26,9 @@ resolve:
 
 ```bash
 docker run --rm --network student-id-net -p 8080:8080 \
-  -e JWT_SECRET=... -e SERVICE_TOKEN=... stewdh/gateway-service:2.2.0
+  -e JWT_SECRET=... -e SERVICE_TOKEN=... stewdh/gateway-service:2.2.1
 curl http://localhost:8080/health
-# {"status":"ok","service":"gateway-service","version":"2.2.0"}
+# {"status":"ok","service":"gateway-service","version":"2.2.1"}
 ```
 
 Building from source and the test suite are in the service repository README.

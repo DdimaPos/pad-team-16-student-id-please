@@ -1822,9 +1822,11 @@ Branches are protected by following rules:
 
 1. Protect main and dev - No direct push in `main` and `dev`. PR required. Branches cannot be deleted,
    updated or force pushed without the user being in bypass list
-2. Review - in a repository with several contributors (the CPR and the Gateway) a PR needs an approval
-   from at least one other contributor, and a review is requested from all of them. A private service
-   repository has one contributor, its owner, so no approval is required there: the owner merges their
+2. Review - in a repository with several contributors (CPR, Gateway, etc.) a PR needs two approvals
+   from other contributors, and a review is requested from all other human contributors(from 2026-10-25).
+   Asking Claude, Copilot or another tool for a review as well is not a violation, it is just not required.
+   A private service repository has one human contributor, its owner, and Claude or another AI tool is not
+   added to it as a contributor(since 2026-10-25); so no approval is required there and the owner merges their
    own PR once the checks pass (see [Rule changes](#rule-changes))
 3. Enforce branch naming - We follow a standardized naming pattern for all feature branches:
 
@@ -1853,7 +1855,7 @@ type/issueID-short-description
 
 **Strategy**: Squash and Merge for every branch that goes into `dev`. A release PR (`dev` into `main`) is
 the one exception: it is a direct PR from `dev` to `main`, merged with **Create a merge commit**, never
-squashed (a squash would hide the history of what is released and move the submodule pointers).
+squashed (since 2026-10-25).
 Every release has been merged this way (see [Rule changes](#rule-changes)).
 
 Benefits:
@@ -1866,14 +1868,15 @@ Benefits:
 Process:
 
 1. Create feature branch from `dev`
-2. Make commits with your work; keep the branch up to date with `git rebase origin/dev`, do not merge
-   `dev` into it (since 2026-10-25)
+2. Make commits with your work (a PR may have several commits; what reaches `dev` is one commit, see step 4);
+   keep the branch up to date with `git rebase origin/dev`, do not merge `dev` into it (since 2026-10-25)
 3. Open Pull Request to `dev`
-4. After approval (where an approval is required, see Branch protection rules), squash and merge
+4. After approval (where an approval is required, see Branch protection rules), **squash and merge**:
+   every PR into `dev` is squashed into one commit; a merge commit or a rebase merge is not used there
 5. Delete feature branch after merge
 
-Release PR: title `chore(#N): release X.Y.Z` or `Release X.Y.Z`, branch `dev` into `main`,
-**Create a merge commit**. It is exempt from the one-commit rule and its description repeats the
+Release PR: branch `dev` into `main`, **Create a merge commit**, and from 2026-10-25 a title
+`chore(#N): release X.Y.Z` or `Release X.Y.Z`. It is exempt from the one-commit rule and its description repeats the
 `Closes #N` of every issue it ships (see below), because GitHub closes an issue only when a PR reaches
 `main`.
 
@@ -1993,20 +1996,24 @@ how the team has always worked carry no date and hold for earlier work too
 | Every PR closes exactly one issue with `Closes`; `Part of` is not used; a PR in a service repository names the CPR issue |
 | Every version has a git tag `v<VERSION>` and a GitHub Release with its notes |
 | A branch is updated with `git rebase origin/dev`, not by merging `dev` into it |
+| A release PR `dev` into `main` is titled `chore(#N): release X.Y.Z` or `Release X.Y.Z` |
+| In the CPR and the Gateway a PR needs two approvals from other contributors |
+| A private service repository has one human contributor, its owner (Claude or another AI tool is not a contributor), so no approval is required there |
+| A review is requested from all other human contributors; asking Claude, Copilot or another tool as well is not a violation, it is just not required |
 
 **Clarifications that apply to all work:**
 
 | Rule |
 | --- |
-| A private service repository has one contributor, its owner, so merging without an approval is correct there; the CPR and the Gateway need an approval |
-| A release PR `dev` into `main` is a direct PR merged with a merge commit and is titled `chore(#N): release X.Y.Z` or `Release X.Y.Z`; it is exempt from the one-commit rule |
+| A release PR `dev` into `main` is a direct PR merged with a merge commit; it is exempt from the one-commit rule |
 | A documentation-only PR needs no Testing section |
 | Release notes may use the section `Removed` |
+| "One commit per branch" is what reaches `dev`: a PR may have several commits, but it is merged into `dev` with squash and merge, which leaves one commit; exceptions are left to the contributors' discretion |
 | The commit format is checked on the PR title and on the squash commit that reaches `dev`; commits inside a squashed feature branch are not checked |
 | `Co-authored-by` lines of people that GitHub adds when it squashes a branch with several authors are allowed |
 
 Unchanged rules keep the date they were introduced: branch naming, squash and merge, the PR template and
 the release notes format since 2026-09-08 ([#8](https://github.com/DdimaPos/pad-team-16-student-id-please/pull/8));
-the commit and PR title format `type(#N): message`, one commit per branch, no `Co-Authored-By` from Claude or
-any other AI tool and the review request since 2026-10-04
+the commit and PR title format `type(#N): message`, one commit per branch (after the squash on merge into `dev`),
+no `Co-Authored-By` from Claude or any other AI tool and the review request since 2026-10-04
 ([#38](https://github.com/DdimaPos/pad-team-16-student-id-please/pull/38)).

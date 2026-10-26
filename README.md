@@ -1822,7 +1822,13 @@ Branches are protected by following rules:
 
 1. Protect main and dev - No direct push in `main` and `dev`. PR required. Branches cannot be deleted,
    updated or force pushed without the user being in bypass list
-2. Enforce branch naming - We follow a standardized naming pattern for all feature branches:
+2. Review - in a repository with several contributors (CPR, Gateway, etc.) a PR needs two approvals
+   from other contributors, and a review is requested from all other human contributors(from 2026-10-25).
+   Asking Claude, Copilot or another tool for a review as well is not a violation, it is just not required.
+   A private service repository has one human contributor, its owner, and Claude or another AI tool is not
+   added to it as a contributor(since 2026-10-25); so no approval is required there and the owner merges their
+   own PR once the checks pass (see [Rule changes](#rule-changes))
+3. Enforce branch naming - We follow a standardized naming pattern for all feature branches:
 
 ```
 type/issueID-short-description
@@ -1847,7 +1853,10 @@ type/issueID-short-description
 
 ## Merging Strategy
 
-**Strategy**: Squash and Merge
+**Strategy**: Squash and Merge for every branch that goes into `dev`. A release PR (`dev` into `main`) is
+the one exception: it is a direct PR from `dev` to `main`, merged with **Create a merge commit**, never
+squashed (since 2026-10-25).
+Every release has been merged this way (see [Rule changes](#rule-changes)).
 
 Benefits:
 
@@ -1859,10 +1868,17 @@ Benefits:
 Process:
 
 1. Create feature branch from `dev`
-2. Make commits with your work
+2. Make commits with your work (a PR may have several commits; what reaches `dev` is one commit, see step 4);
+   keep the branch up to date with `git rebase origin/dev`, do not merge `dev` into it (since 2026-10-25)
 3. Open Pull Request to `dev`
-4. After approval, squash and merge
+4. After approval (where an approval is required, see Branch protection rules), **squash and merge**:
+   every PR into `dev` is squashed into one commit; a merge commit or a rebase merge is not used there
 5. Delete feature branch after merge
+
+Release PR: branch `dev` into `main`, **Create a merge commit**, and from 2026-10-25 a title
+`chore(#N): release X.Y.Z` or `Release X.Y.Z`. It is exempt from the one-commit rule and its description repeats the
+`Closes #N` of every issue it ships (see below), because GitHub closes an issue only when a PR reaches
+`main`.
 
 ## Pull Request Requirements
 
@@ -1871,9 +1887,12 @@ Every Pull Request must include:
 ### Required Information
 
 - **Clear description** of what changed and why
-- **Issue reference** (e.g., "Closes #42", "Fixes #18")
+- **Issue reference**: every PR closes exactly one issue (`Closes #42`, `Fixes #18`); `Part of` is not
+  used. A large story is split into one small issue per PR, linked from the story with a task list. All
+  issues live in the CPR and are added to the project; a PR in a service repository names the CPR issue
+  as `Closes DdimaPos/pad-team-16-student-id-please#42` (since 2026-10-25)
 - **List of specific changes** made
-- **Testing instructions** or results
+- **Testing instructions** or results (not required for a PR that only changes documentation)
 - **Screenshots** for UI changes
 - **Breaking changes** (if any)
 
@@ -1915,7 +1934,8 @@ A breaking contract change therefore happens at a lab boundary (the next MAJOR),
 
 1. Set the new version in the repository's **`VERSION` file** (one line, e.g. `2.0.0`); it is the single source of the image tag.
 2. Merge to `main`. GitHub Actions runs the repository's tests and, only if they pass, publishes `<dockerhub-user>/<service>:<VERSION>` and moves `<dockerhub-user>/<service>:latest` to it. Images are never pushed by hand.
-3. Create release notes in the format below.
+3. Create release notes in the format below. From 2026-10-25 every version also gets a git tag `v<VERSION>`
+   and a GitHub Release whose body is the notes block; the CPR release PR description serves as the CPR's notes.
 4. Point `docker-compose.yml` and the [Deployments](#deployments) table at the new tag in the CPR PR that moves the submodule pointer.
 
 Example: merging `2.1.0` of Player Service publishes `dimapos/player-service:2.1.0` and updates `dimapos/player-service:latest`.
@@ -1940,10 +1960,16 @@ Example: merging `2.1.0` of Player Service publishes `dimapos/player-service:2.1
 - Header alignment on mobile devices
 - Memory leak in data processing
 
+### Removed
+
+- Dropped the old export endpoint
+
 ### Security
 
 - Updated dependencies with security patches
 ```
+
+Allowed sections: Added, Changed, Fixed, Removed, Security.
 
 ## Workflow Summary
 
@@ -1951,7 +1977,43 @@ Example: merging `2.1.0` of Player Service publishes `dimapos/player-service:2.1
 2. **Create Branch**: Use proper naming convention from `dev` branch
 3. **Develop**: Make commits with clear, descriptive messages
 4. **Test**: Verify functionality and pass the tests
-5. **Create PR**: Follow template and provide complete information
-6. **Review**: Address feedback and get required approvals
+5. **Create PR**: Follow template and provide complete information; it closes one issue
+6. **Review**: Address feedback and get required approvals (not required in a single-owner repository)
 7. **Merge**: Squash and merge to `dev`
-8. **Deploy**: Regular releases from `dev` to `main`
+8. **Deploy**: Regular releases from `dev` to `main` as a merge commit, with a tag and a GitHub Release
+
+### Rule changes
+
+A rule is checked against the work done after it was written down. Rules that are new or stricter carry the
+date they start from, and earlier PRs, commits and releases are not counted against them. Clarifications of
+how the team has always worked carry no date and hold for earlier work too
+([PR #68](https://github.com/DdimaPos/pad-team-16-student-id-please/pull/68), issue #67).
+
+**New or stricter, from 2026-10-25:**
+
+| Rule |
+| --- |
+| Every PR closes exactly one issue with `Closes`; `Part of` is not used; a PR in a service repository names the CPR issue |
+| Every version has a git tag `v<VERSION>` and a GitHub Release with its notes |
+| A branch is updated with `git rebase origin/dev`, not by merging `dev` into it |
+| A release PR `dev` into `main` is titled `chore(#N): release X.Y.Z` or `Release X.Y.Z` |
+| In the CPR and the Gateway a PR needs two approvals from other contributors |
+| A private service repository has one human contributor, its owner (Claude or another AI tool is not a contributor), so no approval is required there |
+| A review is requested from all other human contributors; asking Claude, Copilot or another tool as well is not a violation, it is just not required |
+
+**Clarifications that apply to all work:**
+
+| Rule |
+| --- |
+| A release PR `dev` into `main` is a direct PR merged with a merge commit; it is exempt from the one-commit rule |
+| A documentation-only PR needs no Testing section |
+| Release notes may use the section `Removed` |
+| "One commit per branch" is what reaches `dev`: a PR may have several commits, but it is merged into `dev` with squash and merge, which leaves one commit; exceptions are left to the contributors' discretion |
+| The commit format is checked on the PR title and on the squash commit that reaches `dev`; commits inside a squashed feature branch are not checked |
+| `Co-authored-by` lines of people that GitHub adds when it squashes a branch with several authors are allowed |
+
+Unchanged rules keep the date they were introduced: branch naming, squash and merge, the PR template and
+the release notes format since 2026-09-08 ([#8](https://github.com/DdimaPos/pad-team-16-student-id-please/pull/8));
+the commit and PR title format `type(#N): message`, one commit per branch (after the squash on merge into `dev`),
+no `Co-Authored-By` from Claude or any other AI tool and the review request since 2026-10-04
+([#38](https://github.com/DdimaPos/pad-team-16-student-id-please/pull/38)).

@@ -325,8 +325,12 @@ services:
       - student-id-net
 
   applicant-service:
-    image: stewdh/applicant-service:2.1.0
+    image: stewdh/applicant-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two copies share applicant-postgres (no container_name, no host port);
+    # `docker compose up -d --scale applicant-service=3` adds a third.
+    deploy:
+      replicas: 2
     depends_on:
       applicant-postgres:
         condition: service_healthy
@@ -334,7 +338,7 @@ services:
       APP_ENV: docker
       APP_PORT: "8081"
       LOG_LEVEL: info
-      SERVICE_VERSION: "2.1.0"
+      SERVICE_VERSION: "3.0.0"
       TZ: UTC
       # Task timeout (408) and concurrent task limit (429) - README "Task timeout and concurrent
       # task limit". DEV_ENDPOINTS mounts GET /api/v1/dev/slow?ms=, which demonstrates both.
@@ -349,6 +353,9 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       CREDENTIAL_URL: http://gateway-service:8080/api/v1/credential
       UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
+      # Each copy registers itself here directly (not through the Gateway) as
+      # applicant-<container id>, with the same service token, and heartbeats every 5s.
+      SERVICE_DISCOVERY_URL: http://service-discovery-service:8090
       REFERENCE_YEAR: *reference_year
     healthcheck:
       test: ["CMD", "/applicantd", "healthcheck"]

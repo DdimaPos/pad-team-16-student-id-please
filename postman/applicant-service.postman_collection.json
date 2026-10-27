@@ -63,6 +63,14 @@
       "key": "event_applicant_id",
       "value": "",
       "type": "string"
+    },
+    {
+      "key": "service_discovery_url",
+      "value": "http://localhost:8090"
+    },
+    {
+      "key": "direct_url",
+      "value": "http://localhost:8081"
     }
   ],
   "event": [
@@ -2194,6 +2202,152 @@
                   "  pm.expect(seen.live).to.eql(200);",
                   "});",
                   "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Lab 3: status and Service Discovery",
+      "description": "Lab 3: several copies of the service share one database, register themselves with Service Discovery and report their load on GET /status. Logs are JSON lines carrying `instance_id` and `request_id`, so `docker compose logs applicant-service` shows which copy answered each request.",
+      "item": [
+        {
+          "name": "Status - what Service Discovery polls",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{direct_url}}/status",
+              "host": [
+                "{{direct_url}}"
+              ],
+              "path": [
+                "status"
+              ]
+            },
+            "description": "GET /status at the root, next to /health: this instance's health and load, in the shape every Lab 3 component shares. Service Discovery calls it directly, not through the Gateway, every 10 s with a 2 s timeout. No credential, and it is outside the concurrent task limit, so a saturated instance answers it (busy) instead of refusing it with a 429 (broken). 200 `up`, or 503 `degraded` with the same body when the database does not answer. `in_flight` / `max_concurrent_tasks` is the load; Service Discovery alerts at 80 %. This request calls one instance directly, at `direct_url`: in the team stack the service publishes no port and Service Discovery polls it inside student-id-net, so point `direct_url` at an instance you can reach (the service's own compose publishes http://localhost:8081)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK, or 503 when the database is down', () => pm.expect([200, 503]).to.include(pm.response.code));",
+                  "const body = pm.response.json();",
+                  "pm.test('exactly the shared shape', () => {",
+                  "  pm.expect(Object.keys(body).sort()).to.eql(['in_flight', 'instance_id', 'max_concurrent_tasks', 'service', 'status', 'version']);",
+                  "});",
+                  "pm.test('service is the Gateway prefix, instance_id is applicant-<hostname>', () => {",
+                  "  pm.expect(body.service).to.eql('applicant');",
+                  "  pm.expect(body.instance_id).to.match(/^applicant-.+/);",
+                  "});",
+                  "pm.test('status matches the HTTP code', () => {",
+                  "  pm.expect(body.status).to.eql(pm.response.code === 200 ? 'up' : 'degraded');",
+                  "});",
+                  "pm.test('in_flight is a count within the limit', () => {",
+                  "  pm.expect(body.in_flight).to.be.a('number').and.to.be.at.least(0);",
+                  "  pm.expect(body.max_concurrent_tasks).to.eql(Number(pm.collectionVariables.get('max_concurrent_tasks')));",
+                  "  pm.expect(body.in_flight).to.be.at.most(body.max_concurrent_tasks);",
+                  "});",
+                  "console.log('instance', body.instance_id, 'load', body.in_flight + '/' + body.max_concurrent_tasks);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Status is not routed through the Gateway",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/api/v1/applicant/status",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "status"
+              ]
+            },
+            "description": "Only /api/v1/<prefix>/health* is mapped to a service's own root paths. /status is for Service Discovery inside the network: through the Gateway this path becomes the service's /api/v1/status, which does not exist."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 NOT_FOUND from the service', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND');",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Registered instances - Service Discovery",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{service_discovery_url}}/api/v1/instances?service=applicant",
+              "host": [
+                "{{service_discovery_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "instances"
+              ],
+              "query": [
+                {
+                  "key": "service",
+                  "value": "applicant"
+                }
+              ]
+            },
+            "description": "Every copy of the service registers itself with Service Discovery (PUT /api/v1/instances/{instance_id}) right after its listener is up and repeats it every 5 s; a copy that stops deregisters (DELETE). This is the list the Gateway reads every 5 s to share requests round-robin: `up` instances only. Needs Service Discovery (published on 8090 in the team stack). With `docker compose up -d --scale applicant-service=3` it lists three."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const instances = pm.response.json().instances || [];",
+                  "const mine = instances.filter(i => i.service_name === 'applicant');",
+                  "pm.test('at least one instance registered', () => pm.expect(mine.length).to.be.at.least(1));",
+                  "pm.test('each has an id, an address and a port, and is up', () => {",
+                  "  mine.forEach(i => {",
+                  "    pm.expect(i.instance_id).to.match(/^applicant-.+/);",
+                  "    pm.expect(i.host).to.be.a('string').and.not.empty;",
+                  "    pm.expect(i.port).to.be.a('number');",
+                  "    pm.expect(i.status).to.eql('up');",
+                  "  });",
+                  "});",
+                  "console.log(mine.map(i => i.instance_id + ' ' + i.host + ':' + i.port).join('\\n'));"
                 ]
               }
             }

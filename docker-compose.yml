@@ -20,7 +20,7 @@ x-reference-year: &reference_year "2026"
 
 services:
   gateway-service:
-    image: stewdh/gateway-service:2.2.1
+    image: stewdh/gateway-service:3.0.0
     restart: unless-stopped
     environment:
       # Verifies the player JWT signed by Player Service (same value) and the one service token.
@@ -29,9 +29,12 @@ services:
       # Above the services' 5s, so the outer layer never gives up first.
       HTTP_REQUEST_TIMEOUT: 10s
       MAX_CONCURRENT_TASKS: "64"
-      # Peer base URLs default to the container names in this file (PLAYER_URL, SESSION_URL, ...).
-      # Discord DMs 2.1.0 serves its REST API on 8096 (its published 8086 is the WebSocket only); 2.2.1 defaults
-      # to this value, it is set here so that an older Gateway image still reaches Discord DMs.
+      # Lab 3: the instances of every service are read from Service Discovery at startup and every
+      # 5s, and each service's requests go to its instances round-robin. GATEWAY_SERVICE_DISCOVERY_URL
+      # set empty in .env falls back to static mode: one instance per service at the fixed URLs below.
+      SERVICE_DISCOVERY_URL: ${GATEWAY_SERVICE_DISCOVERY_URL-http://service-discovery-service:8090}
+      # Static mode only. Peer base URLs default to the container names in this file (PLAYER_URL,
+      # SESSION_URL, ...); Discord DMs serves its REST API on 8096 (its published 8086 is the WebSocket only).
       DISCORD_DMS_URL: http://discord-dms-service:8096
     ports:
       - "8080:8080"

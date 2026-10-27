@@ -1,12 +1,15 @@
 # Gateway Service - Integration Reference
 
-> **Status:** published as `stewdh/gateway-service:2.2.1` and run by the team `docker-compose.yml`.
-> Python gateway, single entry point of the system.
+> **Status:** `stewdh/gateway-service:3.0.0` (Lab 3), run by the team `docker-compose.yml`. `3.0.0` added the
+> instances from Service Discovery with round-robin, the JSON logs and `GET /status` (#75). Python gateway, single
+> entry point of the system. The Lab 3 parts follow CPR issue #71 until its contract is merged into the README; see
+> §12.
 
 ## 1. What this service is
 
 The Gateway is the one public entry point: clients and services reach every other service through it.
-It owns no data and publishes no events.
+It owns no data and publishes no events. It finds the instances of every service in Service Discovery
+and spreads the requests to a service over them round-robin.
 
 ## 2. Integration card
 
@@ -14,22 +17,32 @@ It owns no data and publishes no events.
 | --- | --- |
 | **Language / framework** | Python 3.12, FastAPI, httpx |
 | **Container port** | `8080` (host `8080`) |
-| **Health** | `GET /health` |
+| **Health** | `GET /health` (liveness); `GET /status` (load of this instance, §10) |
+| **Instances** | read from Service Discovery (`SERVICE_DISCOVERY_URL`) at startup and every 5 s, round-robin (§9) |
+| **Logs** | one JSON object per line on stdout (§11) |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`, same as every service |
 | **Docker image** | `stewdh/gateway-service:<lab version>` and `:latest`, published by GitHub Actions on merge to `main` |
 
 ## 3. Running it
 
 The team stack runs the published image: `docker compose up -d` in the CPR, with `JWT_SECRET` and
-`SERVICE_TOKEN` set in `.env`. Standalone, on the `student-id-net` network so the default peer URLs
-resolve:
+`SERVICE_TOKEN` set in `.env`; the compose file points the Gateway at Service Discovery
+(`SERVICE_DISCOVERY_URL=http://service-discovery-service:8090`). Standalone, on the `student-id-net`
+network:
 
 ```bash
 docker run --rm --network student-id-net -p 8080:8080 \
-  -e JWT_SECRET=... -e SERVICE_TOKEN=... stewdh/gateway-service:2.2.1
+  -e JWT_SECRET=... -e SERVICE_TOKEN=... \
+  -e SERVICE_DISCOVERY_URL=http://service-discovery-service:8090 \
+  stewdh/gateway-service:3.0.0
 curl http://localhost:8080/health
-# {"status":"ok","service":"gateway-service","version":"2.2.1"}
+# {"status":"ok","service":"gateway-service","version":"3.0.0"}
+curl http://localhost:8080/status
+# {"service":"gateway","instance_id":"gateway-3f4e2a9b1c7d","version":"3.0.0","status":"up","in_flight":0,"max_concurrent_tasks":64}
 ```
+
+Without `SERVICE_DISCOVERY_URL` the Gateway runs in static mode (§9): one instance per service at the
+fixed `*_URL` addresses, which default to the container names of the team compose.
 
 Building from source and the test suite are in the service repository README.
 
@@ -38,27 +51,34 @@ Building from source and the test suite are in the service repository README.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `JWT_SECRET` | none, required | Verifies the player JWT (HS256). Same value as Player Service's, at least 32 characters, or the Gateway does not start |
-| `SERVICE_TOKEN` | none, required | The one `X-Service-Token` of the stack. Must not be empty |
+| `SERVICE_TOKEN` | none, required | The one `X-Service-Token` of the stack. Must not be empty. Also sent to Service Discovery |
 | `JWT_LEEWAY_SECONDS` | `5` | Clock skew tolerated on the token's `exp` |
 | `HTTP_REQUEST_TIMEOUT` | `10` | Task timeout in seconds (`10` or `10s`), see §7 |
 | `MAX_CONCURRENT_TASKS` | `64` | Concurrent task limit, see §7 |
 | `RETRY_AFTER_SECONDS` | `1` | The `Retry-After` of the Gateway's `429` |
-| `APP_PORT`, `LOG_LEVEL` | `8080`, `info` | |
-| `PLAYER_URL`, `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `SERVER_RULES_URL`, `UNIVERSITY_RECORD_URL`, `MODERATION_URL`, `DISCORD_DMS_URL` | the container names and ports of the team compose (`http://player-service:8080`, `http://applicant-service:8081`, `http://moderation-service:8085`, ...) | Base URL of each routed service |
+| `SERVICE_DISCOVERY_URL` | empty | Base URL of Service Discovery (`http://service-discovery-service:8090` in the team compose). Empty: static mode |
+| `SD_REFRESH_SECONDS` | `5` | Seconds between two reads of the instance list (`5` or `5s`) |
+| `SD_TIMEOUT_SECONDS` | `2` | Bound of one call to Service Discovery, in seconds |
+| `INSTANCE_ID` | `gateway-<hostname>` | This Gateway's `instance_id` in its logs and `/status`; the hostname is the container id in Docker |
+| `APP_PORT`, `LOG_LEVEL` | `8080`, `info` | `LOG_LEVEL` is `debug`, `info`, `warn` or `error` |
+| `PLAYER_URL`, `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `SERVER_RULES_URL`, `UNIVERSITY_RECORD_URL`, `MODERATION_URL`, `DISCORD_DMS_URL` | the container names and ports of the team compose (`http://player-service:8080`, `http://applicant-service:8081`, `http://moderation-service:8085`, `http://discord-dms-service:8096`, ...) | Static mode only (`SERVICE_DISCOVERY_URL` empty): base URL of each routed service |
 
 ## 5. Routing
 
-`{gateway}/api/v1/<prefix>/<rest>` is forwarded to the service as `/api/v1/<rest>`. `<prefix>` is one
-of `player`, `session`, `applicant`, `credential`, `server-rules`, `university-record`, `moderation`,
-`discord-dms`; the prefix tells apart paths that exist in several services, e.g.
-`/api/v1/applicant/applicants/next` and `/api/v1/university-record/applicants/next`.
+`{gateway}/api/v1/<prefix>/<rest>` is forwarded to an instance of the service as `/api/v1/<rest>`.
+`<prefix>` is one of `player`, `session`, `applicant`, `credential`, `server-rules`, `university-record`,
+`moderation`, `discord-dms` (also the service names in Service Discovery and in the logs); the prefix tells
+apart paths that exist in several services, e.g. `/api/v1/applicant/applicants/next` and
+`/api/v1/university-record/applicants/next`. Which instance gets the request: §9.
 
 - A service's health checks are `GET /api/v1/<prefix>/health` and `/health/ready` (forwarded to
-  `/health` and `/health/ready`); events are pushed as `POST /api/v1/<prefix>/events`.
+  `/health` and `/health/ready` of one instance, in turn); events are pushed as
+  `POST /api/v1/<prefix>/events`.
 - Method, query string, body and headers are forwarded, except hop-by-hop headers and the
-  credentials (§6). The Gateway adds `X-Request-ID` (kept if the caller sent one) and
-  `X-Forwarded-For`, and returns the service's answer unchanged: status, headers, body.
-- No retry: a request is sent to the service at most once.
+  credentials (§6). The Gateway adds `X-Forwarded-For` and `X-Request-ID` (kept if the caller sent
+  one, a uuid4 otherwise), and returns the service's answer unchanged: status, headers, body - except
+  `X-Request-ID`, which is the one the Gateway forwarded, on every answer including its own errors.
+- No retry: a request is sent to one instance at most once, never to a second instance.
 
 ## 6. Authorization
 
@@ -94,10 +114,11 @@ A task is one request being proxied. Contract: README "Task timeout and concurre
   never duplicated by the Gateway.
 - **Refused before anything else.** A request above the limit is not queued and no service is
   called for it. The check comes first, so a full Gateway answers `429` whatever else is wrong
-  with the request.
-- **Exempt.** Liveness checks are not tasks and answer while the limit is reached: the Gateway's
-  own `GET /health` and each service's `GET /api/v1/<prefix>/health`. Readiness
-  (`/health/ready`) is a service-only route and counts as a task.
+  with the request. The instance is chosen after the credential is checked, so a refused request
+  never uses up a turn of the round-robin.
+- **Exempt.** Liveness checks are not refused while the limit is reached: the Gateway's own
+  `GET /health` and each service's `GET /api/v1/<prefix>/health`; `GET /status` is not a task at all.
+  Readiness (`/health/ready`) is a service-only route and counts as a task.
 - **Pass-through.** A `408` or `429` written by a service is an ordinary answer: status, body and
   `Retry-After` reach the caller unchanged. Only the `details` tell the two apart: the Gateway's
   carry `service` / `max_concurrent_tasks`.
@@ -108,7 +129,9 @@ A task is one request being proxied. Contract: README "Task timeout and concurre
 - The limit is counted per process; the image runs one worker.
 
 Other errors the Gateway answers itself: `400 VALIDATION_ERROR` (a path that tries to leave the
-service), `404 NOT_FOUND` (unknown prefix), `502 BAD_GATEWAY` (service unreachable).
+service), `404 NOT_FOUND` (unknown prefix), `502 BAD_GATEWAY` (the instance is unreachable),
+`503 SERVICE_UNAVAILABLE` (the service has no instance: `details: { service }`, no instance is called; §9).
+`503` is new in Lab 3 and not yet in README "Errors" (#71).
 
 ## 8. WebSocket negotiation
 
@@ -120,3 +143,97 @@ The Gateway negotiates the chat connection and never carries it.
 - The client opens `ws_url` on Discord DMs directly (host port `8086`).
 - `GET /api/v1/discord-dms/ws` sent to the Gateway is refused with `400 VALIDATION_ERROR` before any
   service is called: forwarded as a plain GET it would only burn the ticket.
+
+## 9. Instances from Service Discovery and round-robin
+
+**Reading the instances.** With `SERVICE_DISCOVERY_URL` set, the Gateway calls
+
+```
+GET {SERVICE_DISCOVERY_URL}/api/v1/instances
+X-Service-Token: <SERVICE_TOKEN>
+X-Request-ID: <a new uuid4 per call>
+```
+
+(all services: no `?service=`) once at startup, before it serves its first request, and then every
+`SD_REFRESH_SECONDS` (5 s) in the background; each call is bounded by `SD_TIMEOUT_SECONDS` (2 s). The
+expected answer is
+
+```json
+{ "instances": [ { "instance_id": "applicant-3f4e2a9b1c7d", "service_name": "applicant", "host": "172.18.0.12",
+                   "port": 8081, "version": "3.0.0", "status": "up", "last_seen_at": "2026-10-27T12:00:00Z" } ] }
+```
+
+and an instance is reached at `http://<host>:<port>` (`[host]` for an IPv6 address).
+
+- **Each successful read replaces the whole list**, so an instance that registered or went away is routed to,
+  or no longer routed to, within 5 s, without a restart.
+- **Which entries are used.** Only `status` `up` (the list holds nothing else; an entry without `status` is taken
+  as `up`); entries whose `service_name` is not one of the 8 prefixes are ignored; entries without a usable
+  `instance_id`, `host` or `port` are left out and counted as `invalid` in the `sd.refresh` line. A
+  `{ "items": [...] }` answer is accepted as well (§12).
+- **Service Discovery unreachable.** No answer, a timeout, an error status (`401`, `5xx`, ...) or an answer that
+  is not an instance list: the last list is kept, routing goes on with it, and `sd.refresh` is logged at `warn`
+  with the reason. If Service Discovery has never answered since the Gateway started, every service has no
+  instance (`503`) until it does.
+
+**Round-robin.** One counter per service: consecutive requests to a service go to its instances in turn, in
+`instance_id` order, which stays the same from one read to the next. Every request counts, the health checks
+through the Gateway included, except the ones the Gateway refuses before choosing an instance (`400`, `401`,
+`403`, `404`, `429`).
+
+**No instance.** When a service has no instance, the answer is
+
+```json
+503 { "error": { "code": "SERVICE_UNAVAILABLE", "message": "No instance of moderation is available.",
+                 "details": { "service": "moderation" } } }
+```
+
+logged as `route.no_instance`; no instance is called. An unknown prefix is still `404 NOT_FOUND`.
+
+**Static mode.** With `SERVICE_DISCOVERY_URL` empty (tests, local runs), every service has one instance,
+`<prefix>-static` at its `*_URL`, and nothing is read or refreshed.
+
+## 10. Status endpoint
+
+```
+GET /status
+200 { "service": "gateway", "instance_id": "gateway-3f4e2a9b1c7d", "version": "3.0.0",
+      "status": "up", "in_flight": 3, "max_concurrent_tasks": 64 }
+```
+
+`in_flight` is the number of requests holding a task slot right now (§7), `max_concurrent_tasks` the configured
+limit. No credential; not a task (not counted, never refused), so it answers also when the limit is reached; its
+`http.request` line is `debug`. The Gateway has no database: `status` is always `up` (never `503 degraded`).
+`GET /health` is unchanged.
+
+## 11. Logs
+
+One JSON object per line on stdout, from the Gateway and from uvicorn alike, at `LOG_LEVEL` and above:
+
+```json
+{"time":"2026-10-27T12:00:00.123Z","level":"info","service":"gateway","instance_id":"gateway-3f4e2a9b1c7d","version":"3.0.0","event":"http.request","msg":"request","request_id":"9d2d6c1e-...","method":"GET","path":"/api/v1/moderation/decisions","target":"moderation","target_instance":"moderation-5c1d9e0a7b3f","status":200,"duration_ms":42,"upstream_duration_ms":39,"player_id":"8c1f6a2e-...","client_ip":"172.18.0.9"}
+```
+
+Every line has `time` (ISO 8601 UTC with milliseconds and `Z`), `level` (`debug`, `info`, `warn`, `error`),
+`service` (`gateway`), `instance_id`, `version`, `event` and `msg`; a line written while a request is handled
+also has that request's `request_id`. Fields without a value are left out; `duration_ms` values are integers.
+
+| Event | Level | Fields |
+| --- | --- | --- |
+| `http.request` | `info`; `debug` for `/health*`, `/status` and `/api/v1/<prefix>/health*` | `request_id`, `method`, `path` (no query string), `target` (the prefix), `target_instance`, `status`, `duration_ms`, `upstream_duration_ms` (the call to the instance alone), `player_id` (player tokens), `client_ip`. One line per request, when it ends |
+| `http.error` | `warn`; `error` with `stack` for an unexpected error, logged before the `500` is answered | `request_id`, `status`, `code`, `error` (the reason). Every error the Gateway answers itself: `400`, `401`, `403`, `404`, `405`, `408`, `429`, `502`, `503`, `500` |
+| `route.no_instance` | `warn` | `target`, `instances` (how many were listed) |
+| `sd.refresh` | `debug`; `warn` when the read failed or entries were unusable | `request_id` (sent to Service Discovery), `instances` (count per service), `error` or `invalid` |
+| `startup`, `shutdown` | `info` | configuration: port, mode, Service Discovery URL and intervals (or the static URLs), timeout, limits |
+
+uvicorn's own lines get `event` `server`; its access log is off (the `http.request` line replaces it). Never
+logged: `Authorization`, `X-Service-Token`, `JWT_SECRET`, request or response bodies, query strings.
+
+## 12. Contract notes (CPR issue #71 not merged yet)
+
+What the Gateway assumes where #71 is not settled yet, and what it adds:
+
+- **List answer shape.** `{ "instances": [ ... ] }` as in the brief of #71; `{ "items": [ ... ] }` (README "API
+  conventions" list shape) is accepted too. An entry without `status` is taken as `up`. The list is read without
+  `?service=` and without pagination parameters: it must return every instance in one answer.
+- **`503 SERVICE_UNAVAILABLE`** is to be added to README "Errors" and "Gateway" by #71.

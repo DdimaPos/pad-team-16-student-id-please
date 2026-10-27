@@ -433,8 +433,12 @@ services:
       - student-id-net
 
   credential-service:
-    image: stewdh/credential-service:2.1.0
+    image: stewdh/credential-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two copies share credential-mongo (no container_name, no host port);
+    # `docker compose up -d --scale credential-service=3` adds a third.
+    deploy:
+      replicas: 2
     depends_on:
       credential-mongo:
         condition: service_healthy
@@ -442,7 +446,7 @@ services:
       APP_ENV: docker
       APP_PORT: "8082"
       LOG_LEVEL: info
-      SERVICE_VERSION: "2.1.0"
+      SERVICE_VERSION: "3.0.0"
       TZ: UTC
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
@@ -454,6 +458,9 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       APPLICANT_URL: http://gateway-service:8080/api/v1/applicant
       UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
+      # Each copy registers itself here directly (not through the Gateway) as
+      # credential-<container id>, with the same service token, and heartbeats every 5s.
+      SERVICE_DISCOVERY_URL: http://service-discovery-service:8090
       REFERENCE_YEAR: *reference_year
     healthcheck:
       test: ["CMD", "/credentiald", "healthcheck"]

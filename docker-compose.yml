@@ -73,8 +73,9 @@ services:
       # mounts GET /api/v1/dev/slow?ms=, which demonstrates both. The service checks no token: the Gateway does.
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
-      # Lab 3: registration with Service Discovery (empty = off) and the token it is called with.
-      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-}
+      # Lab 3: each copy registers with Service Discovery directly (not through the Gateway) and
+      # heartbeats every 5s, with the service token below.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
     networks:
       - student-id-net

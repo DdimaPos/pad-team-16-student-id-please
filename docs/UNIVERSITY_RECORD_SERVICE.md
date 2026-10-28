@@ -62,7 +62,7 @@ otherwise - an honest course must exist before anyone claims it.
 | **Database** | PostgreSQL, `university_record_db` (own container, host port `5435`) |
 | **Events** | HTTP push through the Gateway, no broker: received on `POST /api/v1/events`, produced through an outbox relay to `{gateway}/api/v1/<consumer>/events` with the service token (see §6) |
 | **Authentication** | Checked by the Gateway, not here. The service validates no token: a player's request arrives with `X-Player-Id`, a service's without it, and the route tells which is expected (§10) |
-| **Docker image** | `d1vinexd/university-record-service:3.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
+| **Docker image** | `d1vinexd/university-record-service:3.0.1` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
 | **Architecture** | Clean Architecture, five projects: `Domain` (pure - identity helpers, record generation, search semantics, the access-decision table), `Repositories` (interfaces + event DTOs), `Services` (use cases + event handlers), `Infrastructure` (EF Core, event transport), `Api` |
 
 ---
@@ -81,7 +81,7 @@ docker run -d --name university-record-service --network student-id-net \
   -e APPLICANT_URL=http://gateway-service:8080/api/v1/applicant \
   -e CREDENTIAL_URL=http://gateway-service:8080/api/v1/credential \
   -e Dev__EnableTestEndpoints=true \
-  d1vinexd/university-record-service:3.0.0
+  d1vinexd/university-record-service:3.0.1
 ```
 
 Or use the team compose in the CPR root. Events are pushed to `POST /api/v1/events` (§6, §11).
@@ -232,7 +232,7 @@ cedilla form) - please confirm Applicant Service does the same.
 ## Lab 3: status, logs, discovery, several instances
 
 - **`GET /status`** answers without a credential and outside the concurrent task limit (like `/health`): `{ service, instance_id, version, status, in_flight, max_concurrent_tasks }`, `service` is `university-record`. `status` is `up`, or `degraded` with `503` when the database does not answer. `/health` and `/health/ready` are unchanged.
-- **Logs** are JSON lines with `time`, `level`, `service`, `instance_id`, `version`, `event`, `msg` and the fields of the event (`http.request` carries `request_id`, `method`, `path`, `status`, `duration_ms`). An error is logged once, with its stack for an unexpected one. `app.started` / `app.stopped` carry the version, instance id, address and settings (a token only as `service_token_set`).
+- **Logs** are JSON lines with `time`, `level`, `service`, `instance_id`, `version`, `event`, `msg` and the fields of the event (`http.request` carries `request_id`, `method`, `path`, `status`, `duration_ms`). An error is logged once, with its stack for an unexpected one. `startup` / `shutdown` carry the version, instance id, address and settings (a token only as `service_token_set`).
 - **Service Discovery**: with `SERVICE_DISCOVERY_URL` set the instance registers as `university-record` (`PUT /api/v1/instances/<instance_id>` with its port, `host` only when `INSTANCE_HOST` is set), repeats it every 5 s as the heartbeat, and removes itself with `DELETE` on a clean stop; calls time out after 2 s and a failure is logged and retried at the next beat, it never stops the service.
 - **Database**: the Npgsql pool is capped at 20 connections per instance unless the connection string sets `Maximum Pool Size`. Migrations and seeding run under a Postgres advisory lock, so instances starting together on an empty database run them once.
 - **Several instances**: the relay claims outbox rows with `FOR UPDATE SKIP LOCKED` and a lease, so a delivery is pushed by one instance at a time, and a row whose instance died is claimed again when the lease ends. `event_id` is recorded with `INSERT ... ON CONFLICT DO NOTHING` in the same transaction as the effect, so the same event at two instances applies once. `session.started` stays delete-then-insert, in that transaction.

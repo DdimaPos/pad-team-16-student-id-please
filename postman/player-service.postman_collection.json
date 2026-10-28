@@ -1,13 +1,18 @@
 {
   "info": {
     "name": "Player Service",
-    "description": "Player Service owns the moderator player accounts: identity, credentials, profile, friends, XP, level, shift history and the disciplinary log. It is the only issuer of the player JWT.\n\nTHROUGH THE GATEWAY. Every request goes to the Gateway: {{base_url}} is http://localhost:8080/api/v1/player, the one base URL of this collection. The Gateway checks the credential each route accepts and forwards only X-Player-Id: player routes send `Authorization: Bearer {{<player>_token}}`, service-only routes (POST /events, /dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. Login and registration are public.\n\nCONTRACT. POST /auth/login, GET /players/{player_id} and POST /events are in the CPR communication contract. Everything else is beyond it and labelled so in the folder names.\n\nTOKENS. The \"auth\" folder logs in as four seeded players (password `seed-password`) and stores {{dima_token}}, {{maxim_token}}, {{rookie_token}} and {{veteran_token}}; run it first. A player changes only their own account and friends list: another player's token is 403 NOT_ACCOUNT_OWNER.\n\nTESTS. Every request name states the status it expects, and the error code when there is one; a collection-level test asserts both.\n\nTASK LIMITS. The \"dev - task timeout\" folder shows the 408. The 429 needs parallel requests, which a sequential run cannot send: start Player Service with MAX_CONCURRENT_TASKS=1 and call /dev/slow?ms=3000 twice at once (docs/PLAYER_SERVICE.md, §11).\n\nPREREQUISITES. The team stack from the CPR (docker compose up -d) on a freshly seeded player database. {{dima_id}}, {{maxim_id}} and {{vlad_id}} are the ids the CPR README and the other services' collections already use; {{dima_id}} carries xp 1250 / 12 completed shifts, so the contract's published example response is reproducible verbatim.\n\nORDER. Folders run top to bottom. Requests whose names start with a number belong to a sequence and depend on the ones before them. The last folder is destructive; drop the player_db volume to restore the seed.",
+    "description": "Player Service owns the moderator player accounts: identity, credentials, profile, friends, XP, level, shift history and the disciplinary log. It is the only issuer of the player JWT.\n\nTHROUGH THE GATEWAY. Every request goes to the Gateway: {{base_url}} is http://localhost:8080/api/v1/player, the one base URL of this collection. The Gateway checks the credential each route accepts and forwards only X-Player-Id: player routes send `Authorization: Bearer {{<player>_token}}`, service-only routes (POST /events, /dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. Login and registration are public.\n\nCONTRACT. POST /auth/login, GET /players/{player_id} and POST /events are in the CPR communication contract. Everything else is beyond it and labelled so in the folder names.\n\nTOKENS. The \"auth\" folder logs in as four seeded players (password `seed-password`) and stores {{dima_token}}, {{maxim_token}}, {{rookie_token}} and {{veteran_token}}; run it first. A player changes only their own account and friends list: another player's token is 403 NOT_ACCOUNT_OWNER.\n\nTESTS. Every request name states the status it expects, and the error code when there is one; a collection-level test asserts both.\n\nTASK LIMITS. The \"dev - task timeout\" folder shows the 408. The 429 needs parallel requests, which a sequential run cannot send: start Player Service with MAX_CONCURRENT_TASKS=1 and call /dev/slow?ms=3000 twice at once (docs/PLAYER_SERVICE.md, \u00a711).\n\nPREREQUISITES. The team stack from the CPR (docker compose up -d) on a freshly seeded player database. {{dima_id}}, {{maxim_id}} and {{vlad_id}} are the ids the CPR README and the other services' collections already use; {{dima_id}} carries xp 1250 / 12 completed shifts, so the contract's published example response is reproducible verbatim.\n\nORDER. Folders run top to bottom. Requests whose names start with a number belong to a sequence and depend on the ones before them. The last folder is destructive; drop the player_db volume to restore the seed.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     {
       "key": "base_url",
       "value": "http://localhost:8080/api/v1/player"
+    },
+    {
+      "key": "player_direct_url",
+      "value": "http://localhost:8087",
+      "description": "The instance itself, not the Gateway: its port is not published in the team stack, so run the service's own compose and use `docker compose port --index 1 player-service 8080`."
     },
     {
       "key": "service_token",
@@ -92,6 +97,29 @@
                 "value": "{{service_token}}"
               }
             ]
+          }
+        },
+        {
+          "name": "GET /status (200, for Service Discovery - called directly, not through the Gateway)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('contract shape', () => pm.expect(b).to.have.all.keys('service','instance_id','version','status','in_flight','max_concurrent_tasks'));",
+                  "pm.test('service is player', () => pm.expect(b.service).to.eql('player'));",
+                  "pm.test('instance id is player-<hostname>', () => pm.expect(b.instance_id).to.match(/^player-/));",
+                  "pm.test('up', () => pm.expect(b.status).to.eql('up'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{player_direct_url}}/status"
           }
         }
       ]

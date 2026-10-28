@@ -229,7 +229,7 @@ services:
       - student-id-net
 
   player-service:
-    image: dimapos/player-service:2.0.0
+    image: dimapos/player-service:3.0.0
     restart: unless-stopped
     depends_on:
       player-postgres:
@@ -251,6 +251,11 @@ services:
       SEED_ON_START: ${PLAYER_SEED_ON_START:-true}
       # Mounts GET /api/v1/dev/slow?ms=, which demonstrates the 408 and the 429.
       ENABLE_DEV_ENDPOINTS: ${PLAYER_ENABLE_DEV_ENDPOINTS:-true}
+      # Lab 3: registration with Service Discovery, directly (not through the Gateway). The URL
+      # defaults to the internal container address, so an empty value in .env still registers;
+      # SERVICE_TOKEN is required with it.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
     networks:
       - student-id-net
 

@@ -58,7 +58,7 @@ services:
       - student-id-net
 
   server-rules-service:
-    image: d1vinexd/server-rules-service:3.0.0
+    image: d1vinexd/server-rules-service:3.0.1
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:

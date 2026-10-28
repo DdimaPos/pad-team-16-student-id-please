@@ -52,7 +52,7 @@ service, publishes no event, consumes no event, and stores nothing about applica
 | **Database** | PostgreSQL, `rules_db` (own container, host port `5434`) |
 | **Events** | none - this service neither produces nor receives events |
 | **Authentication** | Checked by the Gateway, not here: `GET /rulesets/current`, `POST /rulesets/{v}/evaluations` and `/admin/*` only with the service token, `GET /rulesets/{version}` with a player JWT. The service validates no token and reads no header; only `/admin/*` and `/dev/*` refuse a request that carries `X-Player-Id` (`403 SERVICE_TOKEN_REQUIRED`), because a service call arrives without it |
-| **Docker image** | `d1vinexd/server-rules-service:3.0.0` (also tagged `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
+| **Docker image** | `d1vinexd/server-rules-service:3.0.1` (also tagged `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
 | **Architecture** | Clean Architecture, five projects: `Domain` (pure - the condition DSL, evaluator, channel resolver), `Repositories` (interfaces), `Services` (use cases), `Infrastructure` (EF Core + Npgsql), `Api` (minimal APIs) |
 
 ---
@@ -66,7 +66,7 @@ docker network create student-id-net   # once, if it does not already exist
 docker run -d --name server-rules-service --network student-id-net \
   -p 8083:8080 \
   -e ConnectionStrings__RulesDb="Host=<postgres-host>;Port=5432;Database=rules_db;Username=rules_user;Password=<password>" \
-  d1vinexd/server-rules-service:3.0.0
+  d1vinexd/server-rules-service:3.0.1
 ```
 
 Or use the team compose in the CPR root (`docker-compose.yml`), which wires this service and
@@ -200,7 +200,7 @@ to grants/denies and can never "fail".
 ## Lab 3: status, logs, discovery, several instances
 
 - **`GET /status`** answers without a credential and outside the concurrent task limit (like `/health`): `{ service, instance_id, version, status, in_flight, max_concurrent_tasks }`, `service` is `server-rules`. `status` is `up`, or `degraded` with `503` when the database does not answer. `/health` and `/health/ready` are unchanged.
-- **Logs** are JSON lines with `time`, `level`, `service`, `instance_id`, `version`, `event`, `msg` and the fields of the event (`http.request` carries `request_id`, `method`, `path`, `status`, `duration_ms`). An error is logged once, with its stack for an unexpected one. `app.started` / `app.stopped` carry the version, instance id, address and settings (a token only as `service_token_set`).
+- **Logs** are JSON lines with `time`, `level`, `service`, `instance_id`, `version`, `event`, `msg` and the fields of the event (`http.request` carries `request_id`, `method`, `path`, `status`, `duration_ms`). An error is logged once, with its stack for an unexpected one. `startup` / `shutdown` carry the version, instance id, address and settings (a token only as `service_token_set`).
 - **Service Discovery**: with `SERVICE_DISCOVERY_URL` set the instance registers as `server-rules` (`PUT /api/v1/instances/<instance_id>` with its port, `host` only when `INSTANCE_HOST` is set), repeats it every 5 s as the heartbeat, and removes itself with `DELETE` on a clean stop; calls time out after 2 s and a failure is logged and retried at the next beat, it never stops the service.
 - **Database**: the Npgsql pool is capped at 20 connections per instance unless the connection string sets `Maximum Pool Size`. Migrations and seeding run under a Postgres advisory lock, so instances starting together on an empty database run them once.
 - **Several instances**: the rules of a ruleset never change, so each instance caches a resolved version for good. `is_active` and `notes` can change on another instance, so the admin endpoints (and the guards before a change) read the database, never the cache. A public read of a version can show an `is_active` or `notes` another instance has just changed until that instance restarts. This service makes no outbound calls, so it has no circuit breaker.

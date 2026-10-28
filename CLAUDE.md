@@ -7,7 +7,8 @@ _"Student ID, please"_ — a Discord-moderation game decomposed into 8 microserv
 contains **no service source code**. It is documentation plus git submodules pointing at each
 service's own private repository.
 
-8 services, 2 per team member, plus the shared Gateway (Lab 2, Python); ownership and access rules
+8 services, 2 per team member, plus the shared Gateway (Lab 2, Python) and Service Discovery
+(`service-discovery-service`, Lab 3, Python, owned by DdimaPos); ownership and access rules
 are in `.claude/rules/submodule-management.md`.
 
 ### Check for a service-specific CLAUDE.md
@@ -24,6 +25,7 @@ it's there, and if present, follow it in addition to this file for work inside t
 - @player-service/CLAUDE.md
 - @server-moderation-session-service/CLAUDE.md
 - @server-rules-service/CLAUDE.md
+- @service-discovery-service/CLAUDE.md
 - @university-record-service/CLAUDE.md
 
 Because of this, **the authoritative source of truth for cross-service behavior is `README.md` at
@@ -87,7 +89,9 @@ Moderation's calling contract is the one most likely to be affected by a breakin
 
 Every REST request — client→service and service→service, event pushes included — goes through the
 Gateway as `{gateway}/api/v1/<prefix>/...` (README "Gateway"). Never configure a service with
-another service's own address.
+another service's own address. The one exception (Lab 3) is Service Discovery: instances register,
+heartbeat and deregister with it directly at `SERVICE_DISCOVERY_URL`, it polls their `GET /status`
+directly, and it checks `X-Service-Token` itself (README "Service Discovery").
 
 1. **REST** when the caller needs an answer now (e.g. Session fetching the ruleset before a shift starts).
 2. **Event** when something happened and others should know, no reply needed (e.g. `session.ended`). There is no broker: the producer writes the envelope to its outbox and relays it through the Gateway to every consumer's `POST /api/v1/events` (README "Event delivery"). Events may be delivered more than once — every consumer must dedupe by `event_id`.
@@ -110,10 +114,10 @@ services ship byte-identical copies of it.
 ### Per-service tech stack
 
 Six services (Player, Session, Applicant, Credential, Moderation, Discord DMs) are Go + Gin. Two
-(Server Rules, University Record) are C# + ASP.NET Core. All services expose the same contract
+(Server Rules, University Record) are C# + ASP.NET Core. Gateway and Service Discovery are Python + FastAPI. All services expose the same contract
 shape regardless of language: REST + JSON under `/api/v1`, snake_case fields, the same error
 envelope, `408`/`429` for the task timeout and concurrent limit, and events pushed over HTTP. Auth
 lives in the Gateway: it validates `Authorization: Bearer <jwt>` (issued by Player Service) and the
 one shared `X-Service-Token`, strips both, and passes the player on as `X-Player-Id` — services
-validate no token. Images are versioned `<lab>.x.y` from a `VERSION` file (Lab 2 = `2.x.y`). Database-per-service, engine chosen per service (see the
+validate no token. Images are versioned `<lab>.x.y` from a `VERSION` file (Lab 2 = `2.x.y`, Lab 3 = `3.x.y`). Database-per-service, engine chosen per service (see the
 Databases table in `README.md` for which engine and why).

@@ -62,7 +62,7 @@ otherwise - an honest course must exist before anyone claims it.
 | **Database** | PostgreSQL, `university_record_db` (own container, host port `5435`) |
 | **Events** | HTTP push through the Gateway, no broker: received on `POST /api/v1/events`, produced through an outbox relay to `{gateway}/api/v1/<consumer>/events` with the service token (see §6) |
 | **Authentication** | Checked by the Gateway, not here. The service validates no token: a player's request arrives with `X-Player-Id`, a service's without it, and the route tells which is expected (§10) |
-| **Docker image** | `d1vinexd/university-record-service:2.1.1` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
+| **Docker image** | `d1vinexd/university-record-service:3.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
 | **Architecture** | Clean Architecture, five projects: `Domain` (pure - identity helpers, record generation, search semantics, the access-decision table), `Repositories` (interfaces + event DTOs), `Services` (use cases + event handlers), `Infrastructure` (EF Core, event transport), `Api` |
 
 ---
@@ -81,7 +81,7 @@ docker run -d --name university-record-service --network student-id-net \
   -e APPLICANT_URL=http://gateway-service:8080/api/v1/applicant \
   -e CREDENTIAL_URL=http://gateway-service:8080/api/v1/credential \
   -e Dev__EnableTestEndpoints=true \
-  d1vinexd/university-record-service:2.1.1
+  d1vinexd/university-record-service:3.0.0
 ```
 
 Or use the team compose in the CPR root. Events are pushed to `POST /api/v1/events` (§6, §11).
@@ -112,6 +112,11 @@ is a one-glance diff.
 | `HTTP_REQUEST_TIMEOUT` | `5` | no | Task timeout in seconds (`5` or `5s`): a longer request is cancelled, its transaction rolled back, and answered `408 REQUEST_TIMEOUT`. `/health*` is exempt |
 | `MAX_CONCURRENT_TASKS` | `100` | no | Concurrent task limit: one more request, `POST /events` included, is refused at once with `429 TOO_MANY_REQUESTS` and `Retry-After: 1`. `/health*` is exempt. The team compose sets `64` |
 | `Dev__EnableTestEndpoints` | `false` | no | Mounts `GET /api/v1/dev/slow?ms=` (service-only, sleeps `ms` milliseconds, at most a minute) to demonstrate the two limits above. **Enable for the team demo**, leave `false` in any shared/production deployment |
+| `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn` or `error`. One JSON object per line on stdout |
+| `SERVICE_DISCOVERY_URL` | empty | no | Base URL of Service Discovery. Empty turns registration off |
+| `INSTANCE_ID` | `university-record-<hostname>` | no | Name of this instance in logs, `/status` and Service Discovery |
+| `INSTANCE_HOST` | unset | no | Address the Gateway should use, sent as `host` only when set (a run outside Docker) |
+| `EVENT_PUSH_TIMEOUT` | `5` | no | Seconds one event push may take; the lease on a claimed outbox row is twice this plus 5 s |
 
 ---
 
@@ -223,6 +228,16 @@ cedilla form) - please confirm Applicant Service does the same.
 | 4 | **`q` is required on `GET /records/{category}`**, per the contract - there is no way to browse the course catalog without a search term. Flagged to the team as worth making optional for `courses` specifically; not changed unilaterally | Junior Moderators wanting to browse |
 
 ---
+
+## Lab 3: status, logs, discovery, several instances
+
+- **`GET /status`** answers without a credential and outside the concurrent task limit (like `/health`): `{ service, instance_id, version, status, in_flight, max_concurrent_tasks }`, `service` is `university-record`. `status` is `up`, or `degraded` with `503` when the database does not answer. `/health` and `/health/ready` are unchanged.
+- **Logs** are JSON lines with `time`, `level`, `service`, `instance_id`, `version`, `event`, `msg` and the fields of the event (`http.request` carries `request_id`, `method`, `path`, `status`, `duration_ms`). An error is logged once, with its stack for an unexpected one. `app.started` / `app.stopped` carry the version, instance id, address and settings (a token only as `service_token_set`).
+- **Service Discovery**: with `SERVICE_DISCOVERY_URL` set the instance registers as `university-record` (`PUT /api/v1/instances/<instance_id>` with its port, `host` only when `INSTANCE_HOST` is set), repeats it every 5 s as the heartbeat, and removes itself with `DELETE` on a clean stop; calls time out after 2 s and a failure is logged and retried at the next beat, it never stops the service.
+- **Database**: the Npgsql pool is capped at 20 connections per instance unless the connection string sets `Maximum Pool Size`. Migrations and seeding run under a Postgres advisory lock, so instances starting together on an empty database run them once.
+- **Several instances**: the relay claims outbox rows with `FOR UPDATE SKIP LOCKED` and a lease, so a delivery is pushed by one instance at a time, and a row whose instance died is claimed again when the lease ends. `event_id` is recorded with `INSERT ... ON CONFLICT DO NOTHING` in the same transaction as the effect, so the same event at two instances applies once. `session.started` stays delete-then-insert, in that transaction.
+- **Circuit breaker** (one per consumer, `applicant` and `credential`): 3 failures inside `HTTP_REQUEST_TIMEOUT` x 3.5 (17.5 s) open it. A failure is no answer within `EVENT_PUSH_TIMEOUT`, a refused or reset connection, or a `5xx` (the Gateway's `502` and `503` included); `429` and other `4xx` do not count. While it is open the relay does not claim that consumer's rows (they stay pending, no attempt is counted) and the other consumer keeps going; after the same time one trial push closes it on success or reopens it. Every transition is logged (`breaker.opened|closed|rejected`). The breaker only logs and fails fast; it never tells Service Discovery anything.
+- **Divergence from #85**: the item "the request answers `500 DEPENDENCY_UNAVAILABLE`" does not apply: this service makes no outbound call while answering a request, only the relay calls other services, and it leaves the delivery pending.
 
 ## 9. Edge cases
 

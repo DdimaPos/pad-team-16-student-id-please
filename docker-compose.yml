@@ -118,8 +118,9 @@ services:
       CREDENTIAL_URL: ${UNIVERSITY_RECORD_CREDENTIAL_URL:-http://gateway-service:8080/api/v1/credential}
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
-      # Lab 3: registration with Service Discovery (empty = off); the token above is used for it too.
-      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-}
+      # Lab 3: each copy registers with Service Discovery directly (not through the Gateway) and
+      # heartbeats every 5s, with the service token above.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       Dev__EnableTestEndpoints: ${UNIVERSITY_RECORD_ENABLE_DEV_ENDPOINTS:-true}
     networks:
       - student-id-net

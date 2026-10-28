@@ -1,0 +1,352 @@
+{
+  "info": {
+    "name": "Service Discovery Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Registry of service instances (Lab 3, #69). Run in order: the registry folder registers, heartbeats, lists and deregisters one instance. Health polling, notifications and mark-down come with #72-#74."
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8090"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me_too"
+    },
+    {
+      "key": "instance_id",
+      "value": "player-postman"
+    }
+  ],
+  "item": [
+    {
+      "name": "probes",
+      "item": [
+        {
+          "name": "GET /health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('names service discovery', () => pm.expect(pm.response.json().service).to.eql('service-discovery'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/health"
+          }
+        },
+        {
+          "name": "GET /status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('contract shape', () => pm.expect(b).to.have.all.keys('service','instance_id','version','status','in_flight','max_concurrent_tasks'));",
+                  "pm.test('up', () => pm.expect(b.status).to.eql('up'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/status"
+          }
+        }
+      ]
+    },
+    {
+      "name": "registry",
+      "item": [
+        {
+          "name": "PUT /api/v1/instances/{id} (register)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('stored up', () => pm.expect(b.status).to.eql('up'));",
+                  "pm.test('ttl 15', () => pm.expect(b.ttl_seconds).to.eql(15));",
+                  "pm.test('host from the source IP', () => pm.expect(b.host).to.be.a('string').and.not.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances/{{instance_id}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"service_name\": \"player\",\n  \"port\": 8080,\n  \"version\": \"3.0.0\"\n}"
+            }
+          }
+        },
+        {
+          "name": "PUT /api/v1/instances/{id} (heartbeat, new port and host)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('updated', () => { pm.expect(b.port).to.eql(8081); pm.expect(b.host).to.eql('10.0.0.9'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances/{{instance_id}}",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"service_name\": \"player\",\n  \"port\": 8081,\n  \"version\": \"3.0.0\",\n  \"host\": \"10.0.0.9\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/instances (all)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const ids = pm.response.json().instances.map(i => i.instance_id);",
+                  "pm.test('registered once', () => pm.expect(ids.filter(i => i === pm.collectionVariables.get('instance_id')).length).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances"
+          }
+        },
+        {
+          "name": "GET /api/v1/instances?service=player",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('only player', () => pm.response.json().instances.forEach(i => pm.expect(i.service_name).to.eql('player')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances?service=player"
+          }
+        },
+        {
+          "name": "GET /api/v1/instances?service=unknown (empty)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('empty', () => pm.expect(pm.response.json().instances).to.eql([]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances?service=billing"
+          }
+        },
+        {
+          "name": "DELETE /api/v1/instances/{id} (deregister)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances/{{instance_id}}"
+          }
+        },
+        {
+          "name": "DELETE /api/v1/instances/{id} again (idempotent 204)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances/{{instance_id}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "errors",
+      "item": [
+        {
+          "name": "PUT unknown service_name (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances/billing-1",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"service_name\": \"billing\",\n  \"port\": 8080,\n  \"version\": \"3.0.0\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET without X-Service-Token (403)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/instances"
+          }
+        },
+        {
+          "name": "GET with a wrong X-Service-Token (401)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances"
+          }
+        }
+      ]
+    }
+  ]
+}

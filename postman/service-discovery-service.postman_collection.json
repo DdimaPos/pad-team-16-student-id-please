@@ -216,6 +216,134 @@
           }
         },
         {
+          "name": "PUT /api/v1/instances/{id}/status (mark down)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('down', () => pm.expect(b.status).to.eql('down'));",
+                  "pm.test('record kept', () => pm.expect(b.instance_id).to.eql(pm.collectionVariables.get('instance_id')));",
+                  "pm.test('ttl 15', () => pm.expect(b.ttl_seconds).to.eql(15));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances/{{instance_id}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"down\",\n  \"reason\": \"breaker_open: 3 failures in 35s\"\n}"
+            }
+          }
+        },
+        {
+          "name": "GET /api/v1/instances?service=player (marked down: not listed)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const ids = pm.response.json().instances.map(i => i.instance_id);",
+                  "pm.test('the down instance is left out', () => pm.expect(ids).to.not.include(pm.collectionVariables.get('instance_id')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances?service=player"
+          }
+        },
+        {
+          "name": "PUT /api/v1/instances/{id}/status again (no-op 200)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('still down', () => pm.expect(pm.response.json().status).to.eql('down'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances/{{instance_id}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"down\",\n  \"reason\": \"a second trip\"\n}"
+            }
+          }
+        },
+        {
+          "name": "PUT /api/v1/instances/{id}/status up (400)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances/{{instance_id}}/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"up\",\n  \"reason\": \"only the health polling brings an instance back\"\n}"
+            }
+          }
+        },
+        {
           "name": "DELETE /api/v1/instances/{id} (deregister)",
           "event": [
             {
@@ -344,6 +472,39 @@
               }
             ],
             "url": "{{base_url}}/api/v1/instances"
+          }
+        },
+        {
+          "name": "PUT /api/v1/instances/{id}/status of an unknown id (404)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/instances/player-never-registered/status",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"status\": \"down\",\n  \"reason\": \"breaker_open: 3 failures in 35s\"\n}"
+            }
           }
         }
       ]

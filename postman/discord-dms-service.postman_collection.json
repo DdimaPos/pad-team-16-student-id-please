@@ -64,6 +64,11 @@
       "key": "max_concurrent_tasks",
       "value": "64",
       "description": "The service's MAX_CONCURRENT_TASKS; the 429 demo fires this many slow requests first"
+    },
+    {
+      "key": "service_url",
+      "value": "http://localhost:8096",
+      "description": "The REST port of one copy, reached directly like Service Discovery does (the development stack publishes 8096; in the team stack use `docker compose port` of a copy or run the request from inside the network)"
     }
   ],
   "item": [
@@ -145,6 +150,45 @@
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
                   "pm.test('mongodb ok', () => pm.expect(pm.response.json().checks.mongodb).to.eql('ok'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /status (direct, as Service Discovery calls it)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{service_url}}/status",
+              "host": [
+                "{{service_url}}"
+              ],
+              "path": [
+                "status"
+              ]
+            },
+            "description": "The status endpoint Service Discovery polls every 10 s on the REST port, called on the copy directly (not through the Gateway): no credential, outside the concurrent task limit. ws_connections is this service's extra field. 503 with status degraded when MongoDB does not answer."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 up', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('contract shape plus ws_connections', () => pm.expect(Object.keys(b).sort()).to.eql(['in_flight', 'instance_id', 'max_concurrent_tasks', 'service', 'status', 'version', 'ws_connections']));",
+                  "pm.test('service name is the Gateway prefix', () => pm.expect(b.service).to.eql('discord-dms'));",
+                  "pm.test('status up', () => pm.expect(b.status).to.eql('up'));",
+                  "pm.test('instance id is discord-dms-<hostname>', () => pm.expect(b.instance_id).to.match(/^discord-dms-.+/));",
+                  "pm.test('load fields are integers', () => { pm.expect(b.in_flight).to.be.a('number'); pm.expect(b.ws_connections).to.be.a('number'); pm.expect(b.max_concurrent_tasks).to.eql(Number(pm.collectionVariables.get('max_concurrent_tasks'))); });"
                 ]
               }
             }

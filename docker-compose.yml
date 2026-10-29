@@ -207,8 +207,13 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:2.1.0
+    image: dmracovit/discord-dms-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two copies, none publishing a port. The one chat port of the stack, 8086, is answered by dms-ws-proxy
+    # below, which hands each WebSocket connection to one of the copies; the Redis fan-out makes every copy deliver
+    # every message, so the copy does not matter. More copies: --scale discord-dms-service=3.
+    deploy:
+      replicas: 2
     depends_on:
       dms-mongo:
         condition: service_healthy
@@ -216,16 +221,29 @@ services:
         condition: service_healthy
     environment:
       MONGODB_URI: "mongodb://${DMS_MONGO_USER:-dms_user}:${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}@dms-mongo:27017/dms_db?authSource=admin"
+      # Required with several copies: a message stored by one copy reaches the players connected to the others.
       REDIS_URL: redis://dms-redis:6379/0
       DEV_ENDPOINTS: ${DMS_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
       # The address clients reach port 8086 at: the base of the ws_url a ticket comes with. The chat is
-      # negotiated through the Gateway (POST /api/v1/discord-dms/ws-tickets) and connected here directly.
+      # negotiated through the Gateway (POST /api/v1/discord-dms/ws-tickets) and connected to the proxy directly.
       WS_PUBLIC_URL: ${DMS_WS_PUBLIC_URL:-ws://localhost:8086}
-      # Two listeners: 8086 serves the WebSocket only and is the one published below; the REST API listens
-      # on 8096, never published, and the Gateway reaches it there (DISCORD_DMS_URL=http://discord-dms-service:8096).
+      # Two listeners: 8086 serves the WebSocket only (reached through dms-ws-proxy); the REST API listens on 8096,
+      # never published, which is what every copy registers with Service Discovery and where the Gateway reaches it.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+    networks:
+      - student-id-net
+
+  dms-ws-proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - discord-dms-service
+    volumes:
+      - ./deployments/dms-ws-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "8086:8086"   # stays published in the final stack: the direct WebSocket connection, nothing else answers here
+      - "8086:8086"   # the one chat port of the stack: ws://localhost:8086/api/v1/ws?ticket=... reaches one of the copies
     networks:
       - student-id-net
 

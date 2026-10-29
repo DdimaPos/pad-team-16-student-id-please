@@ -97,6 +97,17 @@
               }
             ]
           }
+        },
+        {
+          "name": "GET /status (Service Discovery, outside the limiter)",
+          "description": "Shaped { service, instance_id, version, status, in_flight, max_concurrent_tasks }. Service Discovery calls it on the instance itself; through the Gateway it answers once the Gateway forwards /status, otherwise point base_url at the service port.",
+          "request": { "method": "GET", "url": "{{base_url}}/status" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status answers 200 with the agreed shape', function () {",
+            "  pm.response.to.have.status(200);",
+            "  pm.expect(pm.response.json()).to.have.all.keys('service', 'instance_id', 'version', 'status', 'in_flight', 'max_concurrent_tasks');",
+            "});"
+          ] } }]
         }
       ]
     },

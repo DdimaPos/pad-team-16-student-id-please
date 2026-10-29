@@ -19,6 +19,7 @@
 9. [Edge cases](#9-edge-cases)
 10. [Gateway requirements](#10-gateway-requirements)
 11. [Mocking strategy (grade 9) and testing recipes](#11-mocking-strategy-grade-9-and-testing-recipes)
+12. [Several instances (Lab 3)](#12-several-instances-lab-3)
 
 ---
 
@@ -58,14 +59,17 @@ two, publishes two events and consumes one.
 | | |
 | --- | --- |
 | **Language / framework** | Go 1.26 / Gin |
-| **Container port** | `8080` (mapped to host `8088` by convention) |
+| **Container port** | `8080` (not published in the team stack; a random host port in the service's own compose) |
 | **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/session/...` |
-| **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres plus each of the three dependencies, and says which are stubbed) |
-| **Database** | PostgreSQL 17, `session_db` (own container, host port `5438`). Schema applied at startup by GORM `AutoMigrate`. **No Redis** - see [§8](#8-divergences-from-the-cpr-contract) |
+| **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres plus each of the three dependencies as `stub` or `not_probed`, with its circuit breaker state). `GET /status` for Service Discovery, called directly - see [§12](#12-several-instances-lab-3) |
+| **Database** | PostgreSQL 17, `session_db` (own container, host port `5438`). Schema applied at startup by GORM `AutoMigrate`, under a PostgreSQL advisory lock together with the seed. **No Redis** - see [§8](#8-divergences-from-the-cpr-contract) |
+| **Service Discovery** | Registers as `session`, instance id `session-<hostname>`, port `8080`; heartbeat every 5 s, `DELETE` on graceful shutdown - see [§12](#12-several-instances-lab-3) |
+| **Circuit breakers** | Six: `player`, `server-rules`, `applicant` (synchronous calls) and `player`, `university-record`, `discord-dms` (relay) - see [§12](#12-several-instances-lab-3) |
+| **Logs** | One JSON object per line on stdout in the format of CPR README "Logging" |
 | **Events** | Direct HTTP push (contract): produced events are relayed from the outbox to the consumers' `POST /api/v1/events`, tracked per consumer; `decision.recorded` arrives on its own `POST /api/v1/events` - see [§6](#6-events) |
 | **Caller identity** | `X-Player-Id`, set by the Gateway after it validated the player's JWT; the service validates no token. Outbound calls go through the Gateway with `X-Service-Token` |
-| **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health` and `/health/ready` are exempt |
-| **Docker image** | `dimapos/server-moderation-session-service:2.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64`, published by GitHub Actions on merge to `main` |
+| **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health`, `/health/ready` and `/status` are exempt |
+| **Docker image** | `dimapos/server-moderation-session-service:3.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64`, published by GitHub Actions on merge to `main` |
 | **Producer name** | `server-moderation-session-service` - the value in the `producer` member of every event it publishes |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`; `details` is always an object, never `null` |
 | **Timestamps** | ISO-8601, UTC |
@@ -89,7 +93,7 @@ docker run -d --name session-postgres --network student-id-net \
 
 docker run -d --name session-service --network student-id-net -p 8088:8080 \
   -e POSTGRES_HOST=session-postgres -e POSTGRES_PASSWORD=change_me \
-  dimapos/server-moderation-session-service:2.0.0
+  dimapos/server-moderation-session-service:3.0.0
 ```
 
 Simpler: the root [`docker-compose.yml`](../docker-compose.yml) already carries both blocks.
@@ -133,7 +137,7 @@ once.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `APP_PORT` | `8080` | Port inside the container. The team convention is 8080 for every service |
-| `APP_ENV` | `local` | `local` \| `docker` \| `production`. Anything but `local` puts Gin in release mode and the logs in JSON |
+| `APP_ENV` | `local` (`docker` in the image) | `local` \| `docker` \| `production`. Anything but `local` puts Gin in release mode and the logs in JSON. The image sets `docker`, so it always logs JSON |
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `SERVICE_VERSION` | the image's `VERSION` | Reported by `GET /health`; overrides the version stamped into the image at build time |
 | `HTTP_READ_TIMEOUT` / `HTTP_WRITE_TIMEOUT` / `SHUTDOWN_TIMEOUT` | `10s` / `10s` / `15s` | |
@@ -146,12 +150,12 @@ once.
 | `APPLICANT_SERVICE_URL` | `""` | Gateway URL of Applicant Service (`.../api/v1/applicant`). Empty selects the built-in stub |
 | `UNIVERSITY_RECORD_SERVICE_URL` | `""` | Gateway URL of University Record (`.../api/v1/university-record`), for the event pushes. Empty leaves its deliveries pending |
 | `DISCORD_DMS_SERVICE_URL` | `""` | Gateway URL of Discord DMs (`.../api/v1/discord-dms`), for the event pushes. Empty leaves its deliveries pending |
-| `SERVICE_TOKEN` | - | Sent as `X-Service-Token` on every outbound call and event push. **Required** as soon as any URL above is set |
+| `SERVICE_TOKEN` | - | Sent as `X-Service-Token` on every outbound call, event push and Service Discovery call. **Required** as soon as any URL above or `SERVICE_DISCOVERY_URL` is set |
 | `DEPENDENCY_TIMEOUT` | `3s` | Applies to every outbound call and push. Must be below `HTTP_REQUEST_TIMEOUT` |
 | `HTTP_REQUEST_TIMEOUT` | `5s` | Task timeout; reached = `408 REQUEST_TIMEOUT`. Must be below `HTTP_WRITE_TIMEOUT` |
 | `MAX_CONCURRENT_TASKS` | `50` | Concurrent task limit; reached = `429 TOO_MANY_REQUESTS` with `Retry-After: 1` |
 | `RELAY_INTERVAL` | `1s` | How often the relay looks for deliveries that are due |
-| `RELAY_BATCH` | `50` | The most deliveries one relay pass sends |
+| `RELAY_BATCH` | `50` | The most deliveries one relay pass sends to one consumer; also sizes the claim lease (`RELAY_BATCH` x `DEPENDENCY_TIMEOUT` + 5 s) |
 | `MAX_PLAYERS_PER_SESSION` | `5` | The contract's cap: 1 Moderator + up to 4 Junior Moderators |
 | `SCORE_PER_CORRECT` | `10` | Multiplied by the difficulty on a correct decision |
 | `XP_BASE` | `20` | What every player earns for working the shift at all |
@@ -159,6 +163,9 @@ once.
 | `WARNING_PENALTY_THRESHOLD` | `25` | Penalty share above which a player is warned |
 | `SEED_ON_START` | `true` | Seeds three sessions, but only when the table is empty |
 | `ENABLE_DEV_ENDPOINTS` | `true` | Mounts `GET /api/v1/dev/slow?ms=` |
+| `SERVICE_DISCOVERY_URL` | `""` | Service Discovery to register with, directly (team stack: `http://service-discovery-service:8090`). Empty = no registration and one warning line at startup |
+| `INSTANCE_ID` | `session-<hostname>` | This instance's id in the registry, `/status`, the relay's claims and every log line |
+| `INSTANCE_HOST` | `""` | Sent as `host` at registration, for a run outside Docker; otherwise Service Discovery uses the request's source address |
 
 Two switches matter in a shared stack. `SEED_ON_START` is harmless - it is a no-op once the table
 has rows. `ENABLE_DEV_ENDPOINTS` mounts an endpoint that only waits, to demonstrate the `408` and the
@@ -363,9 +370,11 @@ caller can see the deduplication fire.
 
 ### The relay (producer side)
 
-Every `RELAY_INTERVAL` the relay reads the pending deliveries that are due and `POST`s each envelope,
-unchanged, to `{consumer URL}/events` with `X-Service-Token` - one goroutine per consumer, so a
-consumer that hangs until `DEPENDENCY_TIMEOUT` delays only its own deliveries:
+Every `RELAY_INTERVAL` the relay claims the pending deliveries that are due and `POST`s each envelope,
+unchanged, to `{consumer URL}/events` with `X-Service-Token` and the `X-Request-ID` of the request
+that produced the event - one goroutine per consumer, so a consumer that hangs until
+`DEPENDENCY_TIMEOUT` delays only its own deliveries. Every instance runs a relay; how they share the
+work is in [§12](#12-several-instances-lab-3):
 
 | Consumer answers | Delivery becomes |
 | --- | --- |
@@ -627,6 +636,8 @@ curl -sS $G/player/players/$M -H "X-Service-Token: $SERVICE_TOKEN" | jq .
 ### Postman
 
 [`postman/server-moderation-session-service.postman_collection.json`](../postman/server-moderation-session-service.postman_collection.json).
+`GET /status` is the one request sent to the instance directly, through `session_direct_url`, because
+the Gateway does not route it.
 Every request name carries the status code it expects, so the collection can be checked mechanically.
 It goes through the Gateway: `base_url` is `http://localhost:8080/api/v1` (Session routes under
 `/session`, login under `/player`) and `service_token` must equal `SERVICE_TOKEN` in `.env`. The
@@ -641,3 +652,110 @@ collection variable, and the cleanup folder is destructive.
 repository and the stub clients, so they need neither a database nor any other service.
 `make test-db` adds a throwaway PostgreSQL container for the repository tests. `make check` runs
 gofmt, go vet and the unit tests together.
+
+---
+
+## 12. Several instances (Lab 3)
+
+From `3.0.0` the service runs as 2-3 copies behind the Gateway's round-robin, all on one `session_db`.
+
+### `GET /status`
+
+At the root, next to `/health`; no credential, outside the concurrent task limit and not counted in
+`in_flight`. Service Discovery calls it directly every 10 s.
+
+```json
+// 200, or 503 with "status": "degraded" when the PostgreSQL ping (1 s) fails
+{ "service": "session", "instance_id": "session-3f4e2a9b1c7d", "version": "3.0.0",
+  "status": "up", "in_flight": 3, "max_concurrent_tasks": 50 }
+```
+
+Only the database makes it `degraded`: a peer that does not answer is a per-request `500`, not an
+outage of this instance. `/health` keeps `"service": "server-moderation-session-service"`, which is also
+the events' `producer`; the Lab 3 name `session` is used in `/status`, the logs and the registration.
+
+### Registration with Service Discovery
+
+- `PUT {SERVICE_DISCOVERY_URL}/api/v1/instances/{instance_id}` with `X-Service-Token` and
+  `{"service_name": "session", "port": 8080, "version": "3.0.0"}` (`host` added when `INSTANCE_HOST`
+  is set), sent right after the HTTP listener is up and then every 5 s as the heartbeat.
+- `sd.registered` on the first success; a failure logs `sd.heartbeat_failed` (`warn`) and is retried on
+  the next tick. The instance keeps serving either way.
+- On SIGTERM/SIGINT: `DELETE` the same path (2 s timeout, `sd.deregistered`), then the HTTP server
+  drains and the relay stops. Every call to Service Discovery has a 2 s timeout.
+
+### Logging
+
+One JSON object per line on stdout. Every line has `time` (UTC, milliseconds, `Z`), `level`
+(lowercase), `service` (`session`), `instance_id`, `version`, `event` and `msg`; lines written while
+handling a request, and the relay's lines for an event, add `request_id`.
+
+| `event` | Level | Extra fields |
+| --- | --- | --- |
+| `http.request` | `info`; `debug` for `/health*` and `/status` | `method`, `path`, `status`, `duration_ms` (integer), `client_ip`, `player_id` when `X-Player-Id` is set |
+| `http.error` | `info`; `error` with `stack` for a panic or an unexpected `500` (logged once) | `status`, `code`, `error` |
+| `outbound.call` | `info` | `target` (`player`, `server-rules`, `applicant`, `university-record`, `discord-dms`), `method`, `path`, `status` (`0` = no answer), `duration_ms` |
+| `event.pushed` | `info`; `warn` when it will be retried | `event_id`, `event_type`, `consumer`, `status`, `attempt`, `next_attempt_at` on a retry |
+| `event.parked` | `error` | the same, plus `reason` |
+| `event.received` | `info` | `event_id`, `event_type`, `producer`, `duplicate` |
+| `breaker.opened` / `breaker.closed` / `breaker.rejected` | `warn` / `info` / `warn` | `target`, `via` (`call` or `relay`), `failures`, `window_s` |
+| `session.created` / `.joined` / `.started` / `.next_applicant` / `.ended` | `info` | `session_id` and `player_id`, `moderator_id`, `applicant_id`, or the final score |
+| `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` / `sd.disabled` | `info` / `warn` | `error` when failed |
+| `relay.claim_lost` | `warn` | a delivery whose lease ran out before its outcome was recorded |
+| `startup` / `shutdown` | `info` | address, port, timeouts, limits, pool size, breaker window, Service Discovery URL - no secrets |
+
+Never logged: `Authorization`, `X-Service-Token`, request or response bodies.
+
+### The outbox relay in several copies
+
+- **Claim.** Each pass, per consumer, one statement claims up to `RELAY_BATCH` due deliveries:
+  `UPDATE outbox_deliveries SET claimed_by = <instance>, next_attempt_at = now + lease WHERE
+  (event_id, consumer) IN (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING ...`. Two relays claiming at
+  once get disjoint rows, and a claimed row is not due for anyone else until the lease runs out.
+- **Lease** = `RELAY_BATCH` x `DEPENDENCY_TIMEOUT` + 5 s (155 s with the defaults). Pushes to one
+  consumer are sequential, so the lease covers a whole batch and cannot run out mid-batch. A relay
+  that dies holding claims delays those deliveries by up to the lease. (The Lab 3 brief proposed
+  `2 x DEPENDENCY_TIMEOUT + 5 s`, which a full batch would outlive.)
+- **Updates** (`delivered`, `parked`, rescheduled) apply only while the instance still holds the
+  claim and the delivery is pending; `attempts` is incremented in SQL. A lost claim changes nothing
+  and logs `relay.claim_lost`.
+- **Request id.** The `X-Request-ID` of the request that produced the event is stored on the outbox
+  row (`outbox_events.request_id`) and sent with every push; a new one is generated when it is empty.
+
+### Circuit breakers
+
+| Target | Calls | Breaker |
+| --- | --- | --- |
+| `player` | `GET /players/{id}` (create, join) | `call` |
+| `server-rules` | `GET /rulesets/current` (start) | `call` |
+| `applicant` | `POST /applicants/next` | `call` |
+| `player`, `university-record`, `discord-dms` | the relay's `POST /events` | `relay`, one per consumer |
+
+- **Failure:** no answer within `DEPENDENCY_TIMEOUT` (3 s), a refused or reset connection, or any
+  `5xx` (the Gateway's `502` and `503` included). Any `4xx` - `429` and `422` included - is an answer.
+- **Trip:** 3 failures within `HTTP_REQUEST_TIMEOUT` x 3.5 = 17.5 s. **Open:** a synchronous call
+  answers `500 DEPENDENCY_UNAVAILABLE` with `details.dependency` (`player-service`, ...) without
+  calling, logged `breaker.rejected`; the relay does not claim that consumer's deliveries, which stay
+  pending and untouched (deliveries already claimed when it opens mid-batch are released, due at once).
+- **Recovery:** after a 17.5 s cooldown one trial call goes through; success closes the breaker,
+  failure opens it again. Every transition is logged.
+- A breaker only logs and fails fast; it never calls Service Discovery (only the Gateway marks
+  instances down).
+
+### What else makes several copies safe
+
+- **No per-process state decides an answer.** Every read and write goes to `session_db`; the only
+  per-process state is the concurrent task limit, the connection pool and the breakers (which only
+  decide whether a peer is called).
+- **Startup.** Migrations and the seed run under a PostgreSQL advisory lock (taken once for each) on
+  a dedicated connection; the seed re-counts under the lock and inserts with `ON CONFLICT DO NOTHING`,
+  so a copy that lost the race starts normally. Before `3.0.0` the second copy exited.
+- **One player, one open session.** Create and Join take `pg_advisory_xact_lock(hashtext(player_id))`
+  and re-check the player's open session inside the transaction, so two concurrent requests for one
+  player on two instances cannot both succeed. (No constraint can say this: the open status is on
+  `sessions`, the membership on `session_players`.)
+- **`decision.recorded` reaching two copies** is applied once: `processed_events` with
+  `ON CONFLICT DO NOTHING` in the same transaction, and `session_decisions` keyed by `decision_id`.
+- **Connection budget.** `DB_MAX_OPEN_CONNS` is `25` per copy: 3 copies use at most 75 of
+  PostgreSQL's default 100 `max_connections`.
+

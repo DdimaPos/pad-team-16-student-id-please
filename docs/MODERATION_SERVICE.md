@@ -109,7 +109,7 @@ Operational endpoints, at the root, without a credential and outside the task li
 | Method | Path | Who calls it | Answer |
 | --- | --- | --- | --- |
 | `GET` | `/health` | Docker, the orchestrator | `200 { "status": "ok", "service", "version", "time" }` |
-| `GET` | `/health/ready` | the orchestrator, the Gateway | `200` or `503` with `checks` (postgres, pending and parked deliveries) |
+| `GET` | `/health/ready` | the orchestrator (the Gateway only forwards `/api/v1/moderation/health/ready` on request; it reads Service Discovery, not readiness) | `200` or `503` with `checks` (postgres, pending and parked deliveries) |
 | `GET` | `/status` | Service Discovery, every 10 s, directly | `200 { "service": "moderation", "instance_id", "version", "status": "up", "in_flight", "max_concurrent_tasks" }`, `503` with `"status": "degraded"` when PostgreSQL does not answer |
 
 Contract endpoints (see the contract section below for payloads). "Player" means the Gateway

@@ -292,7 +292,7 @@ services:
       - student-id-net
 
   session-service:
-    image: dimapos/server-moderation-session-service:2.0.0
+    image: dimapos/server-moderation-session-service:3.0.0
     restart: unless-stopped
     depends_on:
       session-postgres:
@@ -320,6 +320,10 @@ services:
       SEED_ON_START: ${SESSION_SEED_ON_START:-true}
       # Mounts GET /api/v1/dev/slow?ms=, which demonstrates the 408 and the 429.
       ENABLE_DEV_ENDPOINTS: ${SESSION_ENABLE_DEV_ENDPOINTS:-true}
+      # Lab 3: registration with Service Discovery, directly (not through the Gateway), with the
+      # SERVICE_TOKEN above. Defaults to the internal container address, so an empty value in
+      # .env still registers.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
     networks:
       - student-id-net
 

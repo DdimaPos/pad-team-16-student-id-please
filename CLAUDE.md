@@ -8,7 +8,7 @@ contains **no service source code**. It is documentation plus git submodules poi
 service's own private repository.
 
 8 services, 2 per team member, plus the shared Gateway (Lab 2, Python) and Service Discovery
-(`service-discovery-service`, Lab 3, Python, owned by DdimaPos); ownership and access rules
+(`service-discovery-service`, Lab 3, Python, owned by vvtttvv); ownership and access rules
 are in `.claude/rules/submodule-management.md`.
 
 ### Check for a service-specific CLAUDE.md

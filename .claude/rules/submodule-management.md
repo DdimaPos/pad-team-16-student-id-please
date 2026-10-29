@@ -6,7 +6,7 @@ professors can read all.
 | GitHub handle | Submodules                                            |
 | ------------- | ----------------------------------------------------- |
 | DdimaPos      | `player-service`, `server-moderation-session-service` |
-| DdimaPos      | `service-discovery-service` (shared like the Gateway: the repository is Dima's, every member contributes through PRs) |
+| vvtttvv       | `service-discovery-service` (shared like the Gateway: the repository is Vlad's, every member contributes through PRs) |
 | IacovlevMaxim | `applicant-service`, `credential-service`             |
 | dmracovit     | `moderation-service`, `discord-DMs-service`           |
 | vvtttvv       | `server-rules-service`, `university-record-service`   |

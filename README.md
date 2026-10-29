@@ -25,7 +25,7 @@ git submodule update --init --recursive
 - Racovita Dumitru: `moderation service` and `discord dm service`;
 - Titerez Vladislav: `server rule service` and `university-record-service`;
 - Gateway (`gateway-service`): shared - the repository is owned by Iacovlev Maxim, every member contributes through PRs.
-- Service Discovery (`service-discovery-service`, Lab 3): Postoronca Dumitru; every member is a contributor and PRs need two approvals, as in the Gateway.
+- Service Discovery (`service-discovery-service`, Lab 3): Titerez Vladislav; every member is a contributor and PRs need two approvals, as in the Gateway.
 
 ## Service Boundaries
 
@@ -135,7 +135,7 @@ The eight services use two languages, **Go** and **C#**. The Gateway, added in L
 | 7   | Moderation Service                | Racovita Dumitru   | Go       | Gin                       |
 | 8   | Discord DMs Service               | Racovita Dumitru   | Go       | Gin + `gorilla/websocket` |
 | 9   | Gateway                           | whole team         | Python   | FastAPI + `httpx`         |
-| 10  | Service Discovery                 | Postoronca Dumitru | Python   | FastAPI + uvicorn + `httpx` |
+| 10  | Service Discovery                 | Titerez Vladislav  | Python   | FastAPI + uvicorn + `httpx` |
 
 **Service Discovery (Lab 3) is Python 3.12**, the language the lab bans for the team, with FastAPI + uvicorn and `httpx` for the status polling and the Telegram alerts. Its registry is held in memory in its single copy, with no database: after a restart every instance is back in the registry within one heartbeat (5 s), so there is nothing worth persisting.
 
@@ -1934,7 +1934,7 @@ need to clone the (private) service repository to run one.
 | Gateway Service                   | [`stewdh/gateway-service`](https://hub.docker.com/r/stewdh/gateway-service)                                       | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`; since `3.0.0` `SERVICE_DISCOVERY_URL` (instances read from Service Discovery, round-robin; empty = static mode with the peer base URLs, the team compose default until #77), `GET /status`; since `3.1.0` a circuit breaker per instance that marks it down in Service Discovery - see [`docs/GATEWAY.md`](docs/GATEWAY.md) |
 | Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | -         | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS`; since `3.0.0` `SERVICE_DISCOVERY_URL` with `SERVICE_TOKEN` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below                                                 |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; peer URLs `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL` (each falls back to a stub when empty), `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` (event consumers); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below |
-| Service Discovery (Lab 3)         | [`dimapos/service-discovery-service`](https://hub.docker.com/r/dimapos/service-discovery-service)                 | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (empty = alerts only logged), `LOG_LEVEL` (`info`), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS`. No database - see [Service Discovery](#service-discovery) |
+| Service Discovery (Lab 3)         | [`d1vinexd/service-discovery-service`](https://hub.docker.com/r/d1vinexd/service-discovery-service)               | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (empty = alerts only logged), `LOG_LEVEL` (`info`), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS`. No database - see [Service Discovery](#service-discovery) |
 
 **One service token for the whole stack.** Every variable above that holds a service token
 (`SERVICE_TOKEN`) is set to the same value,

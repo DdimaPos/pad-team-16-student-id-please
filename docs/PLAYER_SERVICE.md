@@ -19,6 +19,7 @@
 9. [Edge cases](#9-edge-cases)
 10. [Gateway requirements](#10-gateway-requirements)
 11. [Testing recipes](#11-testing-recipes)
+12. [Several instances (Lab 3)](#12-several-instances-lab-3)
 
 ---
 
@@ -54,12 +55,15 @@ one event.
 | **Language / framework** | Go 1.26 / Gin |
 | **Container port** | `8080` |
 | **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/player/...` |
-| **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres). Through the Gateway: `/api/v1/player/health` (public) and `/api/v1/player/health/ready` (service token) |
-| **Database** | PostgreSQL 17, `player_db` (own container). Schema applied at startup by GORM `AutoMigrate` |
+| **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres). Through the Gateway: `/api/v1/player/health` (public) and `/api/v1/player/health/ready` (service token). `GET /status` for Service Discovery, called directly - see [§12](#12-several-instances-lab-3) |
+| **Database** | PostgreSQL 17, `player_db` (own container). Schema applied at startup by GORM `AutoMigrate`, under a PostgreSQL advisory lock together with the seed |
+| **Service Discovery** | Registers as `player`, instance id `player-<hostname>`, port `8080`; heartbeat every 5 s, `DELETE` on graceful shutdown - see [§12](#12-several-instances-lab-3) |
+| **Logs** | One JSON object per line on stdout in the format of CPR README "Logging" |
+| **Circuit breaker** | None: the service makes no outbound business call (the only outbound calls are the registration ones) |
 | **Events** | Receives `session.ended` on `POST /api/v1/events` - see [§6](#6-events). Produces none |
 | **Authentication** | Checked by the Gateway, not here: the service reads the calling player from `X-Player-Id` and validates no token. It **issues** the player JWT (`POST /api/v1/auth/login`, HS256 with `JWT_SECRET`) |
-| **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health` and `/health/ready` are exempt |
-| **Docker image** | `dimapos/player-service:2.0.0` (also `:latest`), `linux/amd64` and `linux/arm64`, published by GitHub Actions on merge to `main` |
+| **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health`, `/health/ready` and `/status` are exempt |
+| **Docker image** | `dimapos/player-service:3.0.0` (also `:latest`), `linux/amd64` and `linux/arm64`, published by GitHub Actions on merge to `main` |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`; `details` is always an object, never `null` |
 | **Timestamps** | ISO-8601, UTC |
 | **Identifiers** | UUID v4 strings |
@@ -71,7 +75,7 @@ one event.
 
 ### In the team stack (recommended)
 
-The CPR `docker-compose.yml` runs `dimapos/player-service:2.0.0` next to its database and the
+The CPR `docker-compose.yml` runs `dimapos/player-service:3.0.0` next to its database and the
 Gateway. Set `PLAYER_POSTGRES_PASSWORD` and `JWT_SECRET` in `.env` (the same `JWT_SECRET` the Gateway
 reads), then `docker compose up -d`. Every call goes to the Gateway on `http://localhost:8080`.
 
@@ -83,7 +87,7 @@ docker run -d --name player-service --network student-id-net \
   -e POSTGRES_HOST=<postgres-host> \
   -e POSTGRES_PASSWORD=<password> \
   -e JWT_SECRET=<the Gateway's JWT_SECRET> \
-  dimapos/player-service:2.0.0
+  dimapos/player-service:3.0.0
 ```
 
 Every other variable has a working default.
@@ -122,7 +126,7 @@ safe to leave enabled.
 | `DB_AUTO_MIGRATE` | `true` | no | Applies the schema at boot, so a fresh database needs no migration step |
 | `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` / `DB_CONN_MAX_LIFETIME` | `25` / `5` / `30m` | no | Pool |
 | `APP_PORT` | `8080` | no | Listen port inside the container |
-| `APP_ENV` | `local` | no | `local` / `docker` / `production`; anything but `local` switches Gin to release mode and the logs to JSON |
+| `APP_ENV` | `local` (`docker` in the image) | no | `local` / `docker` / `production`; anything but `local` switches Gin to release mode and the logs to JSON. The image sets `docker`, so it always logs JSON |
 | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn`, `error`; an unrecognised value falls back to `info` |
 | `SERVICE_VERSION` | the image's `VERSION` | no | Reported by `GET /health`; overrides the version stamped into the image at build time |
 | `HTTP_READ_TIMEOUT` / `HTTP_WRITE_TIMEOUT` / `SHUTDOWN_TIMEOUT` | `10s` / `10s` / `15s` | no | |
@@ -131,6 +135,10 @@ safe to leave enabled.
 | `SEED_ON_START` | `true` | no | Seeds fixtures, but only when the `players` table is empty |
 | `ENABLE_DEV_ENDPOINTS` | `true` | no | Mounts `GET /api/v1/dev/slow` |
 | `BCRYPT_COST` | `10` | no | Password hashing work factor |
+| `SERVICE_DISCOVERY_URL` | *empty* | no | Service Discovery to register with, directly (team stack: `http://service-discovery-service:8090`). Empty = no registration and one warning line at startup |
+| `SERVICE_TOKEN` | *empty* | with the URL | `X-Service-Token` for Service Discovery; the boot fails when the URL is set without it |
+| `INSTANCE_ID` | `player-<hostname>` | no | This instance's id in the registry, `/status` and every log line |
+| `INSTANCE_HOST` | *empty* | no | Sent as `host` at registration, for a run outside Docker; otherwise Service Discovery uses the request's source address |
 
 A variable that is set but unusable fails the boot with every problem listed at once, rather than
 silently reverting to a default.
@@ -314,7 +322,7 @@ a level of 0 would distort the average Session divides by.
 
 ## 8. Divergences from the CPR contract
 
-`2.0.0` implements the whole contract slice of this service: login, `GET /players/{player_id}`,
+`3.0.0` implements the whole contract slice of this service: login, `GET /players/{player_id}`,
 `POST /events`, `X-Player-Id`, the shared error codes, the task timeout and the concurrent task
 limit. What remains is beyond the contract rather than against it:
 
@@ -413,8 +421,8 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) does for this service, prefix
   what the owner check relies on. This service's port is not published, so nothing but the Gateway
   can reach it.
 - **`email` is never in a response**, so there is nothing to redact.
-- `X-Request-Id` is read from the request when present and echoed on every response, including
-  errors. Pass yours through and one player action can be followed across every service's logs.
+- `X-Request-Id` is read from the request when present (a uuid4 is generated otherwise), echoed on
+  every response, including errors, and printed as `request_id` on every log line of the request. Pass yours through and one player action can be followed across every service's logs.
 - Errors already share the system-wide envelope, so they can be forwarded unchanged.
 - The service's `5s` task timeout is below the Gateway's `10s`, so a slow request gets the service's
   own `408` first.
@@ -514,7 +522,8 @@ Every seeded account logs in with the password `seed-password`.
 
 [`postman/player-service.postman_collection.json`](../postman/player-service.postman_collection.json)
 goes through the Gateway: one `base_url` variable (`http://localhost:8080/api/v1/player`) and a
-`service_token` variable that must equal `SERVICE_TOKEN` in `.env`. Its first folder logs in as the
+`service_token` variable that must equal `SERVICE_TOKEN` in `.env`. `GET /status` is the one request
+sent to the instance directly, through `player_direct_url`, because the Gateway does not route it. Its first folder logs in as the
 seeded players and stores their tokens. Folders run top to bottom against a freshly seeded
 database; requests whose names begin with a number belong to a sequence. The last folder is
 destructive - drop the `player_db` volume to restore the seed. Every request name states the status
@@ -532,3 +541,72 @@ The repository and seeder are tested against a real PostgreSQL, because what mat
 the unique indexes, `ON DELETE CASCADE`, the `ON CONFLICT` clauses and the XP floor - is behaviour
 of the database rather than of Go code. Those tests skip when `TEST_POSTGRES_DSN` is unset, so
 `go test ./...` still works without Docker. CI sets it and runs them on every pull request.
+
+---
+
+## 12. Several instances (Lab 3)
+
+From `3.0.0` the service runs as 2-3 copies behind the Gateway's round-robin, one database shared by
+all of them.
+
+### `GET /status`
+
+At the root, next to `/health`; no credential, outside the concurrent task limit and not counted in
+`in_flight`. Service Discovery calls it directly every 10 s.
+
+```json
+// 200, or 503 with "status": "degraded" when the PostgreSQL ping (1 s) fails
+{ "service": "player", "instance_id": "player-3f4e2a9b1c7d", "version": "3.0.0",
+  "status": "up", "in_flight": 3, "max_concurrent_tasks": 50 }
+```
+
+`/health` keeps `"service": "player-service"`; the Lab 3 name `player` is used in `/status`, the
+logs and the registration.
+
+### Registration with Service Discovery
+
+- `PUT {SERVICE_DISCOVERY_URL}/api/v1/instances/{instance_id}` with `X-Service-Token` and
+  `{"service_name": "player", "port": 8080, "version": "3.0.0"}` (`host` added when `INSTANCE_HOST`
+  is set), sent right after the HTTP listener is up and then every 5 s as the heartbeat.
+- `sd.registered` is logged on the first success; a failure logs `sd.heartbeat_failed` (`warn`) and
+  is retried on the next tick. The instance keeps serving either way.
+- On SIGTERM/SIGINT: `DELETE` the same path (2 s timeout, `sd.deregistered`), then the HTTP server
+  drains (`SHUTDOWN_TIMEOUT`). Shutdown never waits on Service Discovery longer than that.
+- Every call to Service Discovery has a 2 s timeout.
+
+### Logging
+
+One JSON object per line on stdout. Every line has `time` (UTC, milliseconds, `Z`), `level`
+(lowercase), `service` (`player`), `instance_id`, `version`, `event` and `msg`; lines written while
+handling a request add `request_id`.
+
+| `event` | Level | Extra fields |
+| --- | --- | --- |
+| `http.request` | `info`; `debug` for `/health*` and `/status` | `method`, `path`, `status`, `duration_ms` (integer), `client_ip`, `player_id` when `X-Player-Id` is set |
+| `http.error` | `info`; `error` with `stack` for a panic or an unexpected `500` (logged once) | `status`, `code`, `error` |
+| `player.login` / `player.login_failed` | `info` | `player_id` / `username` (never the password) |
+| `player.registered` | `info` | `player_id` |
+| `event.received` | `info` | `event_id`, `event_type`, `producer`, `duplicate`, `players_updated` |
+| `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` / `sd.disabled` | `info` / `warn` | `error` when failed |
+| `db.migrated`, `seed.applied`, `seed.skipped` | `info` | counts |
+| `startup` / `shutdown` | `info` | address, port, log level, limits, pool size, Service Discovery URL - no secrets |
+
+Never logged: `Authorization`, `X-Service-Token`, `JWT_SECRET`, passwords, request or response bodies.
+
+### What makes several copies safe
+
+- **No per-process state decides an answer.** Login tokens are stateless HS256 JWTs any copy can
+  issue; every read and write goes to the shared database. The only per-process state is the
+  concurrent task limit and the connection pool.
+- **Startup.** Migrations and the seed run under one PostgreSQL advisory lock (taken once for the
+  migration, once for the seed), on a dedicated connection. Copies starting together on an empty
+  database wait for each other; the seed re-counts under the lock and inserts with
+  `ON CONFLICT DO NOTHING`, so a copy that lost the race starts normally. Before `3.0.0` the second
+  copy exited on the players' primary key.
+- **`session.ended` reaching two copies** is applied once: the `processed_events` marker is inserted
+  with `ON CONFLICT (event_id) DO NOTHING` in the same transaction as the XP update, and the shifts
+  carry a unique index on `(player_id, session_id)`.
+- **No circuit breaker.** The service calls no other service; a breaker has nothing to protect.
+- **Connection budget.** `DB_MAX_OPEN_CONNS` is `25` per copy: 3 copies use at most 75 of
+  PostgreSQL's default 100 `max_connections`.
+

@@ -1956,9 +1956,9 @@ healthy; every service also reads the optional `INSTANCE_HOST` and `INSTANCE_ID`
 or removed at runtime with `docker compose up -d --scale <service>=N`, for example
 `docker compose up -d --scale moderation-service=3` in the demo. A scaled service has no
 `container_name` and no published host port (see [Running as several instances](#running-as-several-instances)).
-The compose changes land with #77.
+Six services already do; Service Discovery's block and the replicas of Player and Session land with #77.
 
-**Discord DMs WebSocket with several copies (Lab 3).** A reverse proxy in the CPR compose (#77)
+**Discord DMs WebSocket with several copies (Lab 3).** A reverse proxy in the CPR compose (`dms-ws-proxy`, since Discord DMs `3.0.0`)
 publishes host port `8086` and forwards each WebSocket connection to one of the Discord DMs copies;
 Discord DMs itself publishes no host port. `WS_PUBLIC_URL` stays `ws://localhost:8086`, so nothing
 changes for clients.

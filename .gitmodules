@@ -28,5 +28,5 @@
 	branch = dev
 [submodule "service-discovery-service"]
 	path = service-discovery-service
-	url = https://github.com/DdimaPos/service-discovery-service
+	url = https://github.com/vvtttvv/service-discovery-service
 	branch = dev

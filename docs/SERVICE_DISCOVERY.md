@@ -1,6 +1,6 @@
 # Service Discovery Service - Integration Reference
 
-> **Status:** `3.0.0` in development (#69, base registry). Image `dimapos/service-discovery-service`,
+> **Status:** `3.0.0` in development (#69, base registry). Image `d1vinexd/service-discovery-service`,
 > published by CI on the first release; added to the team `docker-compose.yml` with #77. Health
 > polling (#72), notifications (#73) and mark-down with the circuit breakers (#74) are not in it yet.
 
@@ -22,7 +22,7 @@ CPR README "Service Discovery", "Status endpoint", "Logging".
 | **Credential** | `X-Service-Token` on every `/api/v1/instances` route, checked by Service Discovery itself |
 | **Storage** | none, in memory, one copy |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`, same as every service |
-| **Docker image** | `dimapos/service-discovery-service:<lab version>` and `:latest`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `d1vinexd/service-discovery-service:<lab version>` and `:latest`, published by GitHub Actions on merge to `main` |
 
 Instances call it **directly**, not through the Gateway: the Gateway itself needs the registry to route.
 
@@ -30,7 +30,7 @@ Instances call it **directly**, not through the Gateway: the Gateway itself need
 
 ```bash
 docker run --rm --network student-id-net --name service-discovery-service -p 8090:8090 \
-  -e SERVICE_TOKEN=... dimapos/service-discovery-service:3.0.0
+  -e SERVICE_TOKEN=... d1vinexd/service-discovery-service:3.0.0
 curl http://localhost:8090/health
 # {"status":"ok","service":"service-discovery","version":"3.0.0"}
 ```

@@ -145,12 +145,19 @@ services:
       - student-id-net
 
   moderation-service:
-    image: dmracovit/moderation-service:2.0.0
+    image: dmracovit/moderation-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    deploy:
+      replicas: 2
     depends_on:
       moderation-postgres:
         condition: service_healthy
     environment:
+      # Service Discovery (README "Service Discovery"): every instance registers its address under `moderation`,
+      # heartbeats every 5 s and deregisters on shutdown. The `:-` default applies even to an empty value in .env;
+      # registration is off only when the container's own environment has an empty SERVICE_DISCOVERY_URL.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
       # The stack's one X-Service-Token, sent on every call to a peer and on every event push.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}

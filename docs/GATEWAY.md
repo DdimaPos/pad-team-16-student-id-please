@@ -28,9 +28,8 @@ keeps failing (circuit breaker), which it then marks down in Service Discovery.
 ## 3. Running it
 
 The team stack runs the published image: `docker compose up -d` in the CPR, with `JWT_SECRET` and
-`SERVICE_TOKEN` set in `.env`. The compose file runs the Gateway in static mode until #77 adds Service
-Discovery to it and every service registers there; `GATEWAY_SERVICE_DISCOVERY_URL=http://service-discovery-service:8090`
-in `.env` points the Gateway at Service Discovery. Standalone, on the `student-id-net` network:
+`SERVICE_TOKEN` set in `.env`. The compose file points the Gateway at Service Discovery by default (`GATEWAY_SERVICE_DISCOVERY_URL`,
+`http://service-discovery-service:8090`); set it empty in `.env` for static mode. Standalone, on the `student-id-net` network:
 
 ```bash
 docker run --rm --network student-id-net -p 8080:8080 \
@@ -58,7 +57,7 @@ Building from source and the test suite are in the service repository README.
 | `HTTP_REQUEST_TIMEOUT` | `10` | Task timeout in seconds (`10` or `10s`), see §7. x 3.5 = the circuit breaker window and cooldown (35 s), see §10. The connection to an instance has its own fixed 2 s bound (§10) |
 | `MAX_CONCURRENT_TASKS` | `64` | Concurrent task limit, see §7 |
 | `RETRY_AFTER_SECONDS` | `1` | The `Retry-After` of the Gateway's `429` |
-| `SERVICE_DISCOVERY_URL` | empty | Base URL of Service Discovery (`http://service-discovery-service:8090`; the team compose sets it from `GATEWAY_SERVICE_DISCOVERY_URL`, empty until #77). Empty: static mode |
+| `SERVICE_DISCOVERY_URL` | empty | Base URL of Service Discovery (`http://service-discovery-service:8090`; the team compose sets it from `GATEWAY_SERVICE_DISCOVERY_URL`, Service Discovery by default). Empty: static mode |
 | `SD_REFRESH_SECONDS` | `5` | Seconds between two reads of the instance list (`5` or `5s`) |
 | `SD_TIMEOUT_SECONDS` | `2` | Bound of one call to Service Discovery (list or mark-down), in seconds |
 | `INSTANCE_ID` | `gateway-<hostname>` | This Gateway's `instance_id` in its logs and `/status`; the hostname is the container id in Docker |

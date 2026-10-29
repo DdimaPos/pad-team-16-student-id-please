@@ -19,9 +19,37 @@ name: student-id-please
 x-reference-year: &reference_year "2026"
 
 services:
+  # Service Discovery (README "Service Discovery"): the registry every instance registers with and the
+  # Gateway reads its routing table from. One copy, registry in memory; after a restart every instance is
+  # back within one heartbeat (5 s). Host port 8090 is published for the demo (the registry and /status);
+  # the services and the Gateway reach it at http://service-discovery-service:8090 inside the network.
+  # Health polling of every instance's /status every 10 s, alerts in the log and, with TELEGRAM_BOT_TOKEN
+  # and TELEGRAM_CHAT_ID set in .env, in the team's Telegram group.
+  service-discovery-service:
+    image: d1vinexd/service-discovery-service:3.0.0
+    restart: unless-stopped
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      LOG_LEVEL: ${SERVICE_DISCOVERY_LOG_LEVEL:-info}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      NOTIFY_COOLDOWN_SECONDS: ${NOTIFY_COOLDOWN_SECONDS:-300}
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - student-id-net
+
   gateway-service:
     image: stewdh/gateway-service:3.1.0
     restart: unless-stopped
+    depends_on:
+      service-discovery-service:
+        condition: service_healthy
     environment:
       # Verifies the player JWT signed by Player Service (same value) and the one service token.
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
@@ -31,11 +59,10 @@ services:
       MAX_CONCURRENT_TASKS: "64"
       # Lab 3: with a Service Discovery URL the instances of every service are read from it at startup
       # and every 5s, and each service's requests go to its instances round-robin; an instance that
-      # fails 3 times within 35s is skipped and marked down there (circuit breaker). Empty (the default
-      # until #77 adds Service Discovery to this file and every service registers): static mode, one
-      # instance per service at the fixed URLs below, with the breaker but no mark-down. Set
-      # GATEWAY_SERVICE_DISCOVERY_URL=http://service-discovery-service:8090 in .env to switch it on.
-      SERVICE_DISCOVERY_URL: ${GATEWAY_SERVICE_DISCOVERY_URL:-}
+      # fails 3 times within 35s is skipped and marked down there (circuit breaker). The default is the
+      # Service Discovery of this file; set GATEWAY_SERVICE_DISCOVERY_URL= (empty) in .env for static mode,
+      # one instance per service at the fixed URLs below, with the breaker but no mark-down.
+      SERVICE_DISCOVERY_URL: ${GATEWAY_SERVICE_DISCOVERY_URL-http://service-discovery-service:8090}
       # Static mode only. Peer base URLs default to the container names in this file (PLAYER_URL,
       # SESSION_URL, ...); Discord DMs serves its REST API on 8096 (its published 8086 is the WebSocket only).
       DISCORD_DMS_URL: http://discord-dms-service:8096
@@ -70,6 +97,8 @@ services:
     deploy:
       replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       rules-postgres:
         condition: service_healthy
     environment:
@@ -112,6 +141,8 @@ services:
     deploy:
       replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       university-record-postgres:
         condition: service_healthy
     environment:
@@ -157,6 +188,8 @@ services:
     deploy:
       replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       moderation-postgres:
         condition: service_healthy
     environment:
@@ -221,6 +254,8 @@ services:
     deploy:
       replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       dms-mongo:
         condition: service_healthy
       dms-redis:
@@ -275,7 +310,12 @@ services:
   player-service:
     image: dimapos/player-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       player-postgres:
         condition: service_healthy
     environment:
@@ -325,7 +365,12 @@ services:
   session-service:
     image: dimapos/server-moderation-session-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       session-postgres:
         condition: service_healthy
     environment:
@@ -385,6 +430,8 @@ services:
     deploy:
       replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       applicant-postgres:
         condition: service_healthy
     environment:
@@ -446,6 +493,8 @@ services:
     deploy:
       replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       credential-mongo:
         condition: service_healthy
     environment:

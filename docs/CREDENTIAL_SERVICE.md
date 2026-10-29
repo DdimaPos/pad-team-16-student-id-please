@@ -3,11 +3,11 @@
 Everything another service, a gateway or a teammate needs in order to work with this service,
 without reading its source.
 
-Team 16 · *Student ID, please* · FAF.PAD21.1 · version `2.1.0`
+Team 16 · *Student ID, please* · FAF.PAD21.1 · version `3.0.0`
 
 For "how do I start it", see [README.md](../credential-service/README.md). This document is the contract.
 
-Everything here describes the published image `2.1.0`. Where it differs from the CPR contract,
+Everything here describes the published image `3.0.0`. Where it differs from the CPR contract,
 [§11](#11-divergences-from-the-cpr-contract) says so.
 
 ## Contents
@@ -25,6 +25,8 @@ Everything here describes the published image `2.1.0`. Where it differs from the
 11. [Divergences from the CPR contract](#11-divergences-from-the-cpr-contract)
 12. [Edge cases and failure modes](#12-edge-cases-and-failure-modes)
 13. [Gateway requirements](#13-gateway-requirements)
+14. [Running several instances](#14-running-several-instances)
+15. [Observability](#15-observability)
 
 ---
 
@@ -44,7 +46,7 @@ Rules Service's ruleset.
 | --- | --- |
 | **Owns** | the document bundle per applicant; each document's `validation_status` and the `problems` behind it |
 | **Does not own** | the applicant's identity profile (Applicant Service); the university's hidden records (University Record Service); the admission decision (Moderation Service) |
-| **Calls** | nothing. No outbound HTTP at all |
+| **Calls** | `POST /api/v1/events` of Applicant and University Record Service, through the Gateway: the outbox relay delivers this service's `applicant.initialized` there ([§8.1](#81-transport)), with a circuit breaker per consumer. And Service Discovery, directly, to register each instance (Lab 3, [§14](#14-running-several-instances)). No request this service answers waits on another service |
 | **Is called by** | the game client (`/documents`) and Moderation Service (`/documents/validation`) |
 | **Listens to** | `applicant.initialized`, from Applicant Service or University Record Service |
 | **Publishes** | `applicant.initialized`, only when it was the first service to meet the applicant |
@@ -57,21 +59,24 @@ Rules Service's ruleset.
 | --- | --- |
 | Base path | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/credential/...` |
 | Port | `8082` |
+| Lab 3 service name | `credential` - the Gateway prefix, the `service` of every log line and of `GET /status`, and the `service_name` it registers under. Each copy is `credential-<hostname>` (`instance_id`) |
 | Health | `GET /health`, `GET /health/ready` |
+| Status (Service Discovery) | `GET /status` - load and health of this copy ([§5.6](#56-health)) |
+| Instances | 2-3 copies share the one database; the Gateway finds them in Service Discovery and spreads requests round-robin ([§14](#14-running-several-instances)) |
 | Database | MongoDB, `credential_db` |
 | Events | HTTP push through the Gateway, no broker (CPR README "Event delivery"): produced from a transactional outbox to `{gateway}/api/v1/<consumer>/events`, received on `POST /api/v1/events` |
 | Produces | `applicant.initialized`, pushed to Applicant and University Record Service |
 | Consumes | `applicant.initialized` from Applicant and University Record Service |
 | Auth | checked by the Gateway, not here; the service receives only `X-Player-Id` and validates no token - see [§13](#13-gateway-requirements) |
 | Producer name | `credential-service` |
-| Image | `stewdh/credential-service:2.1.0`, also `:latest` (linux/amd64, linux/arm64) |
+| Image | `stewdh/credential-service:3.0.0`, also `:latest` (linux/amd64, linux/arm64), published by CI on every merge to `main` |
 | Error envelope | `{"error":{"code","message","details"}}` |
 | Timestamps | ISO 8601, UTC, whole seconds |
 | Identifiers | UUID v4 strings |
 
-**Hard dependency:** MongoDB only. The Gateway and the consumers are soft — the service runs
-fully without them and events wait in the outbox, see
-[§12.2](#122-the-gateway-or-a-consumer-is-away).
+**Hard dependency:** MongoDB only. The Gateway, the consumers and Service Discovery are soft —
+the service runs fully without them, events wait in the outbox, see
+[§12.2](#122-the-gateway-or-a-consumer-is-away), and the registration is retried every 5 s.
 
 ---
 
@@ -79,7 +84,7 @@ fully without them and events wait in the outbox, see
 
 | Port | What |
 | --- | --- |
-| `8082` | the HTTP API (container and host) |
+| `8082` | the HTTP API. The shipped compose file publishes the host range `APP_HOST_PORT`-`APP_HOST_PORT_LAST` (`8082`-`8084`), one port per copy, so `--scale credential-service=3` works; the team compose publishes none |
 | `27018` → `27017` | MongoDB, host → container |
 
 `8081` and `5433` belong to Applicant Service; `8082` and `27018` were chosen so both stacks
@@ -90,7 +95,10 @@ Gateway declare, so the stacks see each other. There is no broker anywhere.
 
 Inside the network the service is reachable as `credential-service:8082`, and it reaches its
 consumers at `http://gateway-service:8080/api/v1/<prefix>` - the Gateway, never a peer's own
-address.
+address. The one exception is Service Discovery, which it calls directly at
+`SERVICE_DISCOVERY_URL` (`http://service-discovery-service:8090` in the team compose): that is
+how the Gateway learns where each copy is. Service Discovery records the address the
+registration came from, the container's IP on the network.
 
 ---
 
@@ -109,21 +117,25 @@ a message naming the variable rather than at the first request that happens to n
 | `SERVICE_TOKEN` | *(empty)* | the stack's one `X-Service-Token`, sent on every event push and checked by the Gateway. **Empty switches the relay off**: applicants are still created and their events wait in the outbox |
 | `APPLICANT_URL` | *(empty)* | Gateway base URL of Applicant Service, `http://gateway-service:8080/api/v1/applicant`. The relay appends `/events`. Empty: that consumer's deliveries stay pending and `/health/ready` says `not_configured` |
 | `UNIVERSITY_RECORD_URL` | *(empty)* | same for University Record Service, `http://gateway-service:8080/api/v1/university-record` |
-| `EVENT_PUSH_TIMEOUT` | `15s` | one push as a whole. Above the Gateway's `10s`, so its `408` comes back as an answer rather than a cut connection |
+| `EVENT_PUSH_TIMEOUT` | `15s` | one push as a whole. Above the Gateway's `10s`, so its `408` comes back as an answer rather than a cut connection. No answer within it counts as a failure for the consumer's circuit breaker |
 | `OUTBOX_POLL_INTERVAL` | `500ms` | how often the relay looks for deliveries that are due |
 | `OUTBOX_BATCH_SIZE` | `50` | deliveries taken per consumer per pass |
+| `OUTBOX_LEASE` | `15m` | how long a claimed batch stays reserved for the copy that claimed it. **Must be at least `OUTBOX_BATCH_SIZE` × `EVENT_PUSH_TIMEOUT`** (12.5 min with the defaults), or startup fails: a shorter lease could run out while the batch is still being pushed. Deliveries a relay does not get to are handed back at once ([§8.6](#86-several-instances-and-the-circuit-breaker)) |
 | `EVENT_RETRY_MAX_BACKOFF` | `30s` | cap on the wait between two attempts at one delivery (1 s, 2 s, 4 s, ... up to this) |
 | `APP_PORT` | `8082` | |
-| `APP_ENV` | `local` | `local` / `docker` / `production`; selects log format and Gin mode |
+| `APP_ENV` | `local` | `local` / `docker` / `production`; selects the Gin mode. Logs are JSON either way ([§15](#15-observability)) |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` |
-| `SERVICE_VERSION` | `dev` | reported by `/health` |
+| `SERVICE_VERSION` | `dev` | reported by `/health`, `/status`, every log line and the registration |
 | `HTTP_READ_TIMEOUT` / `HTTP_WRITE_TIMEOUT` | `10s` | |
-| `HTTP_REQUEST_TIMEOUT` | `5s` | task timeout: a request running longer is stopped and answered `408 REQUEST_TIMEOUT` (see below). `0` disables it |
-| `MAX_CONCURRENT_TASKS` | `64` | concurrent task limit for `/api/v1`: a request above it is refused with `429 TOO_MANY_REQUESTS`. Must be ≥ 1 |
+| `HTTP_REQUEST_TIMEOUT` | `5s` | task timeout: a request running longer is stopped and answered `408 REQUEST_TIMEOUT` (see below). `0` disables it. Times 3.5 it is also the circuit breakers' window and cooldown (17.5 s) |
+| `MAX_CONCURRENT_TASKS` | `64` | concurrent task limit for `/api/v1`: a request above it is refused with `429 TOO_MANY_REQUESTS`. Must be ≥ 1. `GET /status` reports it as `max_concurrent_tasks` |
 | `DEV_ENDPOINTS` | `false` | mounts `GET /api/v1/dev/slow?ms=` (see below). Keep `false` in shared deployments |
 | `SHUTDOWN_TIMEOUT` | `10s` | graceful drain |
 | **`REFERENCE_YEAR`** | `2026` | the calendar year treated as "now". **Applicant, Credential, University Record and Moderation Service must all be given the same value**, or perfectly honest applicants read as liars |
-| `GENERATOR_SEED` | `0` | `0` picks a fresh sequence per boot; a fixed number reproduces a run exactly |
+| `GENERATOR_SEED` | `0` | `0` picks a fresh sequence per boot; a fixed number reproduces a run exactly, **for one instance only**: every copy given the same seed generates the same applicants in lockstep |
+| `SERVICE_DISCOVERY_URL` | *(empty)* | Service Discovery's base URL, `http://service-discovery-service:8090` in the team compose. The instance registers there directly, with `SERVICE_TOKEN`, which is then required. **Empty: no registration**, one `sd.disabled` warning at startup (fine for a local run, but the Gateway cannot find the instance) |
+| `INSTANCE_ID` | `credential-<hostname>` | the id the instance registers under and logs with. In Docker the hostname is the container id, so every copy has its own. Set it only for an instance outside Docker; **never give scaled copies one value** |
+| `INSTANCE_HOST` | *(empty)* | sent as `host` at registration, for an instance outside Docker that Service Discovery cannot reach at the address the registration came from. Empty: no `host` is sent |
 
 A consumer URL that is set must be an `http(s)` URL with a host, or startup fails naming the
 variable. An empty string counts as unset for every variable.
@@ -132,15 +144,18 @@ variable. An empty string counts as unset for every variable.
 whatever the request is waiting on in MongoDB is cancelled and the service answers
 `408 REQUEST_TIMEOUT`. An applicant is one document written by one operation, and that operation
 is not started once the deadline has passed; one that did start finishes and is answered normally.
-So `408` always means the applicant was not stored, changed or deleted. One side effect can remain
-after a timed-out `POST /applicants/next`: the university email reserved while generating the
-applicant (standalone MongoDB, no multi-document transactions). It costs a later applicant with
-the same name a numeric suffix; no applicant, document or event refers to it.
+So `408` always means the applicant was not stored, changed or deleted. The university email
+reserved while generating the applicant is a write of its own (standalone MongoDB, no
+multi-document transactions), recorded under the new applicant's id; when the applicant is not
+stored - a timeout, a failed insert - it is handed back. Only when MongoDB is unreachable for
+that too does the address stay reserved, which costs a later applicant with the same name a
+numeric suffix; no applicant, document or event refers to it.
 The Gateway's own timeout (`10s`) is above it, so this answer reaches the caller.
 
 **Concurrent task limit (`MAX_CONCURRENT_TASKS`).** At most that many requests under `/api/v1` are
 in progress at once. One more is refused at once - not queued - with `429 TOO_MANY_REQUESTS` and
-`Retry-After: 1`, before any work is done. `/health` and `/health/ready` are not counted.
+`Retry-After: 1`, before any work is done. `/health`, `/health/ready` and `/status` are not
+counted, and `GET /status` reports how many slots are taken as `in_flight`.
 
 **Dev endpoint (`DEV_ENDPOINTS=true`).** `GET /api/v1/dev/slow?ms=<0..60000>` does nothing for `ms`
 milliseconds and answers `200 { "slept_ms": <ms> }`; it counts as a task. `?ms=6000` answers `408`
@@ -167,6 +182,7 @@ A bad `ms` (not an integer, or outside `0..60000`) answers `400 VALIDATION_ERROR
 | `DELETE` | `/api/v1/applicants/{applicant_id}` | *extension* | — |
 | `GET` | `/api/v1/dev/slow?ms=` | dev (`DEV_ENDPOINTS`) | demo / tests |
 | `GET` | `/health`, `/health/ready` | infrastructure | orchestrator |
+| `GET` | `/status` | infrastructure | Service Discovery (directly, every 10 s) |
 
 ### 5.2 `POST /api/v1/applicants/next`
 
@@ -302,7 +318,7 @@ restarting a healthy container because somebody else's database was slow would b
 `GET /health/ready`:
 
 ```json
-{ "status": "ok", "service": "credential-service", "version": "2.1.0",
+{ "status": "ok", "service": "credential-service", "version": "3.0.0",
   "components": { "mongodb": {"status": "up"}, "event_relay": {"status": "up"} },
   "consumers": { "applicant":         {"status": "configured", "pending": 0, "parked": 0},
                  "university-record": {"status": "configured", "pending": 3, "parked": 0} },
@@ -326,6 +342,27 @@ A consumer that does not answer is **not** a readiness failure: every endpoint s
 the events wait in the outbox. A `pending` that keeps climbing is the signal that the Gateway,
 or that consumer behind it, has been away for a while, or does not serve `POST /events` (a
 `404`, which is retried).
+
+`GET /status` — this copy's health and load, in the shape every Lab 3 component shares.
+Service Discovery polls it directly (not through the Gateway) every 10 s with a 2 s timeout.
+No credential; like the health checks it sits outside `/api/v1`, so it is **not counted by the
+concurrent task limit and never answers `429`**: a copy at full load reports itself busy instead
+of looking broken.
+
+```json
+{ "service": "credential", "instance_id": "credential-3f4e2a9b1c7d", "version": "3.0.0",
+  "status": "up", "in_flight": 3, "max_concurrent_tasks": 64 }
+```
+
+| Situation | HTTP | `status` |
+| --- | --- | --- |
+| MongoDB answers a ping within 1 s | `200` | `up` |
+| it does not | `503` | `degraded`, same body |
+
+`in_flight` is the number of requests under `/api/v1` holding a slot of the concurrent task
+limit right now; Service Discovery divides it by `max_concurrent_tasks` and alerts at 80 %.
+The relay and the consumers play no part here. Its access-log line is at `debug`, like the
+health checks'.
 
 ### 5.7 Error codes
 
@@ -518,7 +555,10 @@ no broker.
   | Any other `4xx` (`404` from a consumer that does not serve the endpoint yet, the Gateway's `408`, `429`, `502`), any `5xx`, a timeout, a refused connection | Retries after a backoff that doubles from 1 s and is capped at `EVENT_RETRY_MAX_BACKOFF` (30 s) |
 
   The two consumers are pushed independently and at the same time: one being down, slow or
-  absent never delays the other.
+  absent never delays the other. Each push carries the `X-Request-ID` of the request that
+  created the applicant, stored with the event, so that request can be followed into the
+  consumers' logs; an event stored before `3.0.0` gets a fresh id. Each consumer has its own
+  circuit breaker ([§8.6](#86-several-instances-and-the-circuit-breaker)).
 - **Consumer side.** `POST /api/v1/events` ([§5.5b](#55b-post-apiv1events)), reached as
   `{gateway}/api/v1/credential/events`, service token only.
 - **No ordering guarantee**, and at-least-once delivery ([§8.5](#85-delivery-guarantees)).
@@ -584,14 +624,54 @@ Publishing goes through an outbox embedded in the applicant's own document
   its own;
 - the stamp marking a delivery done is written *after* the consumer's `2xx`, so a crash in
   between pushes again rather than loses. A claim leases the delivery for a while, so a relay
-  that dies mid-push hands it back on its own. Every consumer in this system deduplicates on
-  `event_id`, so a duplicate costs nothing while a lost event costs an applicant;
+  that dies mid-push hands it back on its own, and two copies never push the same delivery at
+  once while the lease holds ([§8.6](#86-several-instances-and-the-circuit-breaker)). Every
+  consumer in this system deduplicates on `event_id`, so a duplicate costs nothing while a lost
+  event costs an applicant;
 - a `422` parks the delivery for good; it is counted in `/health/ready` and never retried;
 - **delivery is at-least-once.** Consumers must be idempotent. This one is.
 
 Everything image `2.0.0` left waiting for a broker is delivered by the first `2.1.0` that
 starts against the same database: at startup it opens the per-consumer deliveries for every
-event still unpublished.
+event still unpublished. That is one atomic `UpdateMany` matching only entries without
+deliveries, so copies starting together cannot open them twice.
+
+### 8.6 Several instances and the circuit breaker
+
+Every copy runs a relay over the same documents. What keeps them apart:
+
+- **The claim.** A relay finds due deliveries and takes each with its own conditional
+  `UpdateOne`: the filter requires the delivery to be still due, the update moves its
+  `next_attempt_at` out by `OUTBOX_LEASE` and stamps it with a claim token of its own, and only
+  the relay whose update modified the document owns it. A copy that dies mid-batch hands its
+  deliveries back when the lease runs out.
+- **The lease covers the batch.** Pushes of one batch go one after another, so the lease must
+  outlast `OUTBOX_BATCH_SIZE` × `EVENT_PUSH_TIMEOUT` (50 × 15 s = 12.5 min); the default is
+  15 min and startup refuses less.
+- **Only the current claim records a failure.** `attempts`, `next_attempt_at` and parking are
+  updated only where the delivery's `claim_token` still matches, so a copy whose lease ran out
+  cannot overwrite what the copy that took the delivery over has recorded. A `2xx` is recorded
+  whoever saw it: a delivery is a fact.
+- **A relay stops at a consumer's first failure.** The rest of that consumer's batch is not
+  pushed; its deliveries are handed back at once, due with the failed one's retry, without
+  counting an attempt - not held until the lease runs out.
+
+**Circuit breaker, one per consumer** (Lab 3 contract). A failure is no answer within
+`EVENT_PUSH_TIMEOUT` (a timeout, a refused or reset connection, a DNS failure) or any `5xx`,
+the Gateway's `502` and `503` included. Any `4xx` is an answer and does not count - `429`,
+`422` and the Gateway's `408` included - even though the delivery itself is retried.
+
+| State | The relay |
+| --- | --- |
+| Closed | Claims and pushes as above. **3 failures within 17.5 s** (`HTTP_REQUEST_TIMEOUT` × 3.5) open it: `breaker.opened` at `warn` |
+| Open | **Claims nothing for that consumer**: its deliveries stay pending and untouched, for this copy after the cooldown or for another copy whose breaker is closed. `breaker.rejected` at `debug` on every pass |
+| Half-open, 17.5 s after opening | `breaker.half_open`, then **one trial push**: a claim of one delivery. Success (any answer that is not a failure) closes it, `breaker.closed`, and the backlog drains; failure opens it again for another 17.5 s |
+
+The breaker only logs and stops calling. This service never tells Service Discovery about it:
+it reaches its consumers through the Gateway and cannot name one of their instances, and the
+Gateway's own breaker marks failing instances down. The service has no synchronous outbound
+call, so the contract's `500 DEPENDENCY_UNAVAILABLE` for an open breaker never arises here: the
+relay simply leaves the deliveries pending.
 
 ---
 
@@ -626,7 +706,10 @@ entry buys the transactional-outbox guarantee — applicant and announcement dur
 instant — without asking every teammate to run a replica set to demo the system. Each entry
 carries one `deliveries` element per consumer, which is the relay's unit of work;
 `published_at` is set once every consumer has the event. `routing_key` predates HTTP delivery
-and simply repeats the event type.
+and simply repeats the event type. Since `3.0.0` an entry also keeps `request_id`, the
+`X-Request-ID` of the request that created it, sent with every push, and a delivery being
+pushed carries `claim_token`, the claim that holds it ([§8.6](#86-several-instances-and-the-circuit-breaker)).
+Documents written by earlier images simply lack both fields; no migration is needed.
 
 A second collection, `email_reservations`, keys each allocated address by `_id`. The address
 *is* the primary key, so two requests racing for the same name cannot both win. This is how
@@ -710,12 +793,18 @@ Raise these in the CPR before integration.
 | --- | --- | --- |
 | 2 | **`GET .../documents/validation` is protected only by the Gateway** and by this port being unpublished. Reading no credential in the service is correct under the contract | Gateway, Lab 2 grading |
 | 3 | **`422 VALIDATION_ERROR`** for an impossible person. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | generic clients |
-| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, with course codes matching `^[A-Z]{2,4}$`. Image `2.1.0` still ships the copy taken from Applicant Service before that file existed, and it does not match: 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format. Its `fake_courses.json` (`ELSE-NET`, `QBIT-101`, `WEB5`, …) does not follow the format either | University Record Service, Moderation |
+| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, with course codes matching `^[A-Z]{2,4}$`. Image `3.0.0` still ships the copy taken from Applicant Service before that file existed, and it does not match: 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format. Its `fake_courses.json` (`ELSE-NET`, `QBIT-101`, `WEB5`, …) does not follow the format either | University Record Service, Moderation |
 | 5 | **Five CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `GET`, `PATCH`, `DELETE`) | gateway and auth — see [§13](#13-gateway-requirements) |
 | 6 | **`POST /api/v1/applicants` does not produce `applicant.initialized`** | anyone expecting every applicant to be announced |
 | 7 | **The contract read endpoints do not use the `{items, total}` list envelope.** The API conventions prescribe it for lists; both document endpoints are specified with `{applicant_id, documents}` and the endpoint spec wins. The extension list endpoint does use `{items, total}` | anyone writing a generic client |
 | 8 | **Forgery is mapped to the document that asserts the claim**, not smeared across the bundle ([§7](#7-validation-rules)). The contract says "the documents that support the false claim"; this table is the reading of *which* | Moderation Service |
 | 9 | **`POST /api/v1/events` deduplicates on `applicant_id`, not `event_id`** ([§5.5b](#55b-post-apiv1events)). The contract says a consumer "remembers the `event_id` values it has seen"; keying on the document's primary key gives the same idempotency without a second collection or a transaction, and additionally folds two producers announcing the same applicant into one | nobody in practice; noted for the record |
+
+Lab 3 (`3.0.0`) follows the team decisions of 2026-10-27 for the status endpoint, logging,
+registration and the circuit breaker; issue #71, which writes them into the README contract, was
+not merged when this image was built. Two additions on top of them, neither of which changes an
+answer: the breaker logs its move to half-open as `breaker.half_open`, and routine heartbeats
+are logged at `debug` as `sd.heartbeat`.
 
 The document field schemas of [§6](#6-document-types-and-field-schemas), including
 `confirmation_number` and `course_registration.courses[] {code, title}`, are now part of the
@@ -753,6 +842,11 @@ oldest first; the other consumer is served all along. `/health/ready` stays `200
 climbing `consumers.<name>.pending`, and the relay retries with a backoff that doubles up to
 30 s, so a consumer down for a minute sees a handful of attempts rather than hundreds. A
 consumer that answers `404` because it does not serve `POST /events` is treated the same.
+
+After 3 failures within 17.5 s (no answer, or a `5xx` such as the Gateway's `502`/`503`) that
+consumer's circuit breaker opens: the relay stops claiming its deliveries, tries one trial push
+every 17.5 s, and drains the backlog once a trial is answered
+([§8.6](#86-several-instances-and-the-circuit-breaker)). The other consumer is not affected.
 
 No peer events arrive while the Gateway is away; they wait in the producers' outboxes.
 
@@ -803,6 +897,93 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
   manufacture any applicant at all.
 - `GET .../documents` is the only genuinely player-facing endpoint.
 - `/health` and `/health/ready` are infrastructure and sit outside `/api/v1`; they should not
-  be routed publicly.
+  be routed publicly. Neither should `/status`: Service Discovery polls it directly inside the
+  network.
 - Every response, including errors, is JSON. Rate limiting, if added, should keep the
   `{"error":{"code","message","details"}}` envelope so clients need only one error path.
+
+---
+
+## 14. Running several instances
+
+**The HTTP layer is stateless.** No sessions, no sticky routing, no in-memory per-client state,
+so the Gateway spreads requests over the copies round-robin. The team compose runs 2 copies
+(`deploy.replicas: 2`) against the one database; `docker compose up -d --scale
+credential-service=3` adds a third. Every answer is the same whichever copy gives it.
+
+**Registration with Service Discovery.** Each copy registers itself as soon as its listener is
+up, directly with Service Discovery and not through the Gateway:
+
+```
+PUT {SERVICE_DISCOVERY_URL}/api/v1/instances/credential-<hostname>
+X-Service-Token: {SERVICE_TOKEN}
+{"service_name": "credential", "port": 8082, "version": "3.0.0"}     (+ "host" only with INSTANCE_HOST)
+```
+
+The same `PUT` is repeated every 5 s as the heartbeat; Service Discovery forgets a copy it has
+not heard from for 15 s, and the first `PUT` after a Service Discovery restart registers it
+again. Every call has a 2 s timeout, and a failure only logs `sd.heartbeat_failed` - it never
+touches a request. On `SIGTERM` / `SIGINT` the copy stops its heartbeat, sends
+`DELETE /api/v1/instances/{instance_id}` (2 s at most), and only then stops accepting HTTP,
+drains in-flight requests, stops the relay and disconnects from MongoDB.
+
+| Concern | Behaviour |
+| --- | --- |
+| Indexes at startup | `CreateMany` on every start; creating an index that already exists is a no-op, so copies starting together all succeed and all start |
+| Backfill at startup | One atomic `UpdateMany` that matches only entries without deliveries: copies starting together cannot open them twice |
+| `POST /api/v1/events` | The dedup is the `applicant_id` primary key: a second insert of the same applicant is a duplicate-key error, answered `200` with `"duplicate": true`, whichever copy receives it |
+| Email namespace | `email_reservations` is keyed on the lower-cased address, so two copies racing for one name cannot both win; reservations carry the applicant id and are handed back when the applicant is not stored |
+| Outbox relay | Per-delivery conditional claims with a lease covering the whole batch and a claim token ([§8.6](#86-several-instances-and-the-circuit-breaker)) |
+| Circuit breakers | One per consumer in each copy, in memory. They decide when that copy pushes, never what a request answers - the one piece of state per process besides the task limiter and the connection pool |
+| Generator | `GENERATOR_SEED=0` (the default) in any multi-copy deployment; a fixed seed makes every copy generate the same applicants in lockstep |
+
+**Connection budget:** each copy opens up to `DB_MAX_POOL_SIZE` (20) MongoDB connections; three
+copies use at most 60, well within a standalone MongoDB's limit.
+
+**Personal addresses are drawn, not reserved.** A university address is unique across all
+copies. The personal address of an alumnus or an outsider is drawn from 40 first names × 40 last
+names × 4 domains × a two-digit suffix, 633,600 combinations, and is not reserved, so two
+applicants can share one: about a 1 % chance after 100 such applicants, about 50 % after 1,000.
+It is the same with one copy or three, and this service treats a personal address as plain
+profile data, never as a key.
+
+---
+
+## 15. Observability
+
+**Logs** are one JSON object per line on stdout, in the shape every Lab 3 component shares,
+whatever `APP_ENV` says. Level from `LOG_LEVEL`. Every line carries `time` (ISO 8601 UTC with
+milliseconds), `level` (`debug`, `info`, `warn`, `error`), `service` (`credential`),
+`instance_id` (which copy wrote it), `version`, `event` (a stable name, below) and `msg`, plus
+`request_id` on every line written while handling a request and on the relay's lines for a
+push.
+
+```json
+{"time":"2026-10-27T12:00:00.123Z","level":"info","msg":"request","service":"credential","instance_id":"credential-3f4e2a9b1c7d","version":"3.0.0","event":"http.request","method":"GET","path":"/api/v1/applicants/5d2c8e4a-…/documents","status":200,"duration_ms":7,"client_ip":"172.18.0.9","player_id":"8c1f6a2e-…","request_id":"9d2d…"}
+```
+
+**`X-Request-ID`** is read from the request or generated (uuid4), echoed on the response,
+printed as `request_id`, stored with the event in the outbox and sent with every push of it.
+
+| `event` | Level | Fields | When |
+| --- | --- | --- | --- |
+| `http.request` | `info`; `debug` for `/health*` and `/status` | `method`, `path`, `status`, `duration_ms` (integer), `client_ip`, `player_id` when `X-Player-Id` is present | Once per request |
+| `http.error` | `warn` for a `4xx`, `error` with `stack` for a `5xx` or a panic | `status`, `code`, `error` | Every error answered, `404`, `405`, `408`, `422` and `429` included |
+| `event.received` | `info` | `event_id`, `event_type`, `producer`, `duplicate` | A pushed event applied, or recognised as a repeat |
+| `outbound.call` | `info` | `target` (the consumer's prefix), `method`, `path`, `status` (`0` = no answer), `duration_ms` | Every push |
+| `event.pushed` | `info` delivered, `warn` to retry | `event_id`, `event_type`, `consumer`, `status`, `attempt`, `next_attempt_at` and `error` when it will be retried | Every push |
+| `event.parked` | `error` | the same, with the consumer's reason | A consumer answered `422` — somebody has to look |
+| `breaker.opened` / `breaker.half_open` / `breaker.closed` | `warn` / `info` / `info` | `target`, `failures`, `window_s` (17.5), `retry_at` when opened | Every move of a consumer's circuit breaker |
+| `breaker.rejected` | `debug` | `target`, `state`, `failures`, `window_s` | A relay pass skipped an open breaker's consumer |
+| `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` | `info` / `warn` / `info` | `instance_id`, `status`, `error` when failed | The first registration and the first after a failure / a failed heartbeat / shutdown |
+| `sd.heartbeat` / `sd.disabled` | `debug` / `warn` | `instance_id` | A routine heartbeat / no `SERVICE_DISCOVERY_URL` |
+| `startup` / `shutdown` | `info` | version, instance id, port and the configuration, without secrets | Start and stop |
+| `applicant.created` / `.updated` / `.deleted` | `info` | `applicant_id`, `session_id`, `origin`, `event_id` for one created from an event, the archetype and document count of a generated one | Every change to an applicant |
+| `config`, `db`, `relay`, `email.record_failed`, `email.release_failed`, `generator.retry`, `generator.fallback` | as fits | | Configuration gaps, the database connection and indexes, outbox bookkeeping errors, the email namespace, generator edge cases (`generator.fallback` is a bug) |
+
+**Never logged:** `X-Service-Token`, the MongoDB URI (it carries the credentials), request or
+response bodies, and anything of an applicant's profile - lines name applicants by
+`applicant_id` only.
+
+**No metrics endpoint and no tracing.** `/health/ready` exposes `pending` and `parked` per
+consumer, and `GET /status` the load of one copy.

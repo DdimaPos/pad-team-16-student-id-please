@@ -108,7 +108,7 @@ Operational endpoints, at the root, without a credential and outside the task li
 | Method | Path | Listener | Who calls it | Answer |
 | --- | --- | --- | --- | --- |
 | `GET` | `/health` | both | Docker, the orchestrator | `200 { "status": "ok", "service", "version", "time" }` |
-| `GET` | `/health/ready` | REST | the orchestrator, the Gateway | `200` or `503` with `checks` (mongodb, pubsub, open connections) |
+| `GET` | `/health/ready` | REST | the orchestrator (the Gateway only forwards `/api/v1/discord-dms/health/ready` on request; it reads Service Discovery, not readiness) | `200` or `503` with `checks` (mongodb, pubsub, open connections) |
 | `GET` | `/status` | REST | Service Discovery, every 10 s, directly | `200 { "service": "discord-dms", "instance_id", "version", "status": "up", "in_flight", "max_concurrent_tasks", "ws_connections" }`, `503` with `"status": "degraded"` when MongoDB does not answer |
 
 Contract endpoints (payloads in the contract section below). "Player" means the Gateway validated

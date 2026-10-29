@@ -62,11 +62,16 @@
       "key": "started_event_id",
       "value": "",
       "description": "set by the setup request"
+    },
+    {
+      "key": "no_instance_prefix",
+      "value": "discord-dms",
+      "description": "A route prefix whose service has no instance while the last folder runs (stop every copy of it first)"
     }
   ],
   "item": [
     {
-      "name": "health",
+      "name": "health and status",
       "item": [
         {
           "name": "GET /health (liveness)",
@@ -86,6 +91,52 @@
             "method": "GET",
             "url": "{{base_url}}/health"
           }
+        },
+        {
+          "name": "GET /status (load of this instance)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/status",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "status"
+              ]
+            },
+            "description": "The status endpoint every service, Service Discovery and the Gateway share (CPR issue #71): `service`, `instance_id` (`gateway-<hostname>`), `version`, `status` (always `up`: the Gateway has no database), `in_flight` (requests holding a task slot right now) and `max_concurrent_tasks`. No credential; not a task, so it answers also while the concurrent task limit is reached. `GET /health` is unchanged."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the shape agreed in #71', () => {",
+                  "  const s = pm.response.json();",
+                  "  pm.expect(s).to.have.all.keys('service', 'instance_id', 'version', 'status', 'in_flight', 'max_concurrent_tasks');",
+                  "  pm.expect(s.service).to.eql('gateway');",
+                  "  pm.expect(s.instance_id).to.match(/^gateway-/);",
+                  "  pm.expect(s.version).to.match(/^3\\.\\d+\\.\\d+$/);",
+                  "  pm.expect(s.status).to.eql('up');",
+                  "});",
+                  "pm.test('in_flight counts the tasks in progress, within max_concurrent_tasks', () => {",
+                  "  const s = pm.response.json();",
+                  "  pm.expect(Number.isInteger(s.in_flight)).to.be.true;",
+                  "  pm.expect(s.in_flight).to.be.at.least(0).and.at.most(s.max_concurrent_tasks);",
+                  "  pm.expect(s.max_concurrent_tasks).to.eql(Number(pm.variables.get('max_concurrent_tasks')));",
+                  "});",
+                  "pm.test('a request id is generated when the caller sent none', () => {",
+                  "  pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/);",
+                  "});"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
@@ -387,6 +438,60 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('the id sent is the id returned', () => {",
+                  "  pm.expect(pm.response.headers.get('X-Request-ID')).to.eql(pm.variables.get('request_id'));",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "X-Request-ID comes back on the Gateway's own errors too (401)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-ID",
+                "value": "{{request_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/applicants/00000000-0000-4000-8000-000000000000/documents",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "applicants",
+                "00000000-0000-4000-8000-000000000000",
+                "documents"
+              ]
+            },
+            "description": "A player route without a credential: the Gateway answers 401 itself, no service is called, and the answer still carries the caller's `X-Request-ID`, which is also the `request_id` of the Gateway's `http.error` and `http.request` log lines for it. The same holds for every error the Gateway answers itself (400, 401, 403, 404, 408, 429, 502, 503, 500)."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('request_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401 Unauthorized, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(401);",
+                  "  pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED');",
+                  "});",
                   "pm.test('the id sent is the id returned', () => {",
                   "  pm.expect(pm.response.headers.get('X-Request-ID')).to.eql(pm.variables.get('request_id'));",
                   "});"
@@ -1424,6 +1529,69 @@
                   "  pm.expect(seen.ready).to.eql(200);",
                   "});",
                   "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Instances from Service Discovery (needs a service with no instance)",
+      "description": "Since Lab 3 the Gateway reads the instances of every service from Service Discovery (`GET /api/v1/instances`, at startup and every 5 s) and sends the requests to a service to its instances in turn; which instance got a request is the `target_instance` of the Gateway's `http.request` log line (`docker compose logs -f gateway-service`). A service with no instance, or none whose circuit breaker lets the request through, is answered `503 SERVICE_UNAVAILABLE` and no instance is called. To see it, stop every copy of the service named by `no_instance_prefix` (`docker compose stop discord-dms-service`) and wait about 20 s (Service Discovery drops it after 15 s without heartbeat, the Gateway reads the list every 5 s); while the service has an instance, its own `/health` answers 200 and the checks below are skipped.",
+      "item": [
+        {
+          "name": "A service with no instance: 503 SERVICE_UNAVAILABLE",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Request-ID",
+                "value": "{{request_id}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/{{no_instance_prefix}}/health",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "{{no_instance_prefix}}",
+                "health"
+              ]
+            },
+            "description": "A public route, so no credential is involved: with no instance of the service the Gateway answers itself, in the shared envelope, with `details.service` naming the prefix, and logs `route.no_instance` and `http.error` with this request id."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.variables.set('request_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Runs while the service behind no_instance_prefix has no instance (see the folder description);",
+                  "// while it has one, its own /health answers 200 and the checks are skipped.",
+                  "const check = pm.response.code === 200 ? pm.test.skip : pm.test;",
+                  "check('503 Service Unavailable', () => pm.response.to.have.status(503));",
+                  "check('SERVICE_UNAVAILABLE in the shared envelope, details name the service', () => {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('SERVICE_UNAVAILABLE');",
+                  "  pm.expect(e.details).to.eql({ service: pm.variables.get('no_instance_prefix') });",
+                  "});",
+                  "check('the request id comes back', () => {",
+                  "  pm.expect(pm.response.headers.get('X-Request-ID')).to.eql(pm.variables.get('request_id'));",
+                  "});"
                 ]
               }
             }

@@ -25,12 +25,13 @@ git submodule update --init --recursive
 - Racovita Dumitru: `moderation service` and `discord dm service`;
 - Titerez Vladislav: `server rule service` and `university-record-service`;
 - Gateway (`gateway-service`): shared - the repository is owned by Iacovlev Maxim, every member contributes through PRs.
+- Service Discovery (`service-discovery-service`, Lab 3): Titerez Vladislav; every member is a contributor and PRs need two approvals, as in the Gateway.
 
 ## Service Boundaries
 
 The system is decomposed following a data ownership principle: for every piece of state, exactly one service is the source of truth and the only service allowed to write it. Other services may read or trigger changes only through that owning service's API. This is why applicant-related data is split into three services (Applicant, Credential, University Record) rather than one - each owns a distinct category of data (identity, documents, hidden institutional records) with a different lifecycle and different access rules, even though they describe the same real-world person.
 
-Every interaction listed below passes through the [Gateway](#gateway): no service calls another service, and no client calls a service, directly. The Gateway itself owns no state (see [9. Gateway](#9-gateway)).
+Every interaction listed below passes through the [Gateway](#gateway): no service calls another service, and no client calls a service, directly. The Gateway itself owns no state (see [9. Gateway](#9-gateway)). The one exception, since Lab 3, is [Service Discovery](#10-service-discovery): every instance registers with it directly and it polls every instance's `GET /status` directly, because the Gateway itself depends on the registry to know where to forward.
 
 **Note on applicant initialization:** the topic allows any of Applicant, Credential, or University Record Service to be the first to encounter a new applicant. To keep this from turning into three services writing to each other's data, we resolve it as follows: whichever service is contacted first generates a shared `applicant_id` and pushes an `ApplicantInitialized` event carrying that ID plus the fields it was given to the other two services, which create their own record under the same `applicant_id`, populated only with the fields relevant to them. Each service still only ever writes its own record - there is no cross-service write, only event-driven record creation.
 
@@ -89,9 +90,15 @@ Every interaction listed below passes through the [Gateway](#gateway): no servic
 
 ### 9. Gateway
 
-- **Owns:** no data. It holds only the routing table (prefix => service), the credential checks and the task timeout and concurrent task limit at the entry point of the system
-- **Does NOT own:** any service's data, the player accounts or the issuing of tokens (Player Service), or the chat connection (Discord DMs Service carries it; the Gateway only negotiates it)
-- **Interacts with:** every service, by forwarding each REST request to the service that owns the path; the client, as its single point of entry. See [Gateway](#gateway)
+- **Owns:** no data. It holds only the routing table (prefix => service), the credential checks and the task timeout and concurrent task limit at the entry point of the system. Since Lab 3 the routing table's instances are read from Service Discovery, and the Gateway keeps one circuit breaker per instance
+- **Does NOT own:** any service's data, the player accounts or the issuing of tokens (Player Service), the chat connection (Discord DMs Service carries it; the Gateway only negotiates it), or the instance registry (Service Discovery)
+- **Interacts with:** every service, by forwarding each REST request to one instance of the service that owns the path; the client, as its single point of entry; Service Discovery, which it reads the instance list from and marks an instance `down` in when that instance's breaker trips. See [Gateway](#gateway)
+
+### 10. Service Discovery
+
+- **Owns:** the instance registry (Lab 3) - which instance of which service runs where (`instance_id`, `service_name`, `host`, `port`, `version`) and whether it is `up` or `down`
+- **Does NOT own:** routing (the Gateway decides where a request goes), any business data, or any event; it produces and consumes no events
+- **Interacts with:** every service, whose instances register with it and send it heartbeats; every registered instance, whose `GET /status` it polls; the Gateway, which reads the `up` instances from it and marks instances `down` after a circuit breaker trip; the developers, whom it alerts through a Telegram bot. See [Service Discovery](#service-discovery)
 
 ## Architecture Diagram
 
@@ -128,6 +135,9 @@ The eight services use two languages, **Go** and **C#**. The Gateway, added in L
 | 7   | Moderation Service                | Racovita Dumitru   | Go       | Gin                       |
 | 8   | Discord DMs Service               | Racovita Dumitru   | Go       | Gin + `gorilla/websocket` |
 | 9   | Gateway                           | whole team         | Python   | FastAPI + `httpx`         |
+| 10  | Service Discovery                 | Titerez Vladislav  | Python   | FastAPI + uvicorn + `httpx` |
+
+**Service Discovery (Lab 3) is Python 3.12**, the language the lab bans for the team, with FastAPI + uvicorn and `httpx` for the status polling and the Telegram alerts. Its registry is held in memory in its single copy, with no database: after a restart every instance is back in the registry within one heartbeat (5 s), so there is nothing worth persisting.
 
 **Why Go for six services.** Most of our services do the same kind of work: receive an HTTP request, call one or two other services, read or write their own database, and answer. Go is built for exactly this. It compiles to one small binary, starts in milliseconds, and goroutines make it simple to call several services at the same time (Moderation Service calls four at once). Go is also quick to learn, which matters because most of the team is picking it up during this course.
 
@@ -164,6 +174,7 @@ We use three engines. PostgreSQL is the default. MongoDB and Redis are used only
 | University Record         | `university_record_db`        | PostgreSQL        | Enrollment lists, email groups, courses and schedules are tables. Access control is a join between "records by category" and "which player may see which category in this session".                                                                        |
 | Moderation                | `moderation_db`               | PostgreSQL        | Each decision is an audit record: who decided, what, whether it was correct, which rules were broken. Queried by session, moderator and applicant. Never changed after it is written.                                                                      |
 | Discord DMs               | `dms_db`, `dms_pubsub`        | MongoDB, Redis    | Messages are appended and read back per channel in time order, which is what a Mongo collection with an index does. Redis Pub/Sub is not storage: it passes each new message to every running instance of the service so all connected players receive it. |
+| Service Discovery         | none                          | in memory         | The registry is rebuilt by the heartbeats within 5 s of a restart, and Service Discovery runs as one copy, so a database would add a dependency without keeping anything that matters.                                                                     |
 
 ---
 
@@ -208,6 +219,12 @@ Players chat in channels and must see new messages instantly. Discord DMs Servic
 | Moderation reports the outcome                                          | Event `decision.recorded`                   | Moderation => GW => Session `POST /events`                           | Session updates score and counters; no reply needed                                                        |
 | A player opens the chat                                                 | REST `POST /ws-tickets`, then WebSocket     | client => GW => Discord DMs (ticket); client ↔ Discord DMs (socket)  | The Gateway authorizes the connection but does not carry it                                                |
 | Players chat during a shift                                             | WebSocket (REST for history)                | client ↔ Discord DMs; history client => GW => Discord DMs            | Push in real time                                                                                          |
+| An instance registers and sends heartbeats (Lab 3)                      | REST `PUT /instances/{instance_id}`         | every instance of the eight services => Service Discovery directly   | The Gateway needs the registry to route, so registration cannot go through it                     |
+| An instance shuts down gracefully (Lab 3)                               | REST `DELETE /instances/{instance_id}`      | the instance => Service Discovery directly                           | Removes it from the routing table at once instead of after the 15 s TTL                                    |
+| Service Discovery checks health and load (Lab 3)                        | REST `GET /status`                          | Service Discovery => every registered instance directly              | One specific instance is checked, which a prefix through the Gateway cannot address                        |
+| The Gateway refreshes its routing table (Lab 3)                         | REST `GET /instances`                       | Gateway => Service Discovery                                         | Needs the current `up` instances, every 5 s                                                                |
+| The Gateway removes an instance after a breaker trip (Lab 3)            | REST `PUT /instances/{instance_id}/status`  | Gateway => Service Discovery                                         | Other readers of the registry stop seeing the failing instance                                             |
+| Service Discovery alerts the developers (Lab 3)                         | Telegram Bot API `sendMessage`              | Service Discovery => Telegram                                        | Critical load, an unreachable or removed instance, a recovery                                              |
 
 ### Worked example: one applicant from start to finish
 
@@ -308,20 +325,28 @@ The Gateway is the single entry point of the system (Lab 2). Clients **and servi
 
 **Address.** Container `gateway-service`, port `8080` inside `student-id-net` (`http://gateway-service:8080`), published on host port `8080`.
 
-**Route scheme.** `{gateway}/api/v1/<prefix>/<rest>` is forwarded to the service behind `<prefix>` as `/api/v1/<rest>` - the prefix segment is removed, so every service keeps the paths documented under [Endpoints](#endpoints). Example: `GET {gateway}/api/v1/server-rules/rulesets/current?difficulty=3` reaches `GET http://server-rules-service:8080/api/v1/rulesets/current?difficulty=3`. The prefix also tells apart paths that exist in several services (`POST /applicants/next`, `POST /events`, `/health`).
+**Route scheme.** `{gateway}/api/v1/<prefix>/<rest>` is forwarded to one instance of the service behind `<prefix>` as `/api/v1/<rest>` - the prefix segment is removed, so every service keeps the paths documented under [Endpoints](#endpoints). Example: `GET {gateway}/api/v1/server-rules/rulesets/current?difficulty=3` reaches `GET http://<host>:8080/api/v1/rulesets/current?difficulty=3` of one `server-rules` instance. The prefix also tells apart paths that exist in several services (`POST /applicants/next`, `POST /events`, `/health`).
 
-| Prefix              | Service                           | Forwarded to                            |
+The prefix is also the service's name everywhere else (Lab 3): `service_name` at registration with Service Discovery, the first part of `instance_id`, `service` in `GET /status` and in every log line.
+
+| Prefix              | Service                           | Port of its instances (Lab 2 address)   |
 | ------------------- | --------------------------------- | --------------------------------------- |
-| `player`            | Player Service                    | `http://player-service:8080`            |
-| `session`           | Server Moderation Session Service | `http://session-service:8080`           |
-| `applicant`         | Applicant Service                 | `http://applicant-service:8081`         |
-| `credential`        | Credential Service                | `http://credential-service:8082`        |
-| `server-rules`      | Server Rules Service              | `http://server-rules-service:8080`      |
-| `university-record` | University Record Service         | `http://university-record-service:8080` |
-| `moderation`        | Moderation Service                | `http://moderation-service:8085`        |
-| `discord-dms`       | Discord DMs Service               | `http://discord-dms-service:8086`       |
+| `player`            | Player Service                    | `8080` (`http://player-service:8080`)            |
+| `session`           | Server Moderation Session Service | `8080` (`http://session-service:8080`)           |
+| `applicant`         | Applicant Service                 | `8081` (`http://applicant-service:8081`)         |
+| `credential`        | Credential Service                | `8082` (`http://credential-service:8082`)        |
+| `server-rules`      | Server Rules Service              | `8080` (`http://server-rules-service:8080`)      |
+| `university-record` | University Record Service         | `8080` (`http://university-record-service:8080`) |
+| `moderation`        | Moderation Service                | `8085` (`http://moderation-service:8085`)        |
+| `discord-dms`       | Discord DMs Service               | `8096` (`http://discord-dms-service:8096`, REST; `8086` is its WebSocket listener) |
 
 A service's own health check is `{gateway}/api/v1/<prefix>/health` (forwarded to `/health`). The Gateway's own is `GET {gateway}/health`.
+
+**Routing table from Service Discovery (Lab 3).** The Gateway no longer forwards to the fixed addresses above. It reads the `up` instances of every service from [Service Discovery](#service-discovery) (`GET /api/v1/instances`, with the service token) at startup and every 5 s, and forwards each request to `http://<host>:<port>` of one of them, in **round-robin** across the instances of that service. When Service Discovery is unreachable, the Gateway keeps the last list it read and logs the failure (`sd.refresh`). An answer that lists no instance at all does not replace a list that holds some until 3 such answers come in a row (10 s): a Service Discovery that just restarted is empty until the instances' next heartbeat. With `SERVICE_DISCOVERY_URL` empty the Gateway forwards to the fixed addresses above instead (static mode, one instance per service), for a stack without Service Discovery. Every service is written so that any instance can answer any request (see [Running as several instances](#running-as-several-instances)), which is what makes round-robin safe.
+
+**Circuit breaker per instance (Lab 3).** The Gateway keeps one [circuit breaker](#circuit-breaker) per instance, with a 35 s window (its task timeout `10s` x 3.5). While an instance's breaker is open, the round-robin skips it. When the breaker trips, the Gateway marks that instance `down` in Service Discovery once (`PUT /api/v1/instances/{instance_id}/status`, see [Service Discovery](#service-discovery)), logs the outcome as `sd.mark_down` and otherwise ignores any error of that call (a `404` for an instance whose record already expired included). It closes an instance's breaker early when Service Discovery lists the instance as `up` again.
+
+**No live instance (Lab 3).** When a prefix has no `up` instance, or every one of them has an open breaker, the Gateway calls nothing and answers `503 SERVICE_UNAVAILABLE` with `details.service` naming the prefix, logged as `route.no_instance`.
 
 **Forwarding.** Method, path remainder, query string and body are forwarded unchanged. The status, headers and body of the service's answer are returned unchanged - a service's own errors reach the caller as the service wrote them. The Gateway changes only the credential headers (see [Authentication](#authentication)) and adds `X-Request-ID` when the caller sent none.
 
@@ -331,15 +356,106 @@ A service's own health check is `{gateway}/api/v1/<prefix>/health` (forwarded to
 | ------------------------------------------------------------ | ----------------------------------------------------- |
 | Unknown prefix                                               | `404 NOT_FOUND`                                       |
 | Missing or unusable credential, wrong service token          | `401` / `403` - see [Authentication](#authentication) |
-| The service is unreachable (connection refused, DNS failure) | `502 BAD_GATEWAY`                                     |
+| The service is unreachable (connection refused, DNS failure, no connection within 2 s) | `502 BAD_GATEWAY`              |
 | The service did not answer within the Gateway's timeout      | `408 REQUEST_TIMEOUT`                                 |
 | The Gateway's own concurrent task limit is reached           | `429 TOO_MANY_REQUESTS`                               |
+| The service has no `up` instance with a closed breaker (Lab 3) | `503 SERVICE_UNAVAILABLE`, `details.service`        |
 
-In all of these the request either never reached the service or its answer was lost; callers treat `408`, `429` and `502` as "may be retried", except for the non-idempotent `POST`s listed under [API conventions](#api-conventions).
+In all of these the request either never reached the service or its answer was lost; callers treat `408`, `429`, `502` and `503` as "may be retried", except for the non-idempotent `POST`s listed under [API conventions](#api-conventions).
 
 **No retries.** The Gateway forwards a request once. It never retries on its own, so a non-idempotent call such as `POST /applicants/next` is never duplicated by it.
 
 **Development and admin routes.** Paths under `/api/v1/<prefix>/dev/*` and `/api/v1/<prefix>/admin/*` are beyond the contract. The Gateway forwards them only with a valid service token, never on a player token alone.
+
+#### Service Discovery
+
+Service Discovery (Lab 3) keeps the registry of running instances: which instance of which service runs where, and whether it is `up` or `down`. The Gateway routes from it; every service instance registers with it. It owns no business data and takes part in no event. Its own reference is [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md).
+
+**Address.** Container `service-discovery-service`, port `8090` inside `student-id-net` (`http://service-discovery-service:8090`), published on host port `8090`. Every service and the Gateway find it through `SERVICE_DISCOVERY_URL`; an empty value disables registration (one warning line at startup), for local runs and tests.
+
+**Two exceptions to the rules above**, both because the Gateway itself depends on the registry:
+
+- Registration, heartbeats, deregistration and the status polling go **directly** between an instance and Service Discovery, not through the Gateway.
+- Service Discovery **checks `X-Service-Token` itself** on every `/api/v1/instances` endpoint (`401 INVALID_SERVICE_TOKEN` for a wrong token, `403 SERVICE_TOKEN_REQUIRED` for none), the one component besides the Gateway that validates a credential. `GET /health` and `GET /status` need none.
+
+**Instance identity.**
+
+- `service_name` is the Gateway prefix: `player`, `session`, `applicant`, `credential`, `server-rules`, `university-record`, `moderation`, `discord-dms`. Any other value is `400 VALIDATION_ERROR`.
+- `instance_id` is `<service_name>-<hostname>`, the hostname read from the OS (`os.Hostname()`, `Dns.GetHostName()`, `socket.gethostname()`), which in Docker is the container id prefix: `player-3f4e2a9b1c7d`. A restarted container keeps its id, so an instance marked `down` stays `down` until health polling recovers it. An optional `INSTANCE_ID` variable overrides it for runs outside Docker.
+- `host` is the source IP of the registration or heartbeat request, unless the body carries `host` (set from the optional `INSTANCE_HOST` variable, for a service running outside Docker). A heartbeat from a new IP updates it.
+- `port` is the REST port the Gateway forwards to (Discord DMs: `8096`, not its WebSocket port).
+
+**Register and heartbeat - `PUT /api/v1/instances/{instance_id}`** (service token).
+
+```json
+{ "service_name": "player", "port": 8080, "version": "3.0.0" }
+```
+
+`host` is added only when `INSTANCE_HOST` is set. Response `200 OK`, the stored record:
+
+```json
+{
+  "instance_id": "player-3f4e2a9b1c7d",
+  "service_name": "player",
+  "host": "172.18.0.12",
+  "port": 8080,
+  "version": "3.0.0",
+  "status": "up",
+  "last_seen_at": "2026-10-27T12:00:00.123Z",
+  "ttl_seconds": 15
+}
+```
+
+- Errors: `400 VALIDATION_ERROR` (bad body, unknown `service_name`), `401 INVALID_SERVICE_TOKEN`, `403 SERVICE_TOKEN_REQUIRED`, in the shared error envelope.
+- The first `PUT` is sent right after the instance's HTTP listener is up, so the polling finds `GET /status` at once. The same `PUT` is then repeated **every 5 s** for the life of the process: that is the heartbeat. Registering again updates `host`, `port`, `version` and `last_seen_at` of the same record and never duplicates it; it **never changes `status`**.
+- A record with no `PUT` for **15 s** (`ttl_seconds`) is removed, logged `registry.expired` (`warn`), and an `expired` alert is raised. This is the alert that reports a crashed instance: its record is removed 10-15 s after the crash; the first failed status check, at most 10 s after the crash, has usually reported it as `unreachable` already. A `DELETE` on graceful shutdown raises no alert. An instance that registers after its record expired (a restarted container keeps its hostname, so its `instance_id`) gets a new record, `up`, logged `registry.registered` with `after_expiry: true`, and a `recovered` alert says it is back. After a Service Discovery restart the registry is empty and every instance reappears at its next `PUT`.
+- A failed `PUT` is logged (`sd.heartbeat_failed`, `warn`) and retried on the next tick; the instance keeps serving. `sd.registered` is logged on the first success only.
+- Every call to Service Discovery has a **2 s timeout**; its failure never affects request handling.
+
+**Deregister - `DELETE /api/v1/instances/{instance_id}`** (service token). Sent on graceful shutdown (SIGTERM/SIGINT) before the server stops, with a 2 s timeout, logged `sd.deregistered`; shutdown never waits on it beyond that. Removes the record: `204 No Content`, also for an unknown id (idempotent), so an instance whose record already expired, or that outlived a Service Discovery restart, does not see its deregistration fail.
+
+**List - `GET /api/v1/instances?service=<name>`** (service token). Read by the Gateway every 5 s.
+
+```json
+{
+  "instances": [
+    {
+      "instance_id": "player-3f4e2a9b1c7d",
+      "service_name": "player",
+      "host": "172.18.0.12",
+      "port": 8080,
+      "version": "3.0.0",
+      "status": "up",
+      "last_seen_at": "2026-10-27T12:00:00.123Z"
+    }
+  ]
+}
+```
+
+Only `up` instances are listed. `service` omitted lists every service; an unknown service, or one with no `up` instance, answers `200` with `{ "instances": [] }`.
+
+**Mark down - `PUT /api/v1/instances/{instance_id}/status`** (service token), called by the Gateway when an instance's circuit breaker trips:
+
+```json
+{ "status": "down", "reason": "breaker_open: 3 failures in 35s" }
+```
+
+Sets the instance `down` and keeps the record (`DELETE` stays for graceful shutdown only). Idempotent: marking a `down` instance again is a no-op `200`. Only `"down"` with a non-empty `reason` of at most 500 characters is accepted (anything else `400 VALIDATION_ERROR`); unknown id `404 NOT_FOUND`. The response is the stored record, as for registration.
+
+**Statuses.** An instance is `up` or `down`, nothing else.
+
+- `down` is set by the Gateway (mark-down after a breaker trip) or by Service Discovery itself after **3 consecutive failed status checks**.
+- Back to `up` only after **3 consecutive healthy status checks**, in both cases: 20-30 s after a Gateway mark-down, and up to about 40 s after an instance that polling marked down answers again (the first of the 3 is the breaker's trial call, 17.5 s after the trip). Heartbeats keep a `down` record alive but never clear `down`.
+- **Only the Gateway marks instances down.** A service's own circuit breakers log and fail fast and never call Service Discovery: services call each other through the Gateway and cannot name one instance.
+
+**Health polling.** Every **10 s** Service Discovery calls `GET http://<host>:<port>/status` of every registered instance, `up` and `down` alike, in parallel, each with a **2 s** timeout, so one slow instance never delays the others. After a failed check, the next check of that instance comes after **2 s** (`HEALTH_RECHECK_SECONDS`) instead of 10 s, so its 3 failed checks fall within 4-12 s, inside the 17.5 s breaker window.
+
+- A failed check: any answer other than a `200` whose body holds `in_flight` and `max_concurrent_tasks` (the `503 degraded` of [Status endpoint](#status-endpoint) and any `4xx` included), a timeout or a connection error. The first failed check of a streak logs `health.unreachable` (`warn`) and raises an `unreachable` alert; the 3rd consecutive one sets the instance `down` (`registry.marked_down`, `marked_down_by: health`).
+- A healthy check resets the failures (`health.reachable`). After 1-2 failed checks, while the instance is still `up`, it also raises a `recovered` alert; the 3rd consecutive healthy check brings a `down` instance back `up` (`registry.recovered`, a `recovered` alert), whoever marked it down.
+- **Critical load:** a `200` whose `in_flight / max_concurrent_tasks` is at least **0.8** (80 % of `MAX_CONCURRENT_TASKS`) logs `health.critical` (`warn`) and raises a `critical_load` alert once per streak; load back under the threshold logs `health.load_recovered` and raises a `load_recovered` alert. `GET /status` is exempt from the concurrent task limit, so a copy at full load produces a critical-load alert instead of a `429` that would count as a failed check.
+- Service Discovery keeps its own circuit breaker per polled instance, counting failed checks in a row, so it opens on the check that sets the instance `down`. While it is open the instance is probed by one trial call per 17.5 s; a successful trial is the first of the 3 healthy checks it needs to come back. Unlike [Circuit breaker](#circuit-breaker), any failed status check counts here, a `4xx` included: a `404` or `429` from `/status` means the address does not serve a healthy instance.
+
+**Alerts and developer notifications.** Every alert carries its kind (critical load, unreachable, expired, marked down, and the recoveries recovered and load recovered), the service, `instance_id`, `host:port`, the load and the UTC time. A recovery names the problems it ends: `recovered` ends unreachable, marked down and expired, `load_recovered` ends critical load. Service Discovery logs every alert and posts it to the team's Telegram group through the Bot API, `POST https://api.telegram.org/bot<token>/sendMessage` with `{ "chat_id", "text", "parse_mode": "HTML" }` (a title with an icon per kind and hashtags of the kind and the service; the plain-text message when Telegram refuses the markup), configured with `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` (empty in `.env.example`) and the optional `NOTIFY_COOLDOWN_SECONDS` (`300`) and `TELEGRAM_TIMEOUT_SECONDS` (`5`). The same problem for the same instance is sent at most once per cooldown; a recovery is sent only when it closes a problem the group was told about, and it never shortens the cooldown. A `429` blocks the whole chat until its `retry_after`: a block ending within 30 s is waited for, a longer one drops the alerts meanwhile. With either variable empty, or without internet, alerts are only logged and Service Discovery starts normally. A failed send is logged as `notify.failed` without the URL, since the URL holds the bot token.
 
 #### API conventions
 
@@ -349,6 +465,84 @@ These apply to every endpoint listed in the next section.
 - Lists are paginated with `?limit=&offset=` and return `{ "items": [], "total": 0 }`.
 - A `POST` that creates something (`POST /applicants/next`, `POST /sessions`, `POST /decisions`) is not idempotent. Callers must not retry it automatically on a timeout, and the Gateway never does.
 - Every service exposes `GET /health`. It needs no credential.
+- Every service, the Gateway and Service Discovery expose `GET /status` (Lab 3), see [Status endpoint](#status-endpoint), and log as [Logging](#logging) says.
+- `X-Request-ID` is read from the request or generated (uuid4), echoed in the response, and **forwarded on every outbound call**, the Gateway's and the relay pushes included (see [Logging](#logging)).
+
+##### Status endpoint
+
+`GET /status` (Lab 3) exists at the root of every service, the Gateway and Service Discovery, next to `/health`; `/health` and `/health/ready` stay as they are. Service Discovery calls it directly, not through the Gateway.
+
+```json
+{
+  "service": "player",
+  "instance_id": "player-3f4e2a9b1c7d",
+  "version": "3.0.0",
+  "status": "up",
+  "in_flight": 3,
+  "max_concurrent_tasks": 50
+}
+```
+
+- `200` with `"status": "up"`; `503` with the same body and `"status": "degraded"` when the instance's own database (PostgreSQL, MongoDB) does not answer a ping. A component without a database (Gateway, Service Discovery) is always `up`.
+- `service` is the Gateway prefix (see [Gateway](#gateway)); Service Discovery uses `service-discovery`, the Gateway `gateway`. `instance_id` as registered (see [Service Discovery](#service-discovery)).
+- `in_flight` is the number of requests holding a concurrent-limit slot right now; `max_concurrent_tasks` is the configured `MAX_CONCURRENT_TASKS`. The load is `in_flight / max_concurrent_tasks`.
+- No credential. **Exempt from the concurrent task limit** and not counted in `in_flight`. Its access log line is `debug`.
+- No other field is added, except by Discord DMs, which adds `ws_connections` (the WebSocket connections this instance holds).
+
+##### Logging
+
+Every component - the eight services, the Gateway and Service Discovery - logs the same way (Lab 3).
+
+- **One JSON object per line on stdout**, `snake_case` keys. Level from `LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`).
+- **Every line carries** `time` (ISO 8601 UTC with milliseconds and `Z`), `level` (lowercase), `service` (the Gateway prefix; `gateway`, `service-discovery`), `instance_id`, `version`, `event` (a stable name from the list below) and `msg`.
+- **`duration_ms` is an integer number of milliseconds** in every component. Applicant's `latency_ms`, Player's and Session's `duration` and any `Elapsed` are renamed.
+- **`request_id`**: the `X-Request-ID` of the request being handled, printed on every line produced while handling it and forwarded on every outbound call. An outbox row stores the `request_id` of the request that created the event, and the relay sends it as `X-Request-ID` with the push (a new one is generated when it is missing).
+
+| `event`                                                     | Extra fields                                                                                                       |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `http.request`                                              | `request_id`, `method`, `path`, `status`, `duration_ms`, `player_id` (when known), `client_ip`; `debug` for `/health*` and `/status` |
+| `http.error`                                                | `request_id`, `status`, `code`, `error`; an unexpected error is logged at `error` with its stack trace before the `500` is returned |
+| `outbound.call`                                             | `request_id`, `target` (the prefix), `method`, `path`, `status`, `duration_ms`                                     |
+| `event.pushed` / `event.parked`                             | `event_id`, `event_type`, `consumer`, `status`, `attempt`, `next_attempt_at`; `event.parked` at `error`            |
+| `event.received`                                            | `event_id`, `event_type`, `producer`, `duplicate` (bool)                                                           |
+| `breaker.opened` / `breaker.closed` / `breaker.rejected`    | `target`, `failures`, `window_s`; the Gateway and Service Discovery add `target_instance`                         |
+| `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` | `instance_id`, `error` when failed                                                                                 |
+| `startup` / `shutdown`                                      | version, instance id, port, configuration without secrets                                                          |
+| business actions                                            | one line each, with the ids involved: login, register, session create / join / start / next applicant / end, decision, evaluation, scope rejection, ... |
+
+The Gateway adds `target`, `target_instance` and `upstream_duration_ms` to its `http.request` lines, and the events `route.no_instance`, `sd.refresh`, `sd.mark_down` (the outcome of a mark-down: `info`, `warn` when it failed) and `breaker.half_open` (it logs every transition; its `breaker.closed` carries `reason`: `trial request succeeded` or `listed again by Service Discovery`). Service Discovery adds `registry.registered` (`after_expiry` for a return), `registry.expired`, `registry.deregistered`, `registry.marked_down`, `registry.recovered`, `health.unreachable`, `health.reachable`, `health.critical`, `health.load_recovered`, `health.error`, `health.checked` (`debug`), `alert.emitted` (`debug`), `alert.subscriber_failed`, `notify.sent`, `notify.failed`, `notify.skipped`, `notify.dropped` and `notify.disabled`; the levels are in `docs/SERVICE_DISCOVERY.md`.
+
+**Never logged:** `Authorization`, `X-Service-Token`, `JWT_SECRET`, passwords, the Telegram bot token (it is part of the Telegram URL, so exception messages are sanitized), full request or response bodies, and applicant personal data other than `applicant_id`.
+
+Example line:
+
+```json
+{"time":"2026-10-27T12:00:00.123Z","level":"info","service":"session","instance_id":"session-3f4e2a9b1c7d","version":"3.0.0","event":"http.request","msg":"request","request_id":"9d2d...","method":"POST","path":"/api/v1/sessions","status":201,"duration_ms":42,"player_id":"...","client_ip":"172.18.0.9"}
+```
+
+##### Circuit breaker
+
+Every component that calls another keeps circuit breakers (Lab 3): the Gateway one per instance, a service one per target - per peer service for its synchronous calls, per consumer for its outbox relay - and Service Discovery one per polled instance and one for Telegram.
+
+- **A failure** is no answer within the caller's outgoing-call timeout (`10s` in the Gateway; a service's own, for example Session's `DEPENDENCY_TIMEOUT` `3s`), any `5xx` answer (the Gateway's `502` and `503` included) **except a `500 DEPENDENCY_UNAVAILABLE`**, or a refused connection, connection reset, DNS failure or no connection within 2 s (which a service sees as the Gateway's `502`). Any `4xx`, `408`, `422` and `429` included, is **not** a failure.
+- **`500 DEPENDENCY_UNAVAILABLE` is not a failure** of the instance that answers it: that instance is alive and reports that a service *it* calls failed, whose own instances are counted by their own breakers. Counting it would trip every healthy caller of an unavailable service. An instance whose own database is down answers it too (Applicant and Credential, `details.dependency` naming the database); that case is caught by health polling, since its `GET /status` answers `503 degraded`. Likewise a hung service answers its own `408` after its `5s` task timeout, before the Gateway's `10s`, which is not a failure either: health polling takes it out when its `/status` stops answering within 2 s.
+- **Trip:** 3 failures within a sliding window of task timeout x 3.5: **17.5 s** in a service and Service Discovery, **35 s** in the Gateway. No new variable: the window is `HTTP_REQUEST_TIMEOUT` x 3.5.
+- **While open:** the Gateway skips the instance (`503 SERVICE_UNAVAILABLE` when none is left); a service answers its synchronous call with `500 DEPENDENCY_UNAVAILABLE`, `details.dependency` naming the target, without calling, logged `breaker.rejected`; a relay does **not claim** that consumer's deliveries, which stay pending and untouched.
+- **Recovery:** after a cooldown equal to the window, half-open: exactly one trial call goes through. Success closes the breaker (`breaker.closed`), failure reopens it (`breaker.opened`). Every transition is logged.
+- **Instance removal (option B):** only the Gateway's breaker, when it trips, marks the instance `down` in Service Discovery, once per trip. Service Discovery counts no failures reported by others, and a service's breaker never calls Service Discovery.
+
+##### Running as several instances
+
+From Lab 3 every service runs as 2-3 copies behind the Gateway's round-robin, so any copy must give the same answer to the same request.
+
+- **No per-process state that changes an answer:** no caches of mutable data, no in-memory dedup, no in-memory sessions. The only per-process state is the concurrent task limiter and the connection pools.
+- **Background workers are safe in every copy:** an outbox relay claims its rows before sending (`FOR UPDATE SKIP LOCKED` plus a lease in PostgreSQL, an atomic compare-and-set in MongoDB), increments `attempts` in the database, and updates a row only while it still holds the claim. A delivery is sent by one copy at a time.
+- **Migrations and seeding are safe when copies start together:** they run under a database lock (a PostgreSQL advisory lock; in MongoDB a unique index, a duplicate key meaning "already seeded"). The copy that loses the race starts normally; it never exits.
+- **Inbound event dedup lives in the database**, in the same transaction as the effect (`INSERT ... ON CONFLICT DO NOTHING` on the processed-events table first).
+- **Connection budget:** replicas x pool size stays under the database's `max_connections` (PostgreSQL default `100`); 20-25 connections per copy is the ceiling.
+- **Compose:** a scaled service has no `container_name` and no fixed host port.
+
+Gaps found by the Lab 3 audit against these rules, all fixed in Lab 3: Session's and University Record's relays sending without a claim, Server Rules' per-instance cache (a notes-only `PATCH` could re-activate a deactivated ruleset), Player's and Session's seed race (the second copy exited), one player in two open sessions (Session: an advisory lock per player on create and join), `500` on concurrent duplicate events (University Record: `ON CONFLICT DO NOTHING` in the same transaction), nil-uuid email reservations (Credential: a reservation names its applicant), an outbox lease shorter than a batch (Applicant, Credential: every claim carries a token and a 15 min `OUTBOX_LEASE`, and the relay hands the rest of a batch back at a consumer's first failure).
 
 ##### Authentication
 
@@ -370,7 +564,7 @@ Credentials are checked **at the Gateway, and only there**. Services never see t
 3. It **removes** `Authorization` and `X-Service-Token`, and removes any `X-Player-Id` the caller sent.
 4. For a request authenticated with a player token, it sets **`X-Player-Id: <sub>`**. A request authenticated with the service token carries no `X-Player-Id`.
 
-**What services receive.** Only `X-Player-Id`. When an endpoint needs to know which player is calling, it reads that header and nothing else; a service validates no token. A request without `X-Player-Id` on a route that needs a calling player answers `401 UNAUTHENTICATED`. Services trust the header because nothing but the Gateway can reach them - their ports are not published (see [Deployments](#deployments)). The one connection that bypasses the Gateway, the Discord DMs WebSocket, is authorized with a one-time ticket instead (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)).
+**What services receive.** Only `X-Player-Id`. When an endpoint needs to know which player is calling, it reads that header and nothing else; a service validates no token. The one exception is Service Discovery (Lab 3), which checks `X-Service-Token` itself because instances call it directly, not through the Gateway (see [Service Discovery](#service-discovery)). A request without `X-Player-Id` on a route that needs a calling player answers `401 UNAUTHENTICATED`. Services trust the header because nothing but the Gateway can reach them - their ports are not published (see [Deployments](#deployments)). The one connection that bypasses the Gateway, the Discord DMs WebSocket, is authorized with a one-time ticket instead (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)).
 
 **A service calling another service** sends `X-Service-Token`, never a player's token or a player's `X-Player-Id`.
 
@@ -414,6 +608,7 @@ These codes are shared by every service and the Gateway, and mean the same every
 | `500`  | `DEPENDENCY_UNAVAILABLE` | service                                         | A service or database this endpoint needs did not answer, or answered `408`/`429`/`502`/`5xx`. **Nothing was changed.** `details.dependency` names it |
 | `500`  | `INTERNAL_ERROR`         | service, Gateway                                | Anything else                                                                                                                                         |
 | `502`  | `BAD_GATEWAY`            | Gateway                                         | The service behind the prefix is unreachable                                                                                                          |
+| `503`  | `SERVICE_UNAVAILABLE`    | Gateway                                         | Lab 3: the service behind the prefix has no `up` instance with a closed circuit breaker; no instance was called. `details.service` names the prefix   |
 
 - `422` is reserved for the endpoint-specific codes listed under each endpoint (`INVALID_DIFFICULTY`, `MODERATOR_NOT_IN_SESSION`, ...): the request is well-formed, but its content is not acceptable. A malformed request is always `400 VALIDATION_ERROR`, never `422`.
 - `409` is for a request that is valid but conflicts with the current state (`SESSION_NOT_IN_LOBBY`, `ALREADY_DECIDED`, ...).
@@ -429,7 +624,8 @@ Every service and the Gateway bound how long one task may run and how many may r
 | Concurrent task limit | `MAX_CONCURRENT_TASKS` | chosen per service                      | A new task is refused at once, before any work: `429 TOO_MANY_REQUESTS` + `Retry-After` |
 
 - **The outer layer never gives up first:** client timeout > Gateway timeout (`10s`) > service timeout (`5s`) > that service's timeout for its own outgoing calls. A service that calls peers sets its outgoing timeout below its own `HTTP_REQUEST_TIMEOUT`, so it can still answer `500 DEPENDENCY_UNAVAILABLE` before its own deadline.
-- **Health endpoints are exempt** from the concurrent limit, so a busy service is not restarted by its orchestrator.
+- **Health endpoints are exempt** from the concurrent limit, so a busy service is not restarted by its orchestrator. So is `GET /status` (Lab 3), which is also not counted in `in_flight`.
+- Service Discovery uses the service values: `HTTP_REQUEST_TIMEOUT` `5s`.
 - The variable names are shared. The C# services read the same names from the environment, or map them to their own configuration keys and say so in their `docs/` reference.
 
 ### Endpoints
@@ -517,7 +713,8 @@ year ∈ { REFERENCE_YEAR − admissionYear, REFERENCE_YEAR − admissionYear + 
 
 So someone admitted in 2023 is in year 3 or 4 during `2026-2027` and **never** in year 2, and
 claiming otherwise is a lie provable from the identifier on their own card. The `years_enrolled`
-fact Moderation sends to Server Rules is `REFERENCE_YEAR − admissionYear`.
+fact Moderation sends to Server Rules is `REFERENCE_YEAR − admissionYear`, and `0` for an applicant
+without an enrollment (staff, outsider, alumni).
 
 **University email addresses are numbered only on collision.**
 
@@ -1247,6 +1444,7 @@ An applicant who breaks an admission rule gets `"admitted": false`, the broken r
 
 - The facts describe what the university records **prove**, not what the applicant claims. Moderation Service builds them before calling this endpoint. If the claims were checked instead, every liar would pass.
 - Server Rules stores nothing about the applicant. `applicant_id` is only used in logs.
+- `years_enrolled` is `0` for an applicant without an enrollment (staff, outsider, alumni); Moderation sends `0`, never `null`. A `null` or missing `years_enrolled` stays `422 INVALID_FACTS`.
 - Errors: `404 RULESET_NOT_FOUND`, `422 INVALID_FACTS`.
 
 ##### Events
@@ -1728,15 +1926,16 @@ need to clone the (private) service repository to run one.
 
 | Service                           | Docker Hub image                                                                                                  | Host port | Requires                                                                                                                                                                                                                                          |
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Applicant Service                 | [`stewdh/applicant-service`](https://hub.docker.com/r/stewdh/applicant-service)                                   | -         | `DATABASE_URL` (PostgreSQL 16), `REFERENCE_YEAR` (must match Credential/University Record/Moderation Service); event delivery: `SERVICE_TOKEN`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL` (the Gateway plus the consumer's prefix)                  |
-| Credential Service                | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service)                                 | -         | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record/Moderation Service); event delivery: `SERVICE_TOKEN`, `APPLICANT_URL`, `UNIVERSITY_RECORD_URL` (the Gateway plus the consumer's prefix)                         |
-| Server Rules Service              | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service)                         | -         | `ConnectionStrings__RulesDb` (PostgreSQL 17); validates no token                                                                                                                                                                                |
-| University Record Service         | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service)               | -         | `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential/Moderation Service), `SERVICE_TOKEN` (sent with its events), `APPLICANT_URL`, `CREDENTIAL_URL`                                                                                              |
-| Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | -         | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN` (sent on every outbound call); peer URLs `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL` = the Gateway plus the peer's prefix (empty = the built-in mock of that peer), `REFERENCE_YEAR`; optional `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`), `UPSTREAM_TIMEOUT` (`4s`) |
-| Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `WS_PUBLIC_URL` (the address clients reach port `8086` at, the base of a ticket's `ws_url`); optional `REDIS_URL` (fan-out between instances), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). Reads no service token: credentials are checked at the Gateway. Since `2.1.0` the published `8086` is the WebSocket listener only (`WS_PORT`); the REST API listens on `8096` (`APP_PORT`) inside the network, which is where the Gateway reaches it: `DISCORD_DMS_URL=http://discord-dms-service:8096`                                 |
-| Gateway Service                   | [`stewdh/gateway-service`](https://hub.docker.com/r/stewdh/gateway-service)                                       | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md)                                                                                                                                                          |
-| Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | -         | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS` - see below                                                 |
-| Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; peer URLs `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL` (each falls back to a stub when empty), `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` (event consumers) - see below |
+| Applicant Service                 | [`stewdh/applicant-service`](https://hub.docker.com/r/stewdh/applicant-service)                                   | -         | `DATABASE_URL` (PostgreSQL 16), `REFERENCE_YEAR` (must match Credential/University Record/Moderation Service); event delivery: `SERVICE_TOKEN`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL` (the Gateway plus the consumer's prefix); since `3.0.0`: `SERVICE_DISCOVERY_URL` (registration, with `SERVICE_TOKEN`), 2 replicas, `GET /status` - see [`docs/APPLICANT_SERVICE.md`](docs/APPLICANT_SERVICE.md) §9.6, §15, §16 |
+| Credential Service                | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service)                                 | -         | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record/Moderation Service); event delivery: `SERVICE_TOKEN`, `APPLICANT_URL`, `UNIVERSITY_RECORD_URL` (the Gateway plus the consumer's prefix); since `3.0.0`: `SERVICE_DISCOVERY_URL` (registration, with `SERVICE_TOKEN`), 2 replicas, `GET /status` - see [`docs/CREDENTIAL_SERVICE.md`](docs/CREDENTIAL_SERVICE.md) §8.6, §14, §15 |
+| Server Rules Service              | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service)                         | -         | 2 instances (`deploy.replicas: 2`), `ConnectionStrings__RulesDb` (PostgreSQL 17), `SERVICE_DISCOVERY_URL`, `SERVICE_TOKEN` (for Service Discovery only); validates no token                                                                                                                                                                                |
+| University Record Service         | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service)               | -         | 2 instances (`deploy.replicas: 2`), `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential/Moderation Service), `SERVICE_TOKEN` (sent with its events and to Service Discovery), `APPLICANT_URL`, `CREDENTIAL_URL`, `SERVICE_DISCOVERY_URL`                                                                                              |
+| Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | -         | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN` (sent on every outbound call); peer URLs `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL` = the Gateway plus the peer's prefix (empty = the built-in mock of that peer), `REFERENCE_YEAR`; since `3.0.0` `SERVICE_DISCOVERY_URL` (registration of every instance, with `SERVICE_TOKEN`; empty = off), 2 instances (`deploy.replicas: 2`), `GET /status`; optional `INSTANCE_ID`, `INSTANCE_HOST`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`), `UPSTREAM_TIMEOUT` (`4s`) - see [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md) |
+| Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `REDIS_URL` (required with several copies: fan-out between them), `WS_PUBLIC_URL` (the address clients reach port `8086` at, the base of a ticket's `ws_url`); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration of the REST port of every copy, with `SERVICE_TOKEN`; empty = off), 2 copies (`deploy.replicas: 2`) behind `dms-ws-proxy` (nginx, `deployments/dms-ws-proxy/nginx.conf`), which publishes `8086` and forwards each WebSocket connection to one copy; `GET /status` (REST, with `ws_connections`); optional `INSTANCE_ID`, `INSTANCE_HOST`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). Validates no credential on its requests. The REST API listens on `8096` (`APP_PORT`) inside the network, where the Gateway reaches it (`DISCORD_DMS_URL=http://discord-dms-service:8096`); `8086` (`WS_PORT`) serves the WebSocket only - see [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md) |
+| Gateway Service                   | [`stewdh/gateway-service`](https://hub.docker.com/r/stewdh/gateway-service)                                       | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`; since `3.0.0` `SERVICE_DISCOVERY_URL` (instances read from Service Discovery, round-robin; set from `GATEWAY_SERVICE_DISCOVERY_URL`, Service Discovery by default; empty = static mode with the peer base URLs), `GET /status`; since `3.1.0` a circuit breaker per instance that marks it down in Service Discovery - see [`docs/GATEWAY.md`](docs/GATEWAY.md) |
+| Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | -         | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS`; since `3.0.0` `SERVICE_DISCOVERY_URL` with `SERVICE_TOKEN` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below                                                 |
+| Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; peer URLs `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL` (each falls back to a stub when empty), `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` (event consumers); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below |
+| Service Discovery (Lab 3)         | [`d1vinexd/service-discovery-service`](https://hub.docker.com/r/d1vinexd/service-discovery-service)               | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (empty = alerts only logged), `NOTIFY_COOLDOWN_SECONDS` (`300`), `LOG_LEVEL` (`info`), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS`. No database - see [Service Discovery](#service-discovery) |
 
 **One service token for the whole stack.** Every variable above that holds a service token
 (`SERVICE_TOKEN`) is set to the same value,
@@ -1747,9 +1946,26 @@ need to clone the (private) service repository to run one.
 `APPLICANT_URL=http://gateway-service:8080/api/v1/applicant` - see [Gateway](#gateway). A service is
 never configured with another service's own address. The variable names stay each service's own.
 
-**Published host ports.** Only two ports are published: the Gateway
-(`8080`) and Discord DMs (`8086`, the WebSocket listener only, for the direct connection the Gateway
-negotiates; Discord DMs' REST listens on `8096` inside the network, reached through the Gateway). Every
+**Service Discovery (Lab 3).** Every service and the Gateway get
+`SERVICE_DISCOVERY_URL=http://service-discovery-service:8090` and start after Service Discovery is
+healthy; every service also reads the optional `INSTANCE_HOST` and `INSTANCE_ID` (see
+[Service Discovery](#service-discovery)) and `LOG_LEVEL` (see [Logging](#logging)).
+
+**Instances per service (Lab 3).** Each of the eight services runs `deploy.replicas: 2` in
+`docker-compose.yml`; the Gateway, Service Discovery and every database run one copy. Copies are added
+or removed at runtime with `docker compose up -d --scale <service>=N`, for example
+`docker compose up -d --scale moderation-service=3` in the demo. A scaled service has no
+`container_name` and no published host port (see [Running as several instances](#running-as-several-instances)).
+
+**Discord DMs WebSocket with several copies (Lab 3).** A reverse proxy in the CPR compose (`dms-ws-proxy`, since Discord DMs `3.0.0`)
+publishes host port `8086` and forwards each WebSocket connection to one of the Discord DMs copies;
+Discord DMs itself publishes no host port. `WS_PUBLIC_URL` stays `ws://localhost:8086`, so nothing
+changes for clients.
+
+**Published host ports.** Three ports are published: the Gateway
+(`8080`), Service Discovery (`8090`, the registry and its `/status`, for the demo and the developers) and the chat port `8086` (since Discord DMs `3.0.0` published by `dms-ws-proxy`, an nginx in front of
+the Discord DMs copies, for the direct WebSocket connection the Gateway negotiates; Discord DMs' REST listens on
+`8096` inside the network, reached through the Gateway), and from Lab 3 Service Discovery (`8090`). Every
 other service is reachable only inside `student-id-net`, through the Gateway - which is what lets
 services trust `X-Player-Id` (see [Authentication](#authentication)). Database ports are not part of
 the contract.
@@ -1758,7 +1974,7 @@ the contract.
 (verifies), and lives in `.env` next to `SERVICE_TOKEN`.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
-free number: `8080` and `8086` are taken above (`-` means not published), and the database containers
+free number: `8080` and `8086` (`dms-ws-proxy`) are taken above (`-` means not published), `8090` by Service Discovery (Lab 3), and the database containers
 hold `5433`-`5438`, `6380`, `27018` and `27019`. Every service listens on `8080` inside its own container except Applicant and
 Credential, which listen on `8081` and `8082`, Moderation, which listens on `8085`, and Discord DMs, which
 listens on `8096` for REST and on `8086` for the WebSocket.
@@ -1822,7 +2038,13 @@ Branches are protected by following rules:
 
 1. Protect main and dev - No direct push in `main` and `dev`. PR required. Branches cannot be deleted,
    updated or force pushed without the user being in bypass list
-2. Enforce branch naming - We follow a standardized naming pattern for all feature branches:
+2. Review - in a repository with several contributors (CPR, Gateway, etc.) a PR needs two approvals
+   from other contributors, and a review is requested from all other human contributors(from 2026-10-25).
+   Asking Claude, Copilot or another tool for a review as well is not a violation, it is just not required.
+   A private service repository has one human contributor, its owner, and Claude or another AI tool is not
+   added to it as a contributor(since 2026-10-25); so no approval is required there and the owner merges their
+   own PR once the checks pass (see [Rule changes](#rule-changes))
+3. Enforce branch naming - We follow a standardized naming pattern for all feature branches:
 
 ```
 type/issueID-short-description
@@ -1847,7 +2069,10 @@ type/issueID-short-description
 
 ## Merging Strategy
 
-**Strategy**: Squash and Merge
+**Strategy**: Squash and Merge for every branch that goes into `dev`. A release PR (`dev` into `main`) is
+the one exception: it is a direct PR from `dev` to `main`, merged with **Create a merge commit**, never
+squashed (since 2026-10-25).
+Every release has been merged this way (see [Rule changes](#rule-changes)).
 
 Benefits:
 
@@ -1859,10 +2084,17 @@ Benefits:
 Process:
 
 1. Create feature branch from `dev`
-2. Make commits with your work
+2. Make commits with your work (a PR may have several commits; what reaches `dev` is one commit, see step 4);
+   keep the branch up to date with `git rebase origin/dev`, do not merge `dev` into it (since 2026-10-25)
 3. Open Pull Request to `dev`
-4. After approval, squash and merge
+4. After approval (where an approval is required, see Branch protection rules), **squash and merge**:
+   every PR into `dev` is squashed into one commit; a merge commit or a rebase merge is not used there
 5. Delete feature branch after merge
+
+Release PR: branch `dev` into `main`, **Create a merge commit**, and from 2026-10-25 a title
+`chore(#N): release X.Y.Z` or `Release X.Y.Z`. It is exempt from the one-commit rule and its description repeats the
+`Closes #N` of every issue it ships (see below), because GitHub closes an issue only when a PR reaches
+`main`.
 
 ## Pull Request Requirements
 
@@ -1871,9 +2103,12 @@ Every Pull Request must include:
 ### Required Information
 
 - **Clear description** of what changed and why
-- **Issue reference** (e.g., "Closes #42", "Fixes #18")
+- **Issue reference**: every PR closes exactly one issue (`Closes #42`, `Fixes #18`); `Part of` is not
+  used. A large story is split into one small issue per PR, linked from the story with a task list. All
+  issues live in the CPR and are added to the project; a PR in a service repository names the CPR issue
+  as `Closes DdimaPos/pad-team-16-student-id-please#42` (since 2026-10-25)
 - **List of specific changes** made
-- **Testing instructions** or results
+- **Testing instructions** or results (not required for a PR that only changes documentation)
 - **Screenshots** for UI changes
 - **Breaking changes** (if any)
 
@@ -1903,9 +2138,9 @@ Closes #(issue)
 
 ## Versioning Strategy
 
-Every image - the eight services and the Gateway - is versioned `MAJOR.MINOR.PATCH`, where **MAJOR is the laboratory number** (Lab 2 grading requires the tag to follow the lab):
+Every image - the eight services, the Gateway and Service Discovery - is versioned `MAJOR.MINOR.PATCH`, where **MAJOR is the laboratory number** (Lab 2 grading requires the tag to follow the lab):
 
-- **MAJOR** = the lab the release belongs to. Every image of Lab 2 is `2.x.y`, starting at `2.0.0`.
+- **MAJOR** = the lab the release belongs to. Every image of Lab 2 is `2.x.y`, starting at `2.0.0`; every image of Lab 3 is `3.x.y`, starting at `3.0.0`.
 - **MINOR** (e.g. `2.0.0` => `2.1.0`): a new feature within the lab.
 - **PATCH** (e.g. `2.1.0` => `2.1.1`): a bug fix within the lab.
 
@@ -1915,7 +2150,8 @@ A breaking contract change therefore happens at a lab boundary (the next MAJOR),
 
 1. Set the new version in the repository's **`VERSION` file** (one line, e.g. `2.0.0`); it is the single source of the image tag.
 2. Merge to `main`. GitHub Actions runs the repository's tests and, only if they pass, publishes `<dockerhub-user>/<service>:<VERSION>` and moves `<dockerhub-user>/<service>:latest` to it. Images are never pushed by hand.
-3. Create release notes in the format below.
+3. Create release notes in the format below. From 2026-10-25 every version also gets a git tag `v<VERSION>`
+   and a GitHub Release whose body is the notes block; the CPR release PR description serves as the CPR's notes.
 4. Point `docker-compose.yml` and the [Deployments](#deployments) table at the new tag in the CPR PR that moves the submodule pointer.
 
 Example: merging `2.1.0` of Player Service publishes `dimapos/player-service:2.1.0` and updates `dimapos/player-service:latest`.
@@ -1940,10 +2176,16 @@ Example: merging `2.1.0` of Player Service publishes `dimapos/player-service:2.1
 - Header alignment on mobile devices
 - Memory leak in data processing
 
+### Removed
+
+- Dropped the old export endpoint
+
 ### Security
 
 - Updated dependencies with security patches
 ```
+
+Allowed sections: Added, Changed, Fixed, Removed, Security.
 
 ## Workflow Summary
 
@@ -1951,7 +2193,43 @@ Example: merging `2.1.0` of Player Service publishes `dimapos/player-service:2.1
 2. **Create Branch**: Use proper naming convention from `dev` branch
 3. **Develop**: Make commits with clear, descriptive messages
 4. **Test**: Verify functionality and pass the tests
-5. **Create PR**: Follow template and provide complete information
-6. **Review**: Address feedback and get required approvals
+5. **Create PR**: Follow template and provide complete information; it closes one issue
+6. **Review**: Address feedback and get required approvals (not required in a single-owner repository)
 7. **Merge**: Squash and merge to `dev`
-8. **Deploy**: Regular releases from `dev` to `main`
+8. **Deploy**: Regular releases from `dev` to `main` as a merge commit, with a tag and a GitHub Release
+
+### Rule changes
+
+A rule is checked against the work done after it was written down. Rules that are new or stricter carry the
+date they start from, and earlier PRs, commits and releases are not counted against them. Clarifications of
+how the team has always worked carry no date and hold for earlier work too
+([PR #68](https://github.com/DdimaPos/pad-team-16-student-id-please/pull/68), issue #67).
+
+**New or stricter, from 2026-10-25:**
+
+| Rule |
+| --- |
+| Every PR closes exactly one issue with `Closes`; `Part of` is not used; a PR in a service repository names the CPR issue |
+| Every version has a git tag `v<VERSION>` and a GitHub Release with its notes |
+| A branch is updated with `git rebase origin/dev`, not by merging `dev` into it |
+| A release PR `dev` into `main` is titled `chore(#N): release X.Y.Z` or `Release X.Y.Z` |
+| In the CPR and the Gateway a PR needs two approvals from other contributors |
+| A private service repository has one human contributor, its owner (Claude or another AI tool is not a contributor), so no approval is required there |
+| A review is requested from all other human contributors; asking Claude, Copilot or another tool as well is not a violation, it is just not required |
+
+**Clarifications that apply to all work:**
+
+| Rule |
+| --- |
+| A release PR `dev` into `main` is a direct PR merged with a merge commit; it is exempt from the one-commit rule |
+| A documentation-only PR needs no Testing section |
+| Release notes may use the section `Removed` |
+| "One commit per branch" is what reaches `dev`: a PR may have several commits, but it is merged into `dev` with squash and merge, which leaves one commit; exceptions are left to the contributors' discretion |
+| The commit format is checked on the PR title and on the squash commit that reaches `dev`; commits inside a squashed feature branch are not checked |
+| `Co-authored-by` lines of people that GitHub adds when it squashes a branch with several authors are allowed |
+
+Unchanged rules keep the date they were introduced: branch naming, squash and merge, the PR template and
+the release notes format since 2026-09-08 ([#8](https://github.com/DdimaPos/pad-team-16-student-id-please/pull/8));
+the commit and PR title format `type(#N): message`, one commit per branch (after the squash on merge into `dev`),
+no `Co-Authored-By` from Claude or any other AI tool and the review request since 2026-10-04
+([#38](https://github.com/DdimaPos/pad-team-16-student-id-please/pull/38)).

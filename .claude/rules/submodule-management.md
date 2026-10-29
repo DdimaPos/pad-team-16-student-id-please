@@ -1,11 +1,12 @@
 # Submodule management
 
-The 8 service submodules are private. A person can read and write only their own two; the
+The 8 service submodules and `service-discovery-service` are private. A person can read and write only their own two; the
 professors can read all.
 
 | GitHub handle | Submodules                                            |
 | ------------- | ----------------------------------------------------- |
 | DdimaPos      | `player-service`, `server-moderation-session-service` |
+| vvtttvv       | `service-discovery-service` (shared like the Gateway: the repository is Vlad's, every member contributes through PRs) |
 | IacovlevMaxim | `applicant-service`, `credential-service`             |
 | dmracovit     | `moderation-service`, `discord-DMs-service`           |
 | vvtttvv       | `server-rules-service`, `university-record-service`   |
@@ -26,7 +27,9 @@ After a change in an owned submodule, check each item and report which are missi
 images, tags or commits unless asked.
 
 1. `VERSION` file bumped within the lab's `N.x.y` (README "Versioning Strategy"; Lab 2 = `2.x.y`).
-2. Image published to Docker Hub under that tag and `latest`, by the CI workflow on merge to `main`.
+2. Image published to Docker Hub under that tag and `latest`, by the CI workflow on merge to `main`
+   (a release PR merged with a merge commit), and a git tag `v<VERSION>` with a GitHub Release holding the
+   release notes (README "Release Notes Format").
 3. `docker-compose.yml` references the new tag.
 4. README "Deployments" row current (image, host port, env vars).
 5. `docs/<SERVICE>.md` reflects the change.

@@ -11,6 +11,11 @@
       "description": "The Gateway. Session routes are under /session, login under /player."
     },
     {
+      "key": "session_direct_url",
+      "value": "http://localhost:8088",
+      "description": "The instance itself, not the Gateway: its port is not published in the team stack, so run the service's own compose and use `docker compose port --index 1 session-service 8080`."
+    },
+    {
       "key": "service_token",
       "value": "change_me_too",
       "description": "SERVICE_TOKEN from the CPR .env, for the service-only routes (/events, /dev/*, /health/ready)."
@@ -209,6 +214,29 @@
               }
             }
           ]
+        },
+        {
+          "name": "GET /status (200, for Service Discovery - called directly, not through the Gateway)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('contract shape', () => pm.expect(b).to.have.all.keys('service','instance_id','version','status','in_flight','max_concurrent_tasks'));",
+                  "pm.test('service is session', () => pm.expect(b.service).to.eql('session'));",
+                  "pm.test('instance id is session-<hostname>', () => pm.expect(b.instance_id).to.match(/^session-/));",
+                  "pm.test('up', () => pm.expect(b.status).to.eql('up'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{session_direct_url}}/status"
+          }
         }
       ]
     },

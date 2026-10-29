@@ -19,9 +19,37 @@ name: student-id-please
 x-reference-year: &reference_year "2026"
 
 services:
-  gateway-service:
-    image: stewdh/gateway-service:2.2.1
+  # Service Discovery (README "Service Discovery"): the registry every instance registers with and the
+  # Gateway reads its routing table from. One copy, registry in memory; after a restart every instance is
+  # back within one heartbeat (5 s). Host port 8090 is published for the demo (the registry and /status);
+  # the services and the Gateway reach it at http://service-discovery-service:8090 inside the network.
+  # Health polling of every instance's /status every 10 s, alerts in the log and, with TELEGRAM_BOT_TOKEN
+  # and TELEGRAM_CHAT_ID set in .env, in the team's Telegram group.
+  service-discovery-service:
+    image: d1vinexd/service-discovery-service:3.0.0
     restart: unless-stopped
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      LOG_LEVEL: ${SERVICE_DISCOVERY_LOG_LEVEL:-info}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
+      NOTIFY_COOLDOWN_SECONDS: ${NOTIFY_COOLDOWN_SECONDS:-300}
+    ports:
+      - "8090:8090"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - student-id-net
+
+  gateway-service:
+    image: stewdh/gateway-service:3.1.0
+    restart: unless-stopped
+    depends_on:
+      service-discovery-service:
+        condition: service_healthy
     environment:
       # Verifies the player JWT signed by Player Service (same value) and the one service token.
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
@@ -29,9 +57,14 @@ services:
       # Above the services' 5s, so the outer layer never gives up first.
       HTTP_REQUEST_TIMEOUT: 10s
       MAX_CONCURRENT_TASKS: "64"
-      # Peer base URLs default to the container names in this file (PLAYER_URL, SESSION_URL, ...).
-      # Discord DMs 2.1.0 serves its REST API on 8096 (its published 8086 is the WebSocket only); 2.2.1 defaults
-      # to this value, it is set here so that an older Gateway image still reaches Discord DMs.
+      # Lab 3: with a Service Discovery URL the instances of every service are read from it at startup
+      # and every 5s, and each service's requests go to its instances round-robin; an instance that
+      # fails 3 times within 35s is skipped and marked down there (circuit breaker). The default is the
+      # Service Discovery of this file; set GATEWAY_SERVICE_DISCOVERY_URL= (empty) in .env for static mode,
+      # one instance per service at the fixed URLs below, with the breaker but no mark-down.
+      SERVICE_DISCOVERY_URL: ${GATEWAY_SERVICE_DISCOVERY_URL-http://service-discovery-service:8090}
+      # Static mode only. Peer base URLs default to the container names in this file (PLAYER_URL,
+      # SESSION_URL, ...); Discord DMs serves its REST API on 8096 (its published 8086 is the WebSocket only).
       DISCORD_DMS_URL: http://discord-dms-service:8096
     ports:
       - "8080:8080"
@@ -58,9 +91,14 @@ services:
       - student-id-net
 
   server-rules-service:
-    image: d1vinexd/server-rules-service:2.1.0
+    image: d1vinexd/server-rules-service:3.0.1
     restart: unless-stopped
+    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       rules-postgres:
         condition: service_healthy
     environment:
@@ -70,6 +108,10 @@ services:
       # mounts GET /api/v1/dev/slow?ms=, which demonstrates both. The service checks no token: the Gateway does.
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
+      # Lab 3: each copy registers with Service Discovery directly (not through the Gateway) and
+      # heartbeats every 5s, with the service token below.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
     networks:
       - student-id-net
 
@@ -93,9 +135,14 @@ services:
       - student-id-net
 
   university-record-service:
-    image: d1vinexd/university-record-service:2.1.1
+    image: d1vinexd/university-record-service:3.0.1
     restart: unless-stopped
+    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       university-record-postgres:
         condition: service_healthy
     environment:
@@ -108,6 +155,9 @@ services:
       CREDENTIAL_URL: ${UNIVERSITY_RECORD_CREDENTIAL_URL:-http://gateway-service:8080/api/v1/credential}
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
+      # Lab 3: each copy registers with Service Discovery directly (not through the Gateway) and
+      # heartbeats every 5s, with the service token above.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       Dev__EnableTestEndpoints: ${UNIVERSITY_RECORD_ENABLE_DEV_ENDPOINTS:-true}
     networks:
       - student-id-net
@@ -132,12 +182,21 @@ services:
       - student-id-net
 
   moderation-service:
-    image: dmracovit/moderation-service:2.0.0
+    image: dmracovit/moderation-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       moderation-postgres:
         condition: service_healthy
     environment:
+      # Service Discovery (README "Service Discovery"): every instance registers its address under `moderation`,
+      # heartbeats every 5 s and deregisters on shutdown. The `:-` default applies even to an empty value in .env;
+      # registration is off only when the container's own environment has an empty SERVICE_DISCOVERY_URL.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
       # The stack's one X-Service-Token, sent on every call to a peer and on every event push.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
@@ -187,25 +246,45 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:2.1.0
+    image: dmracovit/discord-dms-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two copies, none publishing a port. The one chat port of the stack, 8086, is answered by dms-ws-proxy
+    # below, which hands each WebSocket connection to one of the copies; the Redis fan-out makes every copy deliver
+    # every message, so the copy does not matter. More copies: --scale discord-dms-service=3.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       dms-mongo:
         condition: service_healthy
       dms-redis:
         condition: service_healthy
     environment:
       MONGODB_URI: "mongodb://${DMS_MONGO_USER:-dms_user}:${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}@dms-mongo:27017/dms_db?authSource=admin"
+      # Required with several copies: a message stored by one copy reaches the players connected to the others.
       REDIS_URL: redis://dms-redis:6379/0
       DEV_ENDPOINTS: ${DMS_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
       # The address clients reach port 8086 at: the base of the ws_url a ticket comes with. The chat is
-      # negotiated through the Gateway (POST /api/v1/discord-dms/ws-tickets) and connected here directly.
+      # negotiated through the Gateway (POST /api/v1/discord-dms/ws-tickets) and connected to the proxy directly.
       WS_PUBLIC_URL: ${DMS_WS_PUBLIC_URL:-ws://localhost:8086}
-      # Two listeners: 8086 serves the WebSocket only and is the one published below; the REST API listens
-      # on 8096, never published, and the Gateway reaches it there (DISCORD_DMS_URL=http://discord-dms-service:8096).
+      # Two listeners: 8086 serves the WebSocket only (reached through dms-ws-proxy); the REST API listens on 8096,
+      # never published, which is what every copy registers with Service Discovery and where the Gateway reaches it.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+    networks:
+      - student-id-net
+
+  dms-ws-proxy:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - discord-dms-service
+    volumes:
+      - ./deployments/dms-ws-proxy/nginx.conf:/etc/nginx/nginx.conf:ro
     ports:
-      - "8086:8086"   # stays published in the final stack: the direct WebSocket connection, nothing else answers here
+      - "8086:8086"   # the one chat port of the stack: ws://localhost:8086/api/v1/ws?ticket=... reaches one of the copies
     networks:
       - student-id-net
 
@@ -229,9 +308,14 @@ services:
       - student-id-net
 
   player-service:
-    image: dimapos/player-service:2.0.0
+    image: dimapos/player-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       player-postgres:
         condition: service_healthy
     environment:
@@ -251,6 +335,11 @@ services:
       SEED_ON_START: ${PLAYER_SEED_ON_START:-true}
       # Mounts GET /api/v1/dev/slow?ms=, which demonstrates the 408 and the 429.
       ENABLE_DEV_ENDPOINTS: ${PLAYER_ENABLE_DEV_ENDPOINTS:-true}
+      # Lab 3: registration with Service Discovery, directly (not through the Gateway). The URL
+      # defaults to the internal container address, so an empty value in .env still registers;
+      # SERVICE_TOKEN is required with it.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
     networks:
       - student-id-net
 
@@ -274,9 +363,14 @@ services:
       - student-id-net
 
   session-service:
-    image: dimapos/server-moderation-session-service:2.0.0
+    image: dimapos/server-moderation-session-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       session-postgres:
         condition: service_healthy
     environment:
@@ -302,6 +396,10 @@ services:
       SEED_ON_START: ${SESSION_SEED_ON_START:-true}
       # Mounts GET /api/v1/dev/slow?ms=, which demonstrates the 408 and the 429.
       ENABLE_DEV_ENDPOINTS: ${SESSION_ENABLE_DEV_ENDPOINTS:-true}
+      # Lab 3: registration with Service Discovery, directly (not through the Gateway), with the
+      # SERVICE_TOKEN above. Defaults to the internal container address, so an empty value in
+      # .env still registers.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
     networks:
       - student-id-net
 
@@ -325,16 +423,22 @@ services:
       - student-id-net
 
   applicant-service:
-    image: stewdh/applicant-service:2.1.0
+    image: stewdh/applicant-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two copies share applicant-postgres (no container_name, no host port);
+    # `docker compose up -d --scale applicant-service=3` adds a third.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       applicant-postgres:
         condition: service_healthy
     environment:
       APP_ENV: docker
       APP_PORT: "8081"
       LOG_LEVEL: info
-      SERVICE_VERSION: "2.1.0"
+      SERVICE_VERSION: "3.0.0"
       TZ: UTC
       # Task timeout (408) and concurrent task limit (429) - README "Task timeout and concurrent
       # task limit". DEV_ENDPOINTS mounts GET /api/v1/dev/slow?ms=, which demonstrates both.
@@ -349,6 +453,9 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       CREDENTIAL_URL: http://gateway-service:8080/api/v1/credential
       UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
+      # Each copy registers itself here directly (not through the Gateway) as
+      # applicant-<container id>, with the same service token, and heartbeats every 5s.
+      SERVICE_DISCOVERY_URL: http://service-discovery-service:8090
       REFERENCE_YEAR: *reference_year
     healthcheck:
       test: ["CMD", "/applicantd", "healthcheck"]
@@ -379,16 +486,22 @@ services:
       - student-id-net
 
   credential-service:
-    image: stewdh/credential-service:2.1.0
+    image: stewdh/credential-service:3.0.0
     restart: unless-stopped
+    # Lab 3: two copies share credential-mongo (no container_name, no host port);
+    # `docker compose up -d --scale credential-service=3` adds a third.
+    deploy:
+      replicas: 2
     depends_on:
+      service-discovery-service:
+        condition: service_healthy
       credential-mongo:
         condition: service_healthy
     environment:
       APP_ENV: docker
       APP_PORT: "8082"
       LOG_LEVEL: info
-      SERVICE_VERSION: "2.1.0"
+      SERVICE_VERSION: "3.0.0"
       TZ: UTC
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
@@ -400,6 +513,9 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       APPLICANT_URL: http://gateway-service:8080/api/v1/applicant
       UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
+      # Each copy registers itself here directly (not through the Gateway) as
+      # credential-<container id>, with the same service token, and heartbeats every 5s.
+      SERVICE_DISCOVERY_URL: http://service-discovery-service:8090
       REFERENCE_YEAR: *reference_year
     healthcheck:
       test: ["CMD", "/credentiald", "healthcheck"]

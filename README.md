@@ -1735,6 +1735,7 @@ need to clone the (private) service repository to run one.
 | Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | -         | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN` (sent on every outbound call); peer URLs `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL` = the Gateway plus the peer's prefix (empty = the built-in mock of that peer), `REFERENCE_YEAR`; since `3.0.0` `SERVICE_DISCOVERY_URL` (registration of every instance, with `SERVICE_TOKEN`; empty = off), 2 instances (`deploy.replicas: 2`), `GET /status`; optional `INSTANCE_ID`, `INSTANCE_HOST`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`), `UPSTREAM_TIMEOUT` (`4s`) - see [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md) |
 | Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `REDIS_URL` (required with several copies: fan-out between them), `WS_PUBLIC_URL` (the address clients reach port `8086` at, the base of a ticket's `ws_url`); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration of the REST port of every copy, with `SERVICE_TOKEN`; empty = off), 2 copies (`deploy.replicas: 2`) behind `dms-ws-proxy` (nginx, `deployments/dms-ws-proxy/nginx.conf`), which publishes `8086` and forwards each WebSocket connection to one copy; `GET /status` (REST, with `ws_connections`); optional `INSTANCE_ID`, `INSTANCE_HOST`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). Validates no credential on its requests. The REST API listens on `8096` (`APP_PORT`) inside the network, where the Gateway reaches it (`DISCORD_DMS_URL=http://discord-dms-service:8096`); `8086` (`WS_PORT`) serves the WebSocket only - see [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md) |
 | Gateway Service                   | [`stewdh/gateway-service`](https://hub.docker.com/r/stewdh/gateway-service)                                       | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`, peer base URLs - see [`docs/GATEWAY.md`](docs/GATEWAY.md)                                                                                                                                                          |
+| Service Discovery                 | [`d1vinexd/service-discovery-service`](https://hub.docker.com/r/d1vinexd/service-discovery-service)               | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (both empty = alerts only logged), `NOTIFY_COOLDOWN_SECONDS` (`300`), `SERVICE_DISCOVERY_LOG_LEVEL`. One copy, registry in memory. Every service registers its instances here (`SERVICE_DISCOVERY_URL`) and the Gateway reads its routing table from here (`GATEWAY_SERVICE_DISCOVERY_URL`) - see [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md) |
 | Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | -         | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS`; since `3.0.0` `SERVICE_DISCOVERY_URL` with `SERVICE_TOKEN` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below                                                 |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; peer URLs `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL` (each falls back to a stub when empty), `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` (event consumers); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below |
 
@@ -1747,19 +1748,26 @@ need to clone the (private) service repository to run one.
 `APPLICANT_URL=http://gateway-service:8080/api/v1/applicant` - see [Gateway](#gateway). A service is
 never configured with another service's own address. The variable names stay each service's own.
 
-**Published host ports.** Only two ports are published: the Gateway
-(`8080`) and the chat port `8086` (since Discord DMs `3.0.0` published by `dms-ws-proxy`, an nginx in front of
+**Published host ports.** Three ports are published: the Gateway
+(`8080`), Service Discovery (`8090`, the registry and its `/status`, for the demo and the developers) and the chat port `8086` (since Discord DMs `3.0.0` published by `dms-ws-proxy`, an nginx in front of
 the Discord DMs copies, for the direct WebSocket connection the Gateway negotiates; Discord DMs' REST listens on
 `8096` inside the network, reached through the Gateway). Every
 other service is reachable only inside `student-id-net`, through the Gateway - which is what lets
 services trust `X-Player-Id` (see [Authentication](#authentication)). Database ports are not part of
 the contract.
 
+**Instances (Lab 3).** Every service runs as **2 instances** (`deploy.replicas: 2`); the Gateway, Service
+Discovery, `dms-ws-proxy` and every database run as 1. No service block has a `container_name` or a host port,
+so `docker compose up -d --scale moderation-service=3` adds a third copy: it registers with Service Discovery
+and the Gateway routes to it within 5 s, without a restart; a stopped copy leaves the registry on its
+`DELETE` or after the 15 s heartbeat TTL. Every service and the Gateway `depends_on` Service Discovery
+(healthcheck), so the registry is up before the first registration.
+
 **`JWT_SECRET`** is shared by exactly two containers, Player Service (signs) and the Gateway
 (verifies), and lives in `.env` next to `SERVICE_TOKEN`.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
-free number: `8080` and `8086` (`dms-ws-proxy`) are taken above (`-` means not published), and the database containers
+free number: `8080`, `8086` (`dms-ws-proxy`) and `8090` are taken above (`-` means not published), and the database containers
 hold `5433`-`5438`, `6380`, `27018` and `27019`. Every service listens on `8080` inside its own container except Applicant and
 Credential, which listen on `8081` and `8082`, Moderation, which listens on `8085`, and Discord DMs, which
 listens on `8096` for REST and on `8086` for the WebSocket.

@@ -26,6 +26,7 @@ git submodule update --init --recursive
 - Titerez Vladislav: `server rule service` and `university-record-service`;
 - Gateway (`gateway-service`): shared - the repository is owned by Iacovlev Maxim, every member contributes through PRs.
 - Service Discovery (`service-discovery-service`, Lab 3): Titerez Vladislav; every member is a contributor and PRs need two approvals, as in the Gateway.
+- Message Broker (`message-broker-service`, Lab 4): Titerez Vladislav; every member is a contributor and PRs need two approvals, as in the Gateway.
 
 ## Service Boundaries
 

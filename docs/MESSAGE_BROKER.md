@@ -1,6 +1,6 @@
 # Message Broker Service - Integration Reference
 
-> **Status:** the base (#103), under review in vvtttvv/message-broker-service#1; no image published yet. It holds the data
+> **Status:** the base (#103), merged into `dev` with vvtttvv/message-broker-service#1; no image published yet. It holds the data
 > model, the in-memory core, `/health`, `/status`, `GET /api/v1/topics` and the registration with Service Discovery.
 > The gRPC server runs with no RPC yet. Coming on top: the gRPC API (#106), request/reply, load balancing and breakers
 > per instance (#107), durability and dead letters (#108), thread-per-request and rerouting (#109). The compose block is

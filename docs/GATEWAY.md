@@ -61,6 +61,8 @@ Building from source and the test suite are in the service repository README.
 | `SD_REFRESH_SECONDS` | `5` | Seconds between two reads of the instance list (`5` or `5s`) |
 | `SD_TIMEOUT_SECONDS` | `2` | Bound of one call to Service Discovery (list or mark-down), in seconds |
 | `INSTANCE_ID` | `gateway-<hostname>` | This Gateway's `instance_id` in its logs and `/status`; the hostname is the container id in Docker |
+| `LOG_FILE` | `/var/log/gateway/gateway.jsonl` | The log file next to stdout, read by `GET /logs` (#112); empty = stdout only |
+| `LOG_FILE_MAX_MB` / `LOG_FILE_KEEP` | `50` / `5` | The file rotates at this size; rotated files kept |
 | `APP_PORT`, `LOG_LEVEL` | `8080`, `info` | `LOG_LEVEL` is `debug`, `info`, `warn` or `error` |
 | `PLAYER_URL`, `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `SERVER_RULES_URL`, `UNIVERSITY_RECORD_URL`, `MODERATION_URL`, `DISCORD_DMS_URL` | the container names and ports of the team compose (`http://player-service:8080`, `http://applicant-service:8081`, `http://moderation-service:8085`, `http://discord-dms-service:8096`, ...) | Static mode only (`SERVICE_DISCOVERY_URL` empty): base URL of each routed service |
 
@@ -319,6 +321,17 @@ also has that request's `request_id`. Fields without a value are left out; `dura
 
 uvicorn's own lines get `event` `server`; its access log is off (the `http.request` line replaces it). Never
 logged: `Authorization`, `X-Service-Token`, `JWT_SECRET`, request or response bodies, query strings.
+
+**The log file and `GET /logs` (#112).** The same lines, uvicorn's included, also go to `LOG_FILE`
+(`/var/log/gateway/gateway.jsonl`). It rotates at `LOG_FILE_MAX_MB` (50) and keeps `LOG_FILE_KEEP` (5) rotated files.
+
+- `GET /logs?since=&until=&level=` streams the Gateway's own lines as `application/x-ndjson`, in the shape every
+  component shares (CPR README "Logs download").
+- It is a service-only route: `403 SERVICE_TOKEN_REQUIRED`, also with a player token, and `401 INVALID_SERVICE_TOKEN`.
+  It is not a task, and its `http.request` line is at `debug`.
+- It has no prefix, so it is not proxied. `/api/v1/<prefix>/logs` is proxied like any path, to the service's
+  `/api/v1/logs`, as a player route, so it never reaches an instance's `GET /logs`.
+- Service Discovery's `GET /api/v1/logs` fetches this endpoint at `gateway-service:8080` for the whole system's zip.
 
 ## 13. Contract notes (CPR issue #71 not merged yet)
 

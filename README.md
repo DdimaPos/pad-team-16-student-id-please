@@ -494,6 +494,7 @@ These apply to every endpoint listed in the next section.
 Every component - the eight services, the Gateway and Service Discovery - logs the same way (Lab 3).
 
 - **One JSON object per line on stdout**, `snake_case` keys. Level from `LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`).
+- **The same lines in a rotating file** (Lab 4, #112), read back by `GET /logs`: see [Logs download](#logs-download) below.
 - **Every line carries** `time` (ISO 8601 UTC with milliseconds and `Z`), `level` (lowercase), `service` (the Gateway prefix; `gateway`, `service-discovery`), `instance_id`, `version`, `event` (a stable name from the list below) and `msg`.
 - **`duration_ms` is an integer number of milliseconds** in every component. Applicant's `latency_ms`, Player's and Session's `duration` and any `Elapsed` are renamed.
 - **`request_id`**: the `X-Request-ID` of the request being handled, printed on every line produced while handling it and forwarded on every outbound call. An outbox row stores the `request_id` of the request that created the event, and the relay sends it as `X-Request-ID` with the push (a new one is generated when it is missing).
@@ -507,6 +508,7 @@ Every component - the eight services, the Gateway and Service Discovery - logs t
 | `event.received`                                            | `event_id`, `event_type`, `producer`, `duplicate` (bool)                                                           |
 | `breaker.opened` / `breaker.closed` / `breaker.rejected`    | `target`, `failures`, `window_s`; the Gateway and Service Discovery add `target_instance`                         |
 | `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` | `instance_id`, `error` when failed                                                                                 |
+| `logs.file_unavailable`                                     | `path`, `error`; `warn`, once at startup when `LOG_FILE` cannot be opened (#112)                                   |
 | `startup` / `shutdown`                                      | version, instance id, port, configuration without secrets                                                          |
 | business actions                                            | one line each, with the ids involved: login, register, session create / join / start / next applicant / end, decision, evaluation, scope rejection, ... |
 
@@ -518,6 +520,48 @@ Example line:
 
 ```json
 {"time":"2026-10-27T12:00:00.123Z","level":"info","service":"session","instance_id":"session-3f4e2a9b1c7d","version":"3.0.0","event":"http.request","msg":"request","request_id":"9d2d...","method":"POST","path":"/api/v1/sessions","status":201,"duration_ms":42,"player_id":"...","client_ip":"172.18.0.9"}
+```
+
+##### Logs download
+
+Lab 4 (#112): the logs of any instance, or of the whole system, can be downloaded without a shell on the Docker host. Every component (the eight services, the Gateway, Service Discovery and the Message Broker) does the same three things. The reference implementation is `app/logfile.py` of Service Discovery, the broker and the Gateway.
+
+**1. The log file.** Every line written to stdout is also written, unchanged, to `LOG_FILE`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LOG_FILE` | `/var/log/<service>/<service>.jsonl` (`<service>` as in the `service` field: `player`, ..., `gateway`, `service-discovery`, `message-broker`) | Empty: stdout only, and `GET /logs` answers `503 LOGS_UNAVAILABLE` |
+| `LOG_FILE_MAX_MB` | `50` | The file rotates at this size |
+| `LOG_FILE_KEEP` | `5` | Rotated files kept next to the current one |
+
+- The images run as non-root, so the Dockerfile creates the directory and gives it to the runtime user. Distroless has no shell, so create it in the build stage and `COPY --chown` it.
+- A file that cannot be opened does not stop the component. It logs to stdout only and writes one `logs.file_unavailable` warning.
+- Libraries: Go `gopkg.in/natefinch/lumberjack.v2` behind `io.MultiWriter(os.Stdout, file)` (`MaxSize` = `LOG_FILE_MAX_MB`, `MaxBackups` = `LOG_FILE_KEEP`). C# `Serilog.Sinks.File` next to the console sink (`fileSizeLimitBytes`, `rollOnFileSizeLimit: true`, `retainedFileCountLimit` = `LOG_FILE_KEEP + 1`, because it counts the current file). Python `logging.handlers.RotatingFileHandler`.
+
+**2. `GET /logs?since=<RFC 3339>&until=<RFC 3339>&level=<debug|info|warn|error>`** on the component's REST port. It streams the instance's own lines across the rotated files and the current one.
+
+| | |
+| --- | --- |
+| Credential | `X-Service-Token` checked by the component itself, as Service Discovery does: `403 SERVICE_TOKEN_REQUIRED` without it, `401 INVALID_SERVICE_TOKEN` when wrong. No service checks a token on its REST port otherwise, so this is a new check |
+| Window | `since <= time < until` on the line's `time`, so two consecutive windows never share a line. Both are optional, and a time needs its zone (`Z` or `+02:00`). `level` keeps that level and above |
+| Answer | `200`, `Content-Type: application/x-ndjson`, `Content-Disposition: attachment; filename="<instance_id>-<since>.jsonl"` (`since` as `20261105T112700Z`, or `start`). The lines are oldest first, one JSON object per line, unchanged. An empty window is an empty `200` |
+| Errors | `400 VALIDATION_ERROR` with `details.errors: [{field, message}]` for a malformed time, a time without a zone, `until <= since` or an unknown `level`. `503 LOGS_UNAVAILABLE` without a log file |
+| Limits | Outside the task limiter, like `/status`, so a busy instance can still be read. Its `http.request` line is at `debug`, so reading the logs does not add to them |
+
+- **No broken lines.** Read the current file only up to its size when the request starts, and leave out a last line without its newline. A rotation that happens during the read must not cut a line or repeat one, so open every file before reading any of them. An open file keeps its content when the rotation renames it.
+- **Not a Gateway route.** `/api/v1/<prefix>/logs` is proxied like any path, to the service's `/api/v1/logs` (which does not exist), as a player route. So it never reaches an instance's `GET /logs`. The logs are fetched from the instance directly, inside `student-id-net`, or through the aggregate below.
+
+**3. The aggregate on Service Discovery: `GET /api/v1/logs?service=&instance=&since=&until=&level=`**, with the service token. Service Discovery knows every `up` instance, so it fetches them all:
+
+- It calls `GET /logs` of every matching component in parallel, with the same window (in UTC), the service token and the caller's `X-Request-ID`.
+- `service` omitted means the whole system: every `up` instance, the broker, Service Discovery itself (from its own file) and the Gateway. The Gateway does not register, so Service Discovery reaches it through `LOGS_STATIC_TARGETS=gateway=http://gateway-service:8080`. `service=` narrows the download to one name, and `instance=` to one id.
+- The answer is `application/zip` (`logs-<since>.zip`). It holds one `<instance_id>.jsonl` per component (`gateway.jsonl` for the Gateway) and a `manifest.json`: `generated_at`, `generated_by`, the `query`, `files` (`file`, `service`, `instance_id`, `source`, `bytes`, `lines`) and `failed` (`service`, `instance_id`, `source`, `reason`).
+- A component that is unreachable, refuses, fails, is silent past `HEALTH_POLL_TIMEOUT_SECONDS` or takes longer than `LOGS_FETCH_DEADLINE_SECONDS` (60) is left out of the zip and named in `failed`. The download still succeeds.
+- One download runs at a time (`429` with `Retry-After: 5` meanwhile). An unknown `service` is `400 VALIDATION_ERROR`.
+
+```bash
+curl -o logs.zip 'http://localhost:8090/api/v1/logs?since=2026-11-05T10:00:00Z' -H "X-Service-Token: $SERVICE_TOKEN"
+unzip logs.zip && jq -c 'select(.request_id == "<id>")' *.jsonl | jq -sc 'sort_by(.time)[]'   # one request across the system
 ```
 
 ##### Circuit breaker

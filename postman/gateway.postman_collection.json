@@ -1598,6 +1598,130 @@
           ]
         }
       ]
+    },
+    {
+      "name": "logs (#112)",
+      "description": "GET /logs of the Gateway itself (service token only). CPR README \"Logs download\".",
+      "item": [
+        {
+          "name": "GET /logs - its own lines",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "pm.test('an attachment', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\".+\\.jsonl\"$/));",
+                  "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
+                  "pm.test('one JSON object per line, oldest first', () => { for (let i = 1; i < rows.length; i++) pm.expect(rows[i].time >= rows[i - 1].time).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/logs?since=2020-01-01T00:00:00Z"
+          }
+        },
+        {
+          "name": "GET /logs - no token is 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs - a player token is 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": "{{base_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs - a wrong token is 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong"
+              }
+            ],
+            "url": "{{base_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /api/v1/player/logs - a service's logs are not a Gateway route",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401: proxied as a player route, never to an instance\\'s /logs', () => pm.response.to.have.status(401));",
+                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/player/logs"
+          }
+        }
+      ]
     }
   ],
   "event": [

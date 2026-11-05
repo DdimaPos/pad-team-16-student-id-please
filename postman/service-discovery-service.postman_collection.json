@@ -508,6 +508,212 @@
           }
         }
       ]
+    },
+    {
+      "name": "logs (#112)",
+      "description": "GET /logs (this instance) and GET /api/v1/logs (the whole system as a zip). CPR README \"Logs download\".",
+      "item": [
+        {
+          "name": "GET /logs - its own lines",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "pm.test('an attachment', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\".+\\.jsonl\"$/));",
+                  "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
+                  "pm.test('one JSON object per line, oldest first', () => { for (let i = 1; i < rows.length; i++) pm.expect(rows[i].time >= rows[i - 1].time).to.be.true; });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/logs?since=2020-01-01T00:00:00Z"
+          }
+        },
+        {
+          "name": "GET /logs?level=warn - warn and above",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "pm.test('an attachment', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\".+\\.jsonl\"$/));",
+                  "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
+                  "pm.test('one JSON object per line, oldest first', () => { for (let i = 1; i < rows.length; i++) pm.expect(rows[i].time >= rows[i - 1].time).to.be.true; });",
+                  "pm.test('no line below warn', () => rows.forEach(r => pm.expect(['warn', 'error']).to.include(r.level)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/logs?level=warn"
+          }
+        },
+        {
+          "name": "GET /logs - no token is 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs - a time without its zone is 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('since'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/logs?since=2026-11-05T10:00:00"
+          }
+        },
+        {
+          "name": "GET /api/v1/logs - the whole system as a zip",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('a zip', () => pm.expect(pm.response.headers.get('Content-Type')).to.eql('application/zip'));",
+                  "pm.test('an attachment', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.eql('attachment; filename=\"logs-20200101T000000Z.zip\"'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/logs?since=2020-01-01T00:00:00Z",
+            "description": "Save the response to a file and unzip it: one <instance_id>.jsonl per component and manifest.json (files, failed)."
+          }
+        },
+        {
+          "name": "GET /api/v1/logs?service=service-discovery - only itself",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('a zip', () => pm.expect(pm.response.headers.get('Content-Type')).to.eql('application/zip'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/logs?service=service-discovery"
+          }
+        },
+        {
+          "name": "GET /api/v1/logs?service=nope - an unknown service is 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/logs?service=nope"
+          }
+        },
+        {
+          "name": "GET /api/v1/logs - no token is 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/logs"
+          }
+        }
+      ]
     }
   ]
 }

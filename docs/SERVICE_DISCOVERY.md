@@ -157,10 +157,14 @@ The shape is the one every component shares (CPR README "Logs download").
              "reason": "unreachable: ConnectError"}]}
 ```
 
-Some components can fail: one is unreachable, refuses (`answered 401 INVALID_SERVICE_TOKEN`), fails (`answered 500`),
-does not answer within `HEALTH_POLL_TIMEOUT_SECONDS` or is not done after `LOGS_FETCH_DEADLINE_SECONDS`. Each such
-component is left out of the zip and named in `failed`; the download is still `200`. A `down` instance is not fetched.
-One download runs at a time; a second one meanwhile is `429` with `Retry-After: 5`. An unknown `service` is `400`.
+Some components can fail: one is unreachable, cannot be connected to within `HEALTH_POLL_TIMEOUT_SECONDS`, refuses
+(`answered 401 INVALID_SERVICE_TOKEN`), fails (`answered 500`, or `failed: <error>` for anything else, such as a
+registered host that is no address) or is not done after `LOGS_FETCH_DEADLINE_SECONDS`. Each such component is left out
+of the zip and named in `failed`; the download is still `200`. A read is bounded only by the deadline, because an
+instance sends nothing while it scans its files for a narrow window, so one hung component holds the download for up to
+that long. A registered `host` is only ever a host in the URL, so it cannot choose the port or the path. A `down`
+instance is not fetched. One download runs at a time; a second one meanwhile is `429` with `Retry-After: 5`. An unknown
+`service` is `400`. `503 LOGS_UNAVAILABLE` when the zip itself cannot be written.
 
 ## 6. Health polling, alerts and notifications
 
@@ -200,7 +204,7 @@ the instance down. `docker stop` deregisters and raises nothing.
 | Mark-down of an unknown id, unknown route | `404 NOT_FOUND` |
 | Concurrent task limit reached | `429 TOO_MANY_REQUESTS` + `Retry-After` |
 | A logs download while another one runs | `429 TOO_MANY_REQUESTS` + `Retry-After: 5` |
-| `GET /logs` without a log file | `503 LOGS_UNAVAILABLE` |
+| `GET /logs` without a log file, `GET /api/v1/logs` when the zip cannot be written | `503 LOGS_UNAVAILABLE` |
 | Task longer than `HTTP_REQUEST_TIMEOUT` | `408 REQUEST_TIMEOUT` |
 | Anything else | `500 INTERNAL_ERROR`, logged at `error` with the stack trace |
 

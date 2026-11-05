@@ -319,7 +319,9 @@ also has that request's `request_id`. Fields without a value are left out; `dura
 | `sd.mark_down` | `info`; `warn` when it failed | `target`, `target_instance`, `reason` (as sent), `status` and/or `error`, `request_id` of the request that tripped the breaker |
 | `startup`, `shutdown` | `info` | configuration: port, mode, Service Discovery URL and intervals (or the static URLs), timeout, breaker window, limits |
 
-uvicorn's own lines get `event` `server`; its access log is off (the `http.request` line replaces it). Never
+uvicorn's own lines get `event` `server`; its access log is off (the `http.request` line replaces it), and it runs
+with `--ws none`, because its WebSocket protocol would log a refused upgrade with its query string, the one-time ticket
+included. Never
 logged: `Authorization`, `X-Service-Token`, `JWT_SECRET`, request or response bodies, query strings.
 
 **The log file and `GET /logs` (#112).** The same lines, uvicorn's included, also go to `LOG_FILE`
@@ -329,8 +331,9 @@ logged: `Authorization`, `X-Service-Token`, `JWT_SECRET`, request or response bo
   component shares (CPR README "Logs download").
 - It is a service-only route: `403 SERVICE_TOKEN_REQUIRED`, also with a player token, and `401 INVALID_SERVICE_TOKEN`.
   It is not a task, and its `http.request` line is at `debug`.
-- It has no prefix, so it is not proxied. `/api/v1/<prefix>/logs` is proxied like any path, to the service's
-  `/api/v1/logs`, as a player route, so it never reaches an instance's `GET /logs`.
+- It has no prefix, so it is not proxied. `/api/v1/<prefix>/logs` never reaches an instance's `GET /logs`. The contract
+  is `404 NOT_FOUND`; until #110 it is proxied like any path, to the service's `/api/v1/logs`, as a player route, so
+  it answers `401 UNAUTHENTICATED` without a credential.
 - Service Discovery's `GET /api/v1/logs` fetches this endpoint at `gateway-service:8080` for the whole system's zip.
 
 ## 13. Contract notes (CPR issue #71 not merged yet)

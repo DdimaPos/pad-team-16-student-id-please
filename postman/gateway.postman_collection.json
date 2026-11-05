@@ -1709,8 +1709,9 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401: proxied as a player route, never to an instance\\'s /logs', () => pm.response.to.have.status(401));",
-                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
+                  "// The contract is 404 NOT_FOUND; until the routes of #110 merge the proxy answers 401 as a player route.",
+                  "pm.test('401 until #110, then 404: never an instance\\'s /logs', () => pm.expect(pm.response.code).to.be.oneOf([401, 404]));",
+                  "pm.test('its code', () => pm.expect(pm.response.json().error.code).to.eql(pm.response.code === 404 ? 'NOT_FOUND' : 'UNAUTHENTICATED'));"
                 ]
               }
             }

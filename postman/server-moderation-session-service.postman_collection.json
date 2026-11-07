@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Server Moderation Session Service",
-    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`. Service-only routes (POST /events, /dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env.\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
+    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded comes from the broker -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`. Service-only routes (/dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env.\n\nDIRECT CALLS. GET /status, GET /logs and GET /metrics are not Gateway routes: they go to one instance directly through {{session_direct_url}}. GET /logs needs {{service_token}}.\n\nLAB 4 (4.0.0). decision.recorded arrives from the Message Broker (topic events.decision.recorded), not on POST /events, which is removed; the service's calls to Player, Server Rules and Applicant go through the broker too, so the flow needs those services on the broker (or the session run without MESSAGE_BROKER_URL, on its stubs). Postman cannot send the broker's gRPC calls: publish decision.recorded with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711).\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -49,16 +49,6 @@
       "key": "seeded_lobby_id",
       "value": "4b8fac2d-3e50-4c7b-9d1f-2a3b4c5d6e7f",
       "description": "The seeded lobby, for checking that a lobby reports nulls."
-    },
-    {
-      "key": "decision_id",
-      "value": "",
-      "description": "Regenerated before the first decision of every run, so the replay request re-sends the same decision."
-    },
-    {
-      "key": "replay_event_id",
-      "value": "",
-      "description": "Regenerated before the first decision of every run; the replay request re-sends this event id."
     },
     {
       "key": "session_id",
@@ -236,6 +226,200 @@
           "request": {
             "method": "GET",
             "url": "{{session_direct_url}}/status"
+          }
+        },
+        {
+          "name": "GET /logs - warn and above -> 200 application/x-ndjson (called directly, service token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.eql('application/x-ndjson'));",
+                  "pm.test('attachment named after the instance', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\"session-.+-start\\.jsonl\"$/));",
+                  "const lines = pm.response.text().split('\\n').filter(l => l);",
+                  "pm.test('one JSON object per line, warn or error', () => lines.forEach(l => pm.expect(['warn','error']).to.include(JSON.parse(l).level)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{session_direct_url}}/logs?level=warn",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - a window -> 200",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('attachment named after since, in UTC', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.include('-20260101T000000Z.jsonl'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{session_direct_url}}/logs?since=2026-01-01T00:00:00Z&until=2099-01-01T00:00:00%2B02:00",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - no service token -> 403 SERVICE_TOKEN_REQUIRED",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{session_direct_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs - wrong service token -> 401 INVALID_SERVICE_TOKEN",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{session_direct_url}}/logs",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong-token"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - a time without its zone -> 400 VALIDATION_ERROR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('details.errors names since', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('since'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{session_direct_url}}/logs?since=2026-11-07T10:00:00",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - until before since -> 400 VALIDATION_ERROR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{session_direct_url}}/logs?since=2026-11-07T10:00:00Z&until=2026-11-07T09:00:00Z",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - unknown level -> 400 VALIDATION_ERROR",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{session_direct_url}}/logs?level=verbose",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /metrics -> 200 (Prometheus text format, called directly, no credential)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const t = pm.response.text();",
+                  "['http_requests_total','http_request_duration_seconds','tasks_in_flight','max_concurrent_tasks','broker_connected','relay_deliveries'].forEach(s =>",
+                  "  pm.test(s, () => pm.expect(t).to.include(s)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{session_direct_url}}/metrics"
           }
         }
       ]
@@ -1045,13 +1229,26 @@
       ]
     },
     {
-      "name": "events - decision.recorded, as Moderation Service pushes it (contract)",
-      "description": "Until POST /api/v1/events exists, nothing delivers decision.recorded from Moderation Service. This endpoint accepts the exact envelope Moderation's relay will push and runs it through the same handler POST /api/v1/events will call. It is mounted only when ENABLE_DEV_ENDPOINTS is true, and it moves a session's score with no credential - so it is off outside a demo.",
+      "name": "events - decision.recorded comes from the broker (Lab 4)",
+      "description": "From 4.0.0 decision.recorded is delivered by the Message Broker (topic events.decision.recorded) and settled with Ack; POST /events is removed. Postman cannot send gRPC: publish it with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711 'prove a decision is applied only once'), then read its effect with GET /sessions/{id} and GET /sessions/{id}/decisions.",
       "item": [
         {
-          "name": "1. POST a correct decision -> 200",
+          "name": "POST /events is gone -> 404 NOT_FOUND",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "POST",
+            "url": "{{base_url}}/session/events",
             "header": [
               {
                 "key": "Content-Type",
@@ -1062,387 +1259,22 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/session/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "session",
-                "events"
-              ]
-            },
-            "description": "A correct decision adds SCORE_PER_CORRECT * difficulty to the score, increments applications_processed, and marks the current applicant decided so the Moderator may ask for the next one.",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{decision_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"expected_action\": \"accept\",\n    \"violated_rules\": [],\n    \"penalty\": 0\n  }\n}",
+              "raw": "{}",
               "options": {
                 "raw": {
                   "language": "json"
                 }
               }
             }
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// Fresh ids every run: request 2 replays this exact event, and a fixed id would already be",
-                  "// recorded by an earlier run against the same database.",
-                  "pm.collectionVariables.set('replay_event_id', pm.variables.replaceIn('{{$guid}}'));",
-                  "pm.collectionVariables.set('decision_id', pm.variables.replaceIn('{{$guid}}'));"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "const b = pm.response.json();",
-                  "pm.test('applied, not a duplicate', () => pm.expect(b.duplicate).to.eql(false));",
-                  "pm.test('the contract answer', () => pm.expect(Object.keys(b).sort()).to.eql(['duplicate','event_id']));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "2. POST the SAME event again -> 200 duplicate:true",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/session/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "session",
-                "events"
-              ]
-            },
-            "description": "The contract requires every consumer to dedupe by event_id, because an event may be delivered more than once. A replay is a success, not an error - and the 'duplicate' flag is how a caller can see the deduplication fire. Run request 1 and this one, then check the session: the counters must have moved once.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{decision_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"expected_action\": \"accept\",\n    \"violated_rules\": [],\n    \"penalty\": 0\n  }\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200 - a replay is a success', () => pm.response.to.have.status(200));",
-                  "pm.test('reported as a duplicate', () =>",
-                  "  pm.expect(pm.response.json().duplicate).to.eql(true));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "3. GET /sessions/{id} -> 200 (the replay counted once)",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{jwt_moderator}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/session/sessions/{{session_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "session",
-                "sessions",
-                "{{session_id}}"
-              ]
-            },
-            "description": ""
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "const b = pm.response.json();",
-                  "pm.test('exactly one application was processed', () =>",
-                  "  pm.expect(b.applications_processed).to.eql(1));",
-                  "// ScorePerCorrect (10) times the shift's difficulty (1).",
-                  "pm.test('the score moved once', () => pm.expect(b.score).to.eql(10));",
-                  "pm.test('the applicant is now decided', () =>",
-                  "  pm.expect(b.current_applicant_decided).to.eql(true));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "4. POST an incorrect decision -> 200 (penalty, no award)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/session/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "session",
-                "events"
-              ]
-            },
-            "description": "An incorrect decision earns nothing; the cost arrives separately, as the penalty the event carries.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{$guid}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": false,\n    \"expected_action\": \"ban\",\n    \"violated_rules\": [\n      {\n        \"rule_id\": \"only-faf-or-teachers\",\n        \"description\": \"Only FAF students and FAF teachers may join\"\n      }\n    ],\n    \"penalty\": 20\n  }\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "const b = pm.response.json();",
-                  "pm.test('applied, not a duplicate', () => pm.expect(b.duplicate).to.eql(false));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "5. POST with the wrong event_type -> 422 INVALID_EVENT",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/session/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "session",
-                "events"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{$guid}}\",\n    \"session_id\": \"{{session_id}}\"\n  }\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('422', () => pm.response.to.have.status(422));",
-                  "pm.test('INVALID_EVENT', () =>",
-                  "  pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "6. POST for an unknown session -> 422 INVALID_EVENT",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/session/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "session",
-                "events"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{$guid}}\",\n    \"session_id\": \"{{absent_session_id}}\",\n    \"applicant_id\": \"{{$guid}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"penalty\": 0\n  }\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('422', () => pm.response.to.have.status(422));",
-                  "pm.test('INVALID_EVENT', () =>",
-                  "  pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "7. POST an unknown envelope version -> 422 INVALID_EVENT",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/session/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "session",
-                "events"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 2,\n  \"payload\": {\n    \"decision_id\": \"{{$guid}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"expected_action\": \"accept\",\n    \"violated_rules\": [],\n    \"penalty\": 0\n  }\n}"
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('422', () => pm.response.to.have.status(422));",
-                  "pm.test('INVALID_EVENT', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "8. POST with a player token -> 403 SERVICE_TOKEN_REQUIRED (Gateway)",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{jwt_moderator}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/session/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "session",
-                "events"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"decision.recorded\",\n  \"occurred_at\": \"{{$isoTimestamp}}\",\n  \"producer\": \"moderation-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"decision_id\": \"{{decision_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"applicant_id\": \"{{applicant_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"action\": \"accept\",\n    \"is_correct\": true,\n    \"expected_action\": \"accept\",\n    \"violated_rules\": [],\n    \"penalty\": 0\n  }\n}"
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('403', () => pm.response.to.have.status(403));",
-                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
-                ]
-              }
-            }
-          ]
+          }
         }
       ]
     },
     {
       "name": "ending the shift and the outbox",
-      "description": "Ending the shift freezes the per-player result and writes session.ended. The event goes to an outbox table in the same transaction as the state change, and is relayed from there to the consumers' POST /api/v1/events - the events endpoint is how you prove that what this service produces is what Player Service expects to receive.",
+      "description": "Ending the shift freezes the per-player result and writes session.ended. The event goes to an outbox table in the same transaction as the state change, with one delivery to the Message Broker, and the relay publishes it to events.session.ended (4.0.0) - the events endpoint is how you prove that what this service produces is what Player Service expects to receive.",
       "item": [
         {
           "name": "1. POST /sessions/{id}/end -> 200",
@@ -1590,14 +1422,16 @@
                   "  pm.expect(b).to.have.property('items');",
                   "  pm.expect(b).to.have.property('total');",
                   "});",
-                  "pm.test('the replayed decision is stored once', () => pm.expect(b.total).to.eql(2));"
+                  "// From 4.0.0 decisions arrive from the broker (smoke.py publish), not from this collection:",
+                  "// each one published is stored once, a replay of the same event_id adds none.",
+                  "pm.test('total is a count', () => pm.expect(b.total).to.be.a('number'));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "3a. GET /sessions/{id}/deliveries -> 200 (one per consumer and event)",
+          "name": "3a. GET /sessions/{id}/deliveries -> 200 (one per event, to the broker)",
           "request": {
             "method": "GET",
             "header": [
@@ -1627,8 +1461,9 @@
                 "exec": [
                   "pm.test('200', () => pm.response.to.have.status(200));",
                   "const items = pm.response.json().items;",
-                  "// session.started: university-record, discord-dms; session.ended: player, discord-dms, university-record.",
-                  "pm.test('five deliveries', () => pm.expect(items.length).to.eql(5));",
+                  "// 4.0.0: one delivery per event, to the broker (session.started, session.ended).",
+                  "pm.test('two deliveries', () => pm.expect(items.length).to.eql(2));",
+                  "pm.test('each to the broker', () => items.forEach(d => pm.expect(d.consumer).to.eql('message-broker')));",
                   "pm.test('each is pending, delivered or parked', () => items.forEach(d =>",
                   "  pm.expect(['pending','delivered','parked']).to.include(d.status)));"
                 ]

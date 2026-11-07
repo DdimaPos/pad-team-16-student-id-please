@@ -1144,6 +1144,20 @@ email.
   Pushes `session.started` (University Record, Discord DMs) and `session.ended` (Player, Discord DMs,
   University Record), as described in [Event delivery](#event-delivery).
 
+> **Known gap (Lab 4, #115).** Server Moderation Session Service `4.0.0` makes these three calls as
+> requests through the Message Broker (`requests.player`, `requests.server-rules`,
+> `requests.applicant`), publishes `session.started` and `session.ended` once each to the topics
+> `events.<event_type>` instead of pushing to each consumer, receives `decision.recorded` from its
+> subscription to `events.decision.recorded`, and no longer exposes `POST /api/v1/events`; the
+> client's requests and Moderation's `GET /sessions/{session_id}` reach it through
+> `requests.session`. The text of this section, its events and [Event delivery](#event-delivery)
+> still describe the Lab 3 path through the Gateway until the Lab 4 contract (#105) merges. Until
+> Moderation (#120) and the services Session calls (Server Rules #118, Applicant #116) move to the
+> broker, Moderation `3.0.0`'s push of `decision.recorded` gets `404` and `start` and
+> `next applicant` answer `500 DEPENDENCY_UNAVAILABLE`. Details:
+> [`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md) §6, §8
+> and §13.
+
 ##### Exposed API endpoints
 
 Several endpoints below return the **session object**:
@@ -2213,7 +2227,7 @@ need to clone the (private) service repository to run one.
 | Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `REDIS_URL` (required with several copies: fan-out between them), `WS_PUBLIC_URL` (the address clients reach port `8086` at, the base of a ticket's `ws_url`); since `4.0.0`: `MESSAGE_BROKER_URL` (`message-broker-service:8071`, gRPC, with `SERVICE_TOKEN` as metadata; one stream per copy for `requests.discord-dms` and the topics `events.session.started`, `events.session.ended`; `POST /api/v1/events` is gone), `GET /logs` (`LOG_FILE`), `GET /metrics`, `X-Service-Token` checked on `/logs`, `/admin/*`, `/dev/*`; `SERVICE_DISCOVERY_URL` (registration of the REST port of every copy, with `SERVICE_TOKEN`; empty = off), 2 copies (`deploy.replicas: 2`) behind `dms-ws-proxy` (nginx, `deployments/dms-ws-proxy/nginx.conf`), which publishes `8086` and forwards each WebSocket connection to one copy; `GET /status` (REST, with `ws_connections`); optional `INSTANCE_ID`, `INSTANCE_HOST`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). Validates no credential on its requests. The REST API listens on `8096` (`APP_PORT`) inside the network, where the Gateway reaches it (`DISCORD_DMS_URL=http://discord-dms-service:8096`); `8086` (`WS_PORT`) serves the WebSocket only - see [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md) |
 | Gateway Service                   | [`stewdh/gateway-service`](https://hub.docker.com/r/stewdh/gateway-service)                                       | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`; since `4.0.0` `MESSAGE_BROKER_URL` (`message-broker-service:8071`; every client request goes through the broker, only the client routes are served), optional `LOG_FILE` (`/var/log/gateway/gateway.jsonl`), `LOG_FILE_MAX_MB`, `LOG_FILE_KEEP`, `HTTP_REQUEST_TIMEOUT` (`10s`), `MAX_CONCURRENT_TASKS` (`64`), `GET /status`, `GET /logs`, `GET /metrics`, one circuit breaker on the broker. No longer reads `SERVICE_DISCOVERY_URL` and does not register (a static target of Prometheus and of the logs download) - see [`docs/GATEWAY.md`](docs/GATEWAY.md) |
 | Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | -         | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS`; since `3.0.0` `SERVICE_DISCOVERY_URL` with `SERVICE_TOKEN` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST`; since `4.0.0` `MESSAGE_BROKER_URL` (gRPC `host:port`, with `SERVICE_TOKEN`), optional `LOG_FILE`, `LOG_FILE_MAX_MB`, `LOG_FILE_KEEP` - see below                                                 |
-| Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; peer URLs `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL` (each falls back to a stub when empty), `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` (event consumers); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below |
+| Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; since `4.0.0` `MESSAGE_BROKER_URL` (gRPC `host:port`; empty falls back to stubs) instead of the five peer URLs of Lab 3, optional `LOG_FILE`, `LOG_FILE_MAX_MB`, `LOG_FILE_KEEP`; since `3.0.0` `SERVICE_DISCOVERY_URL` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below |
 | Service Discovery (Lab 3)         | [`d1vinexd/service-discovery-service`](https://hub.docker.com/r/d1vinexd/service-discovery-service)               | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (empty = alerts only logged), `NOTIFY_COOLDOWN_SECONDS` (`300`), `LOG_LEVEL` (`info`), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS`; since `4.0.0` optional `LOG_FILE`, `LOG_FILE_MAX_MB` (`50`), `LOG_FILE_KEEP` (`5`), `LOGS_STATIC_TARGETS` (`gateway=http://gateway-service:8080`), `LOGS_FETCH_DEADLINE_SECONDS` (`60`), `GET /metrics`. No database - see [Service Discovery](#service-discovery) and below |
 | Message Broker (Lab 4)            | [`d1vinexd/message-broker-service`](https://hub.docker.com/r/d1vinexd/message-broker-service)                     | `8070`, `8071` | `SERVICE_TOKEN` (`X-Service-Token` on its `/api/v1` and `GET /logs`, the `x-service-token` metadata on every RPC); a named volume on `/data` (`MESSAGE_STORE_PATH`, `/data/broker.db`, SQLite; empty = in memory); `SERVICE_DISCOVERY_URL` (registration, instance list, mark-down, dead letter alerts; empty = off); optional `GRPC_MAX_WORKERS` (`64`), `GRPC_RESERVED_WORKERS` (`16`), `MESSAGE_ACK_TIMEOUT_SECONDS` (`5`), `MESSAGE_MAX_ATTEMPTS` (`3`), `MESSAGE_RETENTION_HOURS` (`24`), `LOG_FILE`, `LOG_LEVEL`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). One copy, named volume `broker_data` - see below and [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) |
 | Prometheus (Lab 4)                | [`prom/prometheus`](https://hub.docker.com/r/prom/prometheus) `v3.5.0`                                          | `9090`    | `monitoring/prometheus/prometheus.yml`; the service token as the file `/etc/prometheus/service_token` (a compose `config` from `SERVICE_TOKEN`); named volume `prometheus_data`, 7 days kept - see [Monitoring stack](#monitoring-stack-lab-4) |
@@ -2290,11 +2304,16 @@ requests of `requests.player` there, no longer exposes `POST /api/v1/events`, wr
 `GET /metrics`.
 
 `dimapos/server-moderation-session-service` is published for `linux/amd64` and `linux/arm64`.
-`POSTGRES_PASSWORD` is its only required variable, plus `SERVICE_TOKEN` as soon as any peer URL is
-set. The schema is applied at startup, and an empty
+`POSTGRES_PASSWORD` is its only required variable, plus `SERVICE_TOKEN` as soon as
+`MESSAGE_BROKER_URL` or `SERVICE_DISCOVERY_URL` is set. The schema is applied at startup, and an empty
 database is seeded with three sessions - one in each state - including the session id this contract
 uses in its own example (`3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e`), so the published session object
-above is reproducible against a fresh pair of services.
+above is reproducible against a fresh pair of services. From `4.0.0`
+(`dimapos/server-moderation-session-service:4.0.0`) it reaches Player, Server Rules and Applicant,
+publishes its events and receives `decision.recorded` through the Message Broker at
+`MESSAGE_BROKER_URL` (`message-broker-service:8071` in the compose; empty selects the stubs), no
+longer exposes `POST /api/v1/events`, writes its log lines to `LOG_FILE` (default
+`/var/log/session/session.jsonl`, read back by `GET /logs`) and serves `GET /metrics`.
 
 It is the one service that calls three others. Each of `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL` and
 `APPLICANT_SERVICE_URL` selects the real HTTP client when set and a contract-shaped in-process stub

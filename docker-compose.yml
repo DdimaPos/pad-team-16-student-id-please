@@ -545,9 +545,9 @@ services:
       - student-id-net
 
   credential-service:
-    image: stewdh/credential-service:3.0.0
+    image: stewdh/credential-service:4.0.0
     restart: unless-stopped
-    # Lab 3: two copies share credential-mongo (no container_name, no host port);
+    # Two copies share credential-mongo (no container_name, no host port);
     # `docker compose up -d --scale credential-service=3` adds a third.
     deploy:
       replicas: 2
@@ -556,11 +556,13 @@ services:
         condition: service_healthy
       credential-mongo:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
     environment:
       APP_ENV: docker
       APP_PORT: "8082"
       LOG_LEVEL: info
-      SERVICE_VERSION: "3.0.0"
+      SERVICE_VERSION: "4.0.0"
       TZ: UTC
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
@@ -568,10 +570,10 @@ services:
       MONGODB_URI: "mongodb://${CREDENTIAL_MONGO_USER:-credential_user}:${CREDENTIAL_MONGO_PASSWORD:?set CREDENTIAL_MONGO_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
       MONGODB_DATABASE: credential_db
       ENSURE_INDEXES_ON_START: "true"
-      # Event delivery, as for Applicant above.
+      # Lab 4: requests on requests.credential and events.applicant.initialized through the
+      # broker, as for Applicant above.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
-      APPLICANT_URL: http://gateway-service:8080/api/v1/applicant
-      UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       # Each copy registers itself here directly (not through the Gateway) as
       # credential-<container id>, with the same service token, and heartbeats every 5s.
       SERVICE_DISCOVERY_URL: http://service-discovery-service:8090

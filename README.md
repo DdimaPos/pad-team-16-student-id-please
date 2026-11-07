@@ -595,7 +595,7 @@ Gaps found by the Lab 3 audit against these rules, all fixed in Lab 3: Session's
 
 ##### Authentication
 
-Credentials are checked **at the Gateway, and only there**. Services never see the caller's token. The exceptions are Service Discovery and, from Lab 4, every component's own [`GET /logs`](#logs-download), which check `X-Service-Token` themselves.
+A client's credentials are checked **at the Gateway, and only there**. Services never see the caller's token. The exceptions are Service Discovery and, from Lab 4, every component's own [`GET /logs`](#logs-download), which check `X-Service-Token` themselves. Between the components, from Lab 4, the Message Broker checks the service token: see [Through the Message Broker](#through-the-message-broker-lab-4) below.
 
 **What callers send to the Gateway** - each request carries exactly one credential:
 
@@ -613,9 +613,18 @@ Credentials are checked **at the Gateway, and only there**. Services never see t
 3. It **removes** `Authorization` and `X-Service-Token`, and removes any `X-Player-Id` the caller sent.
 4. For a request authenticated with a player token, it sets **`X-Player-Id: <sub>`**. A request authenticated with the service token carries no `X-Player-Id`.
 
-**What services receive.** Only `X-Player-Id`. When an endpoint needs to know which player is calling, it reads that header and nothing else; a service validates no token. The exceptions are Service Discovery (Lab 3), which checks `X-Service-Token` itself because instances call it directly, not through the Gateway (see [Service Discovery](#service-discovery)), and `GET /logs` (Lab 4), which Service Discovery calls directly on each component (see [Logs download](#logs-download)). A request without `X-Player-Id` on a route that needs a calling player answers `401 UNAUTHENTICATED`. Services trust the header because nothing but the Gateway can reach them - their ports are not published (see [Deployments](#deployments)). The one connection that bypasses the Gateway, the Discord DMs WebSocket, is authorized with a one-time ticket instead (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)).
+**What services receive.** Only `X-Player-Id`. When an endpoint needs to know which player is calling, it reads that header and nothing else; a service validates no token. The exceptions are Service Discovery (Lab 3), which checks `X-Service-Token` itself because instances call it directly, not through the Gateway (see [Service Discovery](#service-discovery)), and `GET /logs` (Lab 4), which Service Discovery calls directly on each component (see [Logs download](#logs-download) and rule 4 below). A request without `X-Player-Id` on a route that needs a calling player answers `401 UNAUTHENTICATED`. Services trust the header because nothing but the Gateway can reach them - their ports are not published (see [Deployments](#deployments)). The one connection that bypasses the Gateway, the Discord DMs WebSocket, is authorized with a one-time ticket instead (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)).
 
-**A service calling another service** sends `X-Service-Token`, never a player's token or a player's `X-Player-Id`.
+**A service calling another service** sends `X-Service-Token`, never a player's token or a player's `X-Player-Id`. This is Lab 3, through the Gateway; from Lab 4 the call goes through the Message Broker, below.
+
+###### Through the Message Broker (Lab 4)
+
+From Lab 4 a service calls another one, and the Gateway forwards a client's request, as a `Request` through the Message Broker (#105, #106, #107). The broker's own check is the trust boundary between the components:
+
+1. **The service token is gRPC metadata, never a header.** Every call to the broker (`Publish`, `Subscribe`, `Ack`, `Request`, `Reply`, `ListTopics`, `ListDeadLetters`) carries the metadata `x-service-token: <SERVICE_TOKEN>`. Missing is `UNAUTHENTICATED`, wrong is `PERMISSION_DENIED`, and nothing is queued or delivered. The Gateway is one such caller: it checks the client's credential as above, then calls the broker with the metadata.
+2. **No credential in a request's headers.** `ServiceRequest.headers` never carry `X-Service-Token` or `Authorization`: the Gateway removes them (step 3 above) and a calling service never adds them. A service that receives `X-Service-Token` among a request's headers drops it and never treats it as a credential.
+3. **`X-Player-Id` comes only from the Gateway**, for a request authenticated with a player token (step 4 above). A service calling another sends no `X-Player-Id`. On a route that is not public, a request without it is therefore a service call; this is how Server Rules and University Record already tell the two apart. The inference holds only because the Gateway lets a client through without a credential on the public routes below and nowhere else (#110 keeps it that way): on a public route (`POST /auth/login`, `POST /players`) a request without `X-Player-Id` is a client with no credential at all, not a trusted caller. `ServiceRequest.caller` names the calling component (`gateway`, `moderation`, ...) for the logs and is not a credential.
+4. **A route that checks `X-Service-Token` itself cannot be reached through the broker**, because no request there carries the token. It is called directly inside `student-id-net`, with the header, and the component checks it like Service Discovery does: every component's `GET /logs` ([Logs download](#logs-download), #112), and the admin and dev routes a service keeps off the Gateway (#110).
 
 **Public routes** (no credential): `POST /api/v1/player/auth/login`, `POST /api/v1/player/players` (registration, beyond the contract), `GET /health` of the Gateway and `GET /api/v1/<prefix>/health`.
 
@@ -629,6 +638,8 @@ Which credential each contract endpoint accepts, enforced by the Gateway:
 | **Player only**        | every other contract endpoint: the session actions, `GET /applicants/{id}/documents`, `GET /rulesets/{version}`, `GET /records/{category}`, `POST`/`GET /decisions`, `GET /bans`, `POST /ws-tickets`, the Discord DMs channel and message endpoints |
 
 `GET /ws` (Discord DMs) is not reached through the Gateway at all; it takes a ticket.
+
+From Lab 4 the endpoints listed as **service token only** are reached by services through the broker, which authenticated the caller (rule 1 above), and #110 removes them from the Gateway's client routes, so a client cannot reach them.
 
 ##### Errors
 

@@ -473,9 +473,9 @@ services:
       - student-id-net
 
   applicant-service:
-    image: stewdh/applicant-service:3.0.0
+    image: stewdh/applicant-service:4.0.0
     restart: unless-stopped
-    # Lab 3: two copies share applicant-postgres (no container_name, no host port);
+    # Two copies share applicant-postgres (no container_name, no host port);
     # `docker compose up -d --scale applicant-service=3` adds a third.
     deploy:
       replicas: 2
@@ -484,11 +484,13 @@ services:
         condition: service_healthy
       applicant-postgres:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
     environment:
       APP_ENV: docker
       APP_PORT: "8081"
       LOG_LEVEL: info
-      SERVICE_VERSION: "3.0.0"
+      SERVICE_VERSION: "4.0.0"
       TZ: UTC
       # Task timeout (408) and concurrent task limit (429) - README "Task timeout and concurrent
       # task limit". DEV_ENDPOINTS mounts GET /api/v1/dev/slow?ms=, which demonstrates both.
@@ -497,12 +499,11 @@ services:
       DEV_ENDPOINTS: ${APPLICANT_DEV_ENDPOINTS:-true}
       DATABASE_URL: "postgres://${APPLICANT_POSTGRES_USER:-applicant_user}:${APPLICANT_POSTGRES_PASSWORD:?set APPLICANT_POSTGRES_PASSWORD}@applicant-postgres:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
       MIGRATE_ON_START: "true"
-      # Event delivery (README "Event delivery"): applicant.initialized is pushed from the
-      # outbox to each consumer's POST /api/v1/events through the Gateway, with the one
-      # service token. Through the Gateway, never a peer's own address.
+      # Lab 4 (README "Event delivery"): requests arrive on the broker's requests.applicant
+      # queue and applicant.initialized is published to events.applicant.initialized, over
+      # gRPC, with the one service token as metadata. The broker's address, never a peer's.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
-      CREDENTIAL_URL: http://gateway-service:8080/api/v1/credential
-      UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       # Each copy registers itself here directly (not through the Gateway) as
       # applicant-<container id>, with the same service token, and heartbeats every 5s.
       SERVICE_DISCOVERY_URL: http://service-discovery-service:8090

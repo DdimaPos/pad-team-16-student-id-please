@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Player Service",
-    "description": "Player Service owns the moderator player accounts: identity, credentials, profile, friends, XP, level, shift history and the disciplinary log. It is the only issuer of the player JWT.\n\nTHROUGH THE GATEWAY. Every request goes to the Gateway: {{base_url}} is http://localhost:8080/api/v1/player, the one base URL of this collection. The Gateway checks the credential each route accepts and forwards only X-Player-Id: player routes send `Authorization: Bearer {{<player>_token}}`, service-only routes (POST /events, /dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. Login and registration are public.\n\nCONTRACT. POST /auth/login, GET /players/{player_id} and POST /events are in the CPR communication contract. Everything else is beyond it and labelled so in the folder names.\n\nTOKENS. The \"auth\" folder logs in as four seeded players (password `seed-password`) and stores {{dima_token}}, {{maxim_token}}, {{rookie_token}} and {{veteran_token}}; run it first. A player changes only their own account and friends list: another player's token is 403 NOT_ACCOUNT_OWNER.\n\nTESTS. Every request name states the status it expects, and the error code when there is one; a collection-level test asserts both.\n\nTASK LIMITS. The \"dev - task timeout\" folder shows the 408. The 429 needs parallel requests, which a sequential run cannot send: start Player Service with MAX_CONCURRENT_TASKS=1 and call /dev/slow?ms=3000 twice at once (docs/PLAYER_SERVICE.md, \u00a711).\n\nPREREQUISITES. The team stack from the CPR (docker compose up -d) on a freshly seeded player database. {{dima_id}}, {{maxim_id}} and {{vlad_id}} are the ids the CPR README and the other services' collections already use; {{dima_id}} carries xp 1250 / 12 completed shifts, so the contract's published example response is reproducible verbatim.\n\nORDER. Folders run top to bottom. Requests whose names start with a number belong to a sequence and depend on the ones before them. The last folder is destructive; drop the player_db volume to restore the seed.",
+    "description": "Player Service owns the moderator player accounts: identity, credentials, profile, friends, XP, level, shift history and the disciplinary log. It is the only issuer of the player JWT.\n\nTHROUGH THE GATEWAY. Every request goes to the Gateway: {{base_url}} is http://localhost:8080/api/v1/player, the one base URL of this collection. The Gateway checks the credential each route accepts and forwards only X-Player-Id: player routes send `Authorization: Bearer {{<player>_token}}`, service-only routes (/dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. Login and registration are public.\n\nCONTRACT. POST /auth/login and GET /players/{player_id} are in the CPR communication contract. Everything else is beyond it and labelled so in the folder names.\n\nTOKENS. The \"auth\" folder logs in as four seeded players (password `seed-password`) and stores {{dima_token}}, {{maxim_token}}, {{rookie_token}} and {{veteran_token}}; run it first. A player changes only their own account and friends list: another player's token is 403 NOT_ACCOUNT_OWNER.\n\nTESTS. Every request name states the status it expects, and the error code when there is one; a collection-level test asserts both.\n\nTASK LIMITS. The \"dev - task timeout\" folder shows the 408. The 429 needs parallel requests, which a sequential run cannot send: start Player Service with MAX_CONCURRENT_TASKS=1 and call /dev/slow?ms=3000 twice at once (docs/PLAYER_SERVICE.md, \u00a711).\n\nPREREQUISITES. The team stack from the CPR (docker compose up -d) on a freshly seeded player database. {{dima_id}}, {{maxim_id}} and {{vlad_id}} are the ids the CPR README and the other services' collections already use; {{dima_id}} carries xp 1250 / 12 completed shifts, so the contract's published example response is reproducible verbatim.\n\nDIRECT CALLS. GET /status, GET /logs and GET /metrics are not Gateway routes: they go to one instance directly through {{player_direct_url}}. GET /logs needs {{service_token}}.\n\nLAB 4 (4.0.0). session.ended arrives from the Message Broker (topic events.session.ended), not on POST /events, which is removed; and Session's GET /players/{player_id} arrives through the broker's queue requests.player. Postman cannot send the broker's gRPC calls: publish an event with the broker's scripts/smoke.py (docs/PLAYER_SERVICE.md, \u00a711) and read its effect with the requests of this collection.\n\nORDER. Folders run top to bottom. Requests whose names start with a number belong to a sequence and depend on the ones before them. The last folder is destructive; drop the player_db volume to restore the seed.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -49,14 +49,6 @@
     {
       "key": "absent_id",
       "value": "11111111-2222-4333-8444-555555555555"
-    },
-    {
-      "key": "session_id",
-      "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
-    },
-    {
-      "key": "replay_event_id",
-      "value": "4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23"
     },
     {
       "key": "dima_token",
@@ -120,6 +112,147 @@
           "request": {
             "method": "GET",
             "url": "{{player_direct_url}}/status"
+          }
+        },
+        {
+          "name": "GET /logs - warn and above (200, application/x-ndjson - called directly, service token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.eql('application/x-ndjson'));",
+                  "pm.test('attachment named after the instance', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\"player-.+-start\\.jsonl\"$/));",
+                  "const lines = pm.response.text().split('\\n').filter(l => l);",
+                  "pm.test('one JSON object per line, warn or error', () => lines.forEach(l => pm.expect(['warn','error']).to.include(JSON.parse(l).level)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{player_direct_url}}/logs?level=warn",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - a window (200, application/x-ndjson)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('attachment named after since, in UTC', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.include('-20260101T000000Z.jsonl'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{player_direct_url}}/logs?since=2026-01-01T00:00:00Z&until=2099-01-01T00:00:00%2B02:00",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - no service token (403 SERVICE_TOKEN_REQUIRED)",
+          "request": {
+            "method": "GET",
+            "url": "{{player_direct_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs - wrong service token (401 INVALID_SERVICE_TOKEN)",
+          "request": {
+            "method": "GET",
+            "url": "{{player_direct_url}}/logs",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong-token"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - a time without its zone (400 VALIDATION_ERROR)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('details.errors names since', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('since'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{player_direct_url}}/logs?since=2026-11-07T10:00:00",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - until before since (400 VALIDATION_ERROR)",
+          "request": {
+            "method": "GET",
+            "url": "{{player_direct_url}}/logs?since=2026-11-07T10:00:00Z&until=2026-11-07T09:00:00Z",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - unknown level (400 VALIDATION_ERROR)",
+          "request": {
+            "method": "GET",
+            "url": "{{player_direct_url}}/logs?level=verbose",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /metrics (200, Prometheus text format - called directly, no credential)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const t = pm.response.text();",
+                  "['http_requests_total','http_request_duration_seconds','tasks_in_flight','max_concurrent_tasks','broker_connected'].forEach(s =>",
+                  "  pm.test(s, () => pm.expect(t).to.include(s)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{player_direct_url}}/metrics"
           }
         }
       ]
@@ -1332,23 +1465,11 @@
       ]
     },
     {
-      "name": "events - session.ended, as Session Service pushes it (contract)",
+      "name": "events - session.ended comes from the broker (Lab 4)",
+      "description": "From 4.0.0 session.ended is delivered by the Message Broker (topic events.session.ended) and settled with Ack; POST /events is removed. Publish with the broker's scripts/smoke.py (docs/PLAYER_SERVICE.md, \u00a711), then read the effect with the players and history requests above.",
       "item": [
         {
-          "name": "1. dima_mod and maxim_jr before the event (200, xp 1250 / 640)",
-          "request": {
-            "method": "GET",
-            "url": "{{base_url}}/players/{{dima_id}}",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{dima_token}}"
-              }
-            ]
-          }
-        },
-        {
-          "name": "2. push session.ended (200, duplicate=false)",
+          "name": "POST /events is gone (404 NOT_FOUND)",
           "request": {
             "method": "POST",
             "url": "{{base_url}}/events",
@@ -1364,295 +1485,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{dima_id}}\",\n        \"role\": \"moderator\",\n        \"xp_delta\": 30,\n        \"disciplinary_actions\": [\n          { \"type\": \"warning\", \"reason\": \"Accepted an applicant with a forged student ID\" }\n        ]\n      },\n      {\n        \"player_id\": \"{{maxim_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": 40,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
-            }
-          }
-        },
-        {
-          "name": "3. dima_mod after - xp 1280, completed_shifts 13, still level 4 (200)",
-          "request": {
-            "method": "GET",
-            "url": "{{base_url}}/players/{{dima_id}}",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{dima_token}}"
-              }
-            ]
-          }
-        },
-        {
-          "name": "4. shift history after - the new row is first (200)",
-          "request": {
-            "method": "GET",
-            "url": "{{base_url}}/players/{{dima_id}}/shifts",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{dima_token}}"
-              }
-            ]
-          }
-        },
-        {
-          "name": "5. disciplinary log after - the warning was appended (200)",
-          "request": {
-            "method": "GET",
-            "url": "{{base_url}}/players/{{dima_id}}/disciplinary-actions",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{dima_token}}"
-              }
-            ]
-          }
-        },
-        {
-          "name": "6. REPEAT the same event_id (200, duplicate=true - nothing changes)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{dima_id}}\",\n        \"role\": \"moderator\",\n        \"xp_delta\": 30,\n        \"disciplinary_actions\": [\n          { \"type\": \"warning\", \"reason\": \"Accepted an applicant with a forged student ID\" }\n        ]\n      },\n      {\n        \"player_id\": \"{{maxim_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": 40,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
-            }
-          }
-        },
-        {
-          "name": "7. dima_mod after the repeat - unchanged, xp still 1280 (200)",
-          "request": {
-            "method": "GET",
-            "url": "{{base_url}}/players/{{dima_id}}",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{dima_token}}"
-              }
-            ]
-          }
-        },
-        {
-          "name": "8. shift history after the repeat - still one row for that session (200)",
-          "request": {
-            "method": "GET",
-            "url": "{{base_url}}/players/{{dima_id}}/shifts",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{dima_token}}"
-              }
-            ]
-          }
-        },
-        {
-          "name": "apply - a player id this service does not know (200, skipped and logged)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{$guid}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{dima_id}}\",\n        \"role\": \"moderator\",\n        \"xp_delta\": 30,\n        \"disciplinary_actions\": [\n          { \"type\": \"warning\", \"reason\": \"Accepted an applicant with a forged student ID\" }\n        ]\n      },\n      {\n        \"player_id\": \"{{unknown_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": 40,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
-            }
-          }
-        },
-        {
-          "name": "apply - negative xp_delta, total floored at zero (200)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{$guid}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{offender_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": -100000,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
-            }
-          }
-        },
-        {
-          "name": "apply - repeat_offender after the drain (200, xp 0, level 1)",
-          "request": {
-            "method": "GET",
-            "url": "{{base_url}}/players/{{offender_id}}",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{dima_token}}"
-              }
-            ]
-          }
-        },
-        {
-          "name": "apply - no role field, which the event catalog omits (200)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{$guid}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{vlad_id}}\",\n        \"xp_delta\": 25,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
-            }
-          }
-        },
-        {
-          "name": "apply - event type not consumed here (422 INVALID_EVENT)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.started\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {}\n}"
-            }
-          }
-        },
-        {
-          "name": "apply - missing event_id (422 INVALID_EVENT)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_type\": \"session.ended\",\n  \"payload\": { \"session_id\": \"{{session_id}}\", \"players\": [] }\n}"
-            }
-          }
-        },
-        {
-          "name": "apply - payload without session_id (422 INVALID_EVENT)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"payload\": { \"players\": [] }\n}"
-            }
-          }
-        },
-        {
-          "name": "apply - unknown envelope version (422 INVALID_EVENT)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 2,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{dima_id}}\",\n        \"role\": \"moderator\",\n        \"xp_delta\": 30,\n        \"disciplinary_actions\": [\n          { \"type\": \"warning\", \"reason\": \"Accepted an applicant with a forged student ID\" }\n        ]\n      },\n      {\n        \"player_id\": \"{{maxim_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": 40,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
-            }
-          }
-        },
-        {
-          "name": "apply - malformed JSON (422 INVALID_EVENT)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\":"
-            }
-          }
-        },
-        {
-          "name": "apply - with a player token instead of the service token (403 SERVICE_TOKEN_REQUIRED, Gateway)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "Authorization",
-                "value": "Bearer {{dima_token}}"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{replay_event_id}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"score\": 40,\n    \"penalties\": 10,\n    \"applications_processed\": 6,\n    \"players\": [\n      {\n        \"player_id\": \"{{dima_id}}\",\n        \"role\": \"moderator\",\n        \"xp_delta\": 30,\n        \"disciplinary_actions\": [\n          { \"type\": \"warning\", \"reason\": \"Accepted an applicant with a forged student ID\" }\n        ]\n      },\n      {\n        \"player_id\": \"{{maxim_id}}\",\n        \"role\": \"junior_moderator\",\n        \"xp_delta\": 40,\n        \"disciplinary_actions\": []\n      }\n    ],\n    \"ended_at\": \"2026-09-10T18:45:00Z\"\n  }\n}"
+              "raw": "{}"
             }
           }
         }

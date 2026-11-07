@@ -32,7 +32,7 @@ git submodule update --init --recursive
 
 The system is decomposed following a data ownership principle: for every piece of state, exactly one service is the source of truth and the only service allowed to write it. Other services may read or trigger changes only through that owning service's API. This is why applicant-related data is split into three services (Applicant, Credential, University Record) rather than one - each owns a distinct category of data (identity, documents, hidden institutional records) with a different lifecycle and different access rules, even though they describe the same real-world person.
 
-Every interaction listed below passes through the [Gateway](#gateway): no service calls another service, and no client calls a service, directly. The Gateway itself owns no state (see [9. Gateway](#9-gateway)). The one exception, since Lab 3, is [Service Discovery](#10-service-discovery): every instance registers with it directly and it polls every instance's `GET /status` directly, because the Gateway itself depends on the registry to know where to forward.
+Every interaction listed below passes through the [Gateway](#gateway): no service calls another service, and no client calls a service, directly. The Gateway itself owns no state (see [9. Gateway](#9-gateway)). The one exception, since Lab 3, is [Service Discovery](#10-service-discovery): every instance registers with it directly and it polls every instance's `GET /status` and, from Lab 4, fetches every component's [`GET /logs`](#logs-download) directly, because the Gateway itself depends on the registry to know where to forward.
 
 **Note on applicant initialization:** the topic allows any of Applicant, Credential, or University Record Service to be the first to encounter a new applicant. To keep this from turning into three services writing to each other's data, we resolve it as follows: whichever service is contacted first generates a shared `applicant_id` and pushes an `ApplicantInitialized` event carrying that ID plus the fields it was given to the other two services, which create their own record under the same `applicant_id`, populated only with the fields relevant to them. Each service still only ever writes its own record - there is no cross-service write, only event-driven record creation.
 
@@ -181,7 +181,7 @@ We use three engines. PostgreSQL is the default. MongoDB and Redis are used only
 
 ## Communication Patterns
 
-Every REST request goes through the **Gateway**: a client calling a service, and a service calling another service, alike. A caller never addresses a service directly; it addresses `{gateway}/api/v1/<service>/...` and the Gateway forwards the request to that service as `/api/v1/...` (see [Gateway](#gateway)). On that common path, services talk to each other in three ways. Each way has one rule for when to use it.
+Every REST request goes through the **Gateway**: a client calling a service, and a service calling another service, alike. A caller never addresses a service directly (the exceptions are the calls of [Service Discovery](#service-discovery)); it addresses `{gateway}/api/v1/<service>/...` and the Gateway forwards the request to that service as `/api/v1/...` (see [Gateway](#gateway)). On that common path, services talk to each other in three ways. Each way has one rule for when to use it.
 
 ### Rule 1. You need an answer right now: REST (HTTP + JSON)
 
@@ -223,6 +223,7 @@ Players chat in channels and must see new messages instantly. Discord DMs Servic
 | An instance registers and sends heartbeats (Lab 3)                      | REST `PUT /instances/{instance_id}`         | every instance of the eight services => Service Discovery directly   | The Gateway needs the registry to route, so registration cannot go through it                     |
 | An instance shuts down gracefully (Lab 3)                               | REST `DELETE /instances/{instance_id}`      | the instance => Service Discovery directly                           | Removes it from the routing table at once instead of after the 15 s TTL                                    |
 | Service Discovery checks health and load (Lab 3)                        | REST `GET /status`                          | Service Discovery => every registered instance directly              | One specific instance is checked, which a prefix through the Gateway cannot address                        |
+| Service Discovery fetches the logs of the whole system (Lab 4)          | REST `GET /logs`                            | Service Discovery => every `up` instance and the Gateway directly |
 | The Gateway refreshes its routing table (Lab 3)                         | REST `GET /instances`                       | Gateway => Service Discovery                                         | Needs the current `up` instances, every 5 s                                                                |
 | The Gateway removes an instance after a breaker trip (Lab 3)            | REST `PUT /instances/{instance_id}/status`  | Gateway => Service Discovery                                         | Other readers of the registry stop seeing the failing instance                                             |
 | Service Discovery alerts the developers (Lab 3)                         | Telegram Bot API `sendMessage`              | Service Discovery => Telegram                                        | Critical load, an unreachable or removed instance, a recovery                                              |
@@ -322,7 +323,7 @@ The Gateway forwards each push **once** and never retries it on the producer's b
 
 #### Gateway
 
-The Gateway is the single entry point of the system (Lab 2). Clients **and services** send every REST request to it; nothing calls a service directly. It owns no data and produces no events. Its own reference is [`docs/GATEWAY.md`](docs/GATEWAY.md).
+The Gateway is the single entry point of the system (Lab 2). Clients **and services** send every REST request to it; nothing calls a service directly, apart from the two exceptions of [Service Discovery](#service-discovery): its status polling and its [logs download](#logs-download). It owns no data and produces no events. Its own reference is [`docs/GATEWAY.md`](docs/GATEWAY.md).
 
 **Address.** Container `gateway-service`, port `8080` inside `student-id-net` (`http://gateway-service:8080`), published on host port `8080`.
 
@@ -376,8 +377,8 @@ Service Discovery (Lab 3) keeps the registry of running instances: which instanc
 
 **Two exceptions to the rules above**, both because the Gateway itself depends on the registry:
 
-- Registration, heartbeats, deregistration and the status polling go **directly** between an instance and Service Discovery, not through the Gateway.
-- Service Discovery **checks `X-Service-Token` itself** on every `/api/v1/instances` endpoint (`401 INVALID_SERVICE_TOKEN` for a wrong token, `403 SERVICE_TOKEN_REQUIRED` for none), the one component besides the Gateway that validates a credential. `GET /health` and `GET /status` need none.
+- Registration, heartbeats, deregistration, the status polling and the [logs download](#logs-download) (Lab 4) go **directly** between an instance and Service Discovery, not through the Gateway.
+- Service Discovery **checks `X-Service-Token` itself** on every `/api/v1/instances` endpoint (`401 INVALID_SERVICE_TOKEN` for a wrong token, `403 SERVICE_TOKEN_REQUIRED` for none), the one component besides the Gateway that validates a credential on its API; from Lab 4 every component also checks it on its own [`GET /logs`](#logs-download). `GET /health` and `GET /status` need none.
 
 **Instance identity.**
 
@@ -495,30 +496,77 @@ These apply to every endpoint listed in the next section.
 Every component - the eight services, the Gateway and Service Discovery - logs the same way (Lab 3).
 
 - **One JSON object per line on stdout**, `snake_case` keys. Level from `LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`).
+- **The same lines in a rotating file** (Lab 4, #112), read back by `GET /logs`: see [Logs download](#logs-download) below.
 - **Every line carries** `time` (ISO 8601 UTC with milliseconds and `Z`), `level` (lowercase), `service` (the Gateway prefix; `gateway`, `service-discovery`), `instance_id`, `version`, `event` (a stable name from the list below) and `msg`.
 - **`duration_ms` is an integer number of milliseconds** in every component. Applicant's `latency_ms`, Player's and Session's `duration` and any `Elapsed` are renamed.
 - **`request_id`**: the `X-Request-ID` of the request being handled, printed on every line produced while handling it and forwarded on every outbound call. An outbox row stores the `request_id` of the request that created the event, and the relay sends it as `X-Request-ID` with the push (a new one is generated when it is missing).
 
 | `event`                                                     | Extra fields                                                                                                       |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `http.request`                                              | `request_id`, `method`, `path`, `status`, `duration_ms`, `player_id` (when known), `client_ip`; `debug` for `/health*` and `/status` |
+| `http.request`                                              | `request_id`, `method`, `path` (the path only, never the query string), `status`, `duration_ms`, `player_id` (when known), `client_ip`; `debug` for `/health*`, `/status` and `/logs` |
 | `http.error`                                                | `request_id`, `status`, `code`, `error`; an unexpected error is logged at `error` with its stack trace before the `500` is returned |
 | `outbound.call`                                             | `request_id`, `target` (the prefix), `method`, `path`, `status`, `duration_ms`                                     |
 | `event.pushed` / `event.parked`                             | `event_id`, `event_type`, `consumer`, `status`, `attempt`, `next_attempt_at`; `event.parked` at `error`            |
 | `event.received`                                            | `event_id`, `event_type`, `producer`, `duplicate` (bool)                                                           |
 | `breaker.opened` / `breaker.closed` / `breaker.rejected`    | `target`, `failures`, `window_s`; the Gateway and Service Discovery add `target_instance`                         |
 | `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` | `instance_id`, `error` when failed                                                                                 |
+| `logs.file_unavailable`                                     | `path`, `error`; `warn`, once at startup when `LOG_FILE` cannot be opened (#112)                                   |
 | `startup` / `shutdown`                                      | version, instance id, port, configuration without secrets                                                          |
 | business actions                                            | one line each, with the ids involved: login, register, session create / join / start / next applicant / end, decision, evaluation, scope rejection, ... |
 
 The Gateway adds `target`, `target_instance` and `upstream_duration_ms` to its `http.request` lines, and the events `route.no_instance`, `sd.refresh`, `sd.mark_down` (the outcome of a mark-down: `info`, `warn` when it failed) and `breaker.half_open` (it logs every transition; its `breaker.closed` carries `reason`: `trial request succeeded` or `listed again by Service Discovery`). Service Discovery adds `registry.registered` (`after_expiry` for a return), `registry.expired`, `registry.deregistered`, `registry.marked_down`, `registry.recovered`, `health.unreachable`, `health.reachable`, `health.critical`, `health.load_recovered`, `health.error`, `health.checked` (`debug`), `alert.emitted` (`debug`), `alert.subscriber_failed`, `notify.sent`, `notify.failed`, `notify.skipped`, `notify.dropped` and `notify.disabled`; the levels are in `docs/SERVICE_DISCOVERY.md`.
 
-**Never logged:** `Authorization`, `X-Service-Token`, `JWT_SECRET`, passwords, the Telegram bot token (it is part of the Telegram URL, so exception messages are sanitized), full request or response bodies, and applicant personal data other than `applicant_id`.
+**Never logged:** `Authorization`, `X-Service-Token`, `JWT_SECRET`, passwords, the Telegram bot token (it is part of the Telegram URL, so exception messages are sanitized), full request or response bodies, query strings (a `q` of `GET /records/{category}` holds a name, student ID or email, and `?ticket=` a one-time ticket), and applicant personal data other than `applicant_id`.
 
 Example line:
 
 ```json
 {"time":"2026-10-27T12:00:00.123Z","level":"info","service":"session","instance_id":"session-3f4e2a9b1c7d","version":"3.0.0","event":"http.request","msg":"request","request_id":"9d2d...","method":"POST","path":"/api/v1/sessions","status":201,"duration_ms":42,"player_id":"...","client_ip":"172.18.0.9"}
+```
+
+##### Logs download
+
+Lab 4 (#112): the logs of any instance, or of the whole system, can be downloaded without a shell on the Docker host. Every component (the eight services, the Gateway, Service Discovery and the Message Broker) does the same three things. The reference implementation is `app/logfile.py` of Service Discovery, the broker and the Gateway.
+
+**1. The log file.** Every line written to stdout is also written, unchanged, to `LOG_FILE`.
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `LOG_FILE` | `/var/log/<service>/<service>.jsonl` (`<service>` as in the `service` field: `player`, ..., `gateway`, `service-discovery`, `message-broker`) | Empty: stdout only, and `GET /logs` answers `503 LOGS_UNAVAILABLE` |
+| `LOG_FILE_MAX_MB` | `50` | The file rotates at this size |
+| `LOG_FILE_KEEP` | `5` | Rotated files kept next to the current one |
+
+- The images run as non-root, so the Dockerfile creates the directory and gives it to the runtime user. Distroless has no shell, so create it in the build stage and `COPY --chown` it.
+- A file that cannot be opened does not stop the component. It logs to stdout only and writes one `logs.file_unavailable` warning.
+- The file belongs to one container. Never share a volume between copies of a service: the default path has no instance part, so they would write one file, each would answer with the other's lines too, and the zip would hold them twice. The logs survive a restart of the container, not its recreation (a new image, for one).
+- The file and the zip fall under **Never logged** above, and the zip takes them off the host in one piece. Each owner checks their log lines before exposing `GET /logs`.
+- Libraries: Go `gopkg.in/natefinch/lumberjack.v2` behind `io.MultiWriter(os.Stdout, file)` (`MaxSize` = `LOG_FILE_MAX_MB`, `MaxBackups` = `LOG_FILE_KEEP`). C# `Serilog.Sinks.File` next to the console sink (`fileSizeLimitBytes`, `rollOnFileSizeLimit: true`, `retainedFileCountLimit` = `LOG_FILE_KEEP + 1`, because it counts the current file). Python `logging.handlers.RotatingFileHandler`.
+
+**2. `GET /logs?since=<RFC 3339>&until=<RFC 3339>&level=<debug|info|warn|error>`** on the component's REST port. It streams the instance's own lines across the rotated files and the current one.
+
+| | |
+| --- | --- |
+| Credential | `X-Service-Token` checked by the component itself, as Service Discovery does: `403 SERVICE_TOKEN_REQUIRED` without it, `401 INVALID_SERVICE_TOKEN` when wrong. No service checks a token on its REST port otherwise, so this is a new check |
+| Window | `since <= time < until` on the line's `time`, so two consecutive windows never share a line. Both are optional, and a time needs its zone (`Z` or `+02:00`). `level` keeps that level and above |
+| Answer | `200` with its headers sent at once, before any file is scanned (a flush in Go, `Response.StartAsync` in C#): the aggregate below waits for them only `HEALTH_POLL_TIMEOUT_SECONDS`. `Content-Type: application/x-ndjson`, `Content-Disposition: attachment; filename="<instance_id>-<since>.jsonl"` (`since` as `20261105T112700Z`, or `start`). The lines are oldest first, one JSON object per line, unchanged. An empty window is an empty `200` |
+| Errors | `400 VALIDATION_ERROR` with `details.errors: [{field, message}]` for a malformed time, a time without a zone, `until <= since` or an unknown `level`. `503 LOGS_UNAVAILABLE` without a log file. A file that cannot be flushed (a full disk) is no error: what is on disk is still answered |
+| Limits | Outside the concurrent limit and the task timeout, so a busy instance can still be read and a long answer is not cut off. Its `http.request` line is at `debug`, so reading the logs does not add to them |
+
+- **No broken lines.** Read the current file only up to its size when the request starts, and leave out a last line without its newline. A line that is not one whole JSON object is left out with or without a window: a line cut by a full disk, which the next process wrote onto after a restart, does end in a newline. A rotation that happens during the read must not cut a line or repeat one, so open every file before reading any of them. An open file keeps its content when the rotation renames it.
+- **Not a Gateway route.** `/api/v1/<prefix>/logs` answers `404 NOT_FOUND` and never reaches an instance's `GET /logs` (#105). The logs are fetched from the instance directly, inside `student-id-net`, or through the aggregate below. *Not yet wired:* until the Gateway's routes of #110 merge, it is proxied like any path to the service's `/api/v1/logs` (which does not exist), as a player route, so it answers `401 UNAUTHENTICATED` without a credential.
+
+**3. The aggregate on Service Discovery: `GET /api/v1/logs?service=&instance=&since=&until=&level=`**, with the service token. Service Discovery knows every `up` instance, so it fetches them all:
+
+- It calls `GET /logs` of every matching component in parallel, with the same window (in UTC), the service token and the caller's `X-Request-ID`.
+- `service` omitted means the whole system: every `up` instance, the broker, Service Discovery itself (from its own file) and the Gateway. The Gateway does not register, so Service Discovery reaches it through `LOGS_STATIC_TARGETS=gateway=http://gateway-service:8080`. `service=` narrows the download to one name, and `instance=` to one id.
+- The answer is `application/zip` (`logs-<since>.zip`). It holds one `<instance_id>.jsonl` per component (`gateway.jsonl` for the Gateway) and a `manifest.json`: `generated_at`, `generated_by`, the `query`, `files` (`file`, `service`, `instance_id`, `source`, `bytes`, `lines`) and `failed` (`service`, `instance_id`, `source`, `reason`).
+- A component that is unreachable, does not send its answer's headers within `HEALTH_POLL_TIMEOUT_SECONDS`, refuses, fails in any way or takes longer than `LOGS_FETCH_DEADLINE_SECONDS` (60) is left out of the zip and named in `failed`. The download still succeeds. After its headers a component may be silent for as long as the deadline allows, because it sends nothing while it scans its files for a narrow window.
+- A registered `host` is only ever a host in the URL, as in the status check: it cannot choose the port or the path.
+- One download runs at a time (`429` with `Retry-After: 5` meanwhile). An unknown `service` is `400 VALIDATION_ERROR`. `503 LOGS_UNAVAILABLE` when the zip itself cannot be written.
+
+```bash
+curl -o logs.zip 'http://localhost:8090/api/v1/logs?since=2026-11-05T10:00:00Z' -H "X-Service-Token: $SERVICE_TOKEN"
+unzip logs.zip && jq -c 'select(.request_id == "<id>")' *.jsonl | jq -sc 'sort_by(.time)[]'   # one request across the system
 ```
 
 ##### Circuit breaker
@@ -547,7 +595,7 @@ Gaps found by the Lab 3 audit against these rules, all fixed in Lab 3: Session's
 
 ##### Authentication
 
-Credentials are checked **at the Gateway, and only there**. Services never see the caller's token.
+Credentials are checked **at the Gateway, and only there**. Services never see the caller's token. The exceptions are Service Discovery and, from Lab 4, every component's own [`GET /logs`](#logs-download), which check `X-Service-Token` themselves.
 
 **What callers send to the Gateway** - each request carries exactly one credential:
 
@@ -565,7 +613,7 @@ Credentials are checked **at the Gateway, and only there**. Services never see t
 3. It **removes** `Authorization` and `X-Service-Token`, and removes any `X-Player-Id` the caller sent.
 4. For a request authenticated with a player token, it sets **`X-Player-Id: <sub>`**. A request authenticated with the service token carries no `X-Player-Id`.
 
-**What services receive.** Only `X-Player-Id`. When an endpoint needs to know which player is calling, it reads that header and nothing else; a service validates no token. The one exception is Service Discovery (Lab 3), which checks `X-Service-Token` itself because instances call it directly, not through the Gateway (see [Service Discovery](#service-discovery)). A request without `X-Player-Id` on a route that needs a calling player answers `401 UNAUTHENTICATED`. Services trust the header because nothing but the Gateway can reach them - their ports are not published (see [Deployments](#deployments)). The one connection that bypasses the Gateway, the Discord DMs WebSocket, is authorized with a one-time ticket instead (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)).
+**What services receive.** Only `X-Player-Id`. When an endpoint needs to know which player is calling, it reads that header and nothing else; a service validates no token. The exceptions are Service Discovery (Lab 3), which checks `X-Service-Token` itself because instances call it directly, not through the Gateway (see [Service Discovery](#service-discovery)), and `GET /logs` (Lab 4), which Service Discovery calls directly on each component (see [Logs download](#logs-download)). A request without `X-Player-Id` on a route that needs a calling player answers `401 UNAUTHENTICATED`. Services trust the header because nothing but the Gateway can reach them - their ports are not published (see [Deployments](#deployments)). The one connection that bypasses the Gateway, the Discord DMs WebSocket, is authorized with a one-time ticket instead (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)).
 
 **A service calling another service** sends `X-Service-Token`, never a player's token or a player's `X-Player-Id`.
 
@@ -598,9 +646,9 @@ These codes are shared by every service and the Gateway, and mean the same every
 | ------ | ------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `400`  | `VALIDATION_ERROR`       | service, Gateway                                | Anything malformed: a body that is not JSON or misses a field, a path id that is not a UUID, a bad query parameter. `details` names the field         |
 | `401`  | `UNAUTHENTICATED`        | Gateway (service when `X-Player-Id` is missing) | A route that needs a calling player got no valid player token: missing, malformed, bad signature, expired                                             |
-| `401`  | `INVALID_SERVICE_TOKEN`  | Gateway                                         | `X-Service-Token` is present but wrong                                                                                                                |
+| `401`  | `INVALID_SERVICE_TOKEN`  | Gateway; Service Discovery; `GET /logs` of any component | `X-Service-Token` is present but wrong                                                                                                                |
 | `401`  | `INVALID_CREDENTIALS`    | Player Service                                  | `POST /auth/login` only: unknown username or wrong password                                                                                           |
-| `403`  | `SERVICE_TOKEN_REQUIRED` | Gateway                                         | A service-only route was called without `X-Service-Token`                                                                                             |
+| `403`  | `SERVICE_TOKEN_REQUIRED` | Gateway; Service Discovery; `GET /logs` of any component | A service-only route was called without `X-Service-Token`                                                                                             |
 | `404`  | `NOT_FOUND`              | service, Gateway                                | No such route, or (Gateway) no such prefix. A missing resource uses its own code (`SESSION_NOT_FOUND`, ...)                                           |
 | `405`  | `METHOD_NOT_ALLOWED`     | service, Gateway                                | Known path, wrong method                                                                                                                              |
 | `408`  | `REQUEST_TIMEOUT`        | service, Gateway                                | The task ran longer than the [task timeout](#task-timeout-and-concurrent-task-limit) and was stopped. **Nothing was changed**                         |
@@ -609,6 +657,7 @@ These codes are shared by every service and the Gateway, and mean the same every
 | `500`  | `DEPENDENCY_UNAVAILABLE` | service                                         | A service or database this endpoint needs did not answer, or answered `408`/`429`/`502`/`5xx`. **Nothing was changed.** `details.dependency` names it |
 | `500`  | `INTERNAL_ERROR`         | service, Gateway                                | Anything else                                                                                                                                         |
 | `502`  | `BAD_GATEWAY`            | Gateway                                         | The service behind the prefix is unreachable                                                                                                          |
+| `503`  | `LOGS_UNAVAILABLE`       | any component                                   | `GET /logs` without a log file, or Service Discovery's `GET /api/v1/logs` when the zip cannot be written; see [Logs download](#logs-download) |
 | `503`  | `SERVICE_UNAVAILABLE`    | Gateway                                         | Lab 3: the service behind the prefix has no `up` instance with a closed circuit breaker; no instance was called. `details.service` names the prefix   |
 
 - `422` is reserved for the endpoint-specific codes listed under each endpoint (`INVALID_DIFFICULTY`, `MODERATOR_NOT_IN_SESSION`, ...): the request is well-formed, but its content is not acceptable. A malformed request is always `400 VALIDATION_ERROR`, never `422`.
@@ -625,7 +674,7 @@ Every service and the Gateway bound how long one task may run and how many may r
 | Concurrent task limit | `MAX_CONCURRENT_TASKS` | chosen per service                      | A new task is refused at once, before any work: `429 TOO_MANY_REQUESTS` + `Retry-After` |
 
 - **The outer layer never gives up first:** client timeout > Gateway timeout (`10s`) > service timeout (`5s`) > that service's timeout for its own outgoing calls. A service that calls peers sets its outgoing timeout below its own `HTTP_REQUEST_TIMEOUT`, so it can still answer `500 DEPENDENCY_UNAVAILABLE` before its own deadline.
-- **Health endpoints are exempt** from the concurrent limit, so a busy service is not restarted by its orchestrator. So is `GET /status` (Lab 3), which is also not counted in `in_flight`.
+- **Health endpoints are exempt** from the concurrent limit, so a busy service is not restarted by its orchestrator. So is `GET /status` (Lab 3), which is also not counted in `in_flight`. `GET /logs` (Lab 4) is exempt from the concurrent limit and from the task timeout, since a long answer must not be cut off (see [Logs download](#logs-download)).
 - Service Discovery uses the service values: `HTTP_REQUEST_TIMEOUT` `5s`.
 - The variable names are shared. The C# services read the same names from the environment, or map them to their own configuration keys and say so in their `docs/` reference.
 

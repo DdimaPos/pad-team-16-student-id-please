@@ -63,6 +63,10 @@ Without `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` it starts as usual and only 
 | `NOTIFY_COOLDOWN_SECONDS` | `300` | The same problem for the same instance is sent at most once in this time; `60` for a demo |
 | `TELEGRAM_TIMEOUT_SECONDS` | `5` | Longest one `sendMessage` may take |
 | `INSTANCE_ID` | `service-discovery-<hostname>` | Its own id, in its logs and `/status` |
+| `LOG_FILE` | `/var/log/service-discovery/service-discovery.jsonl` | The log file next to stdout, read by `GET /logs` (#112); empty = stdout only |
+| `LOG_FILE_MAX_MB` / `LOG_FILE_KEEP` | `50` / `5` | The file rotates at this size; rotated files kept |
+| `LOGS_STATIC_TARGETS` | `gateway=http://gateway-service:8080` | Components the aggregated download fetches although they do not register, `name=base-url` pairs separated by commas |
+| `LOGS_FETCH_DEADLINE_SECONDS` | `60` | Longest one component's download may take in all |
 
 ## 5. Endpoints
 
@@ -127,6 +131,40 @@ x 3.5):
 No database, so always `200 up`. `in_flight` counts the `/api/v1` requests in progress; `/status` and
 `/health` are not counted and never refused.
 
+### `GET /logs?since=&until=&level=` - its own logs (#112)
+
+`X-Service-Token`. Service Discovery's own lines in the window, oldest first, across the rotated files, as
+`application/x-ndjson` (`Content-Disposition: attachment; filename="<instance_id>-<since>.jsonl"`). The window is
+`since <= time < until` (RFC 3339 with a zone, both optional), and `level` keeps that level and above. `400
+VALIDATION_ERROR` names the field. `503 LOGS_UNAVAILABLE` means there is no log file. The route is outside the limiter.
+The shape is the one every component shares (CPR README "Logs download").
+
+### `GET /api/v1/logs?service=&instance=&since=&until=&level=` - the whole system's logs (#112)
+
+`X-Service-Token`. It calls `GET /logs` of every matching component in parallel and answers one `application/zip`
+(`logs-<since>.zip`) with a `<instance_id>.jsonl` per component and a `manifest.json`.
+
+- `service` omitted means the whole system: every `up` instance, the broker, Service Discovery itself (its own file)
+  and the Gateway (`LOGS_STATIC_TARGETS`, file `gateway.jsonl`).
+- `service=player`, `message-broker`, `service-discovery` or `gateway` narrows it to one name, and `instance=` to one id.
+
+```json
+{"generated_at": "2026-11-05T11:38:16.151Z", "generated_by": "service-discovery-5a3f37dec7e1",
+ "query": {"service": null, "instance": null, "since": "2026-11-05T10:00:00.000Z", "until": null, "level": null},
+ "files": [{"file": "player-3f4e2a9b1c7d.jsonl", "service": "player", "instance_id": "player-3f4e2a9b1c7d",
+            "source": "http://172.18.0.7:8080", "bytes": 48213, "lines": 131}],
+ "failed": [{"service": "gateway", "instance_id": "gateway", "source": "http://gateway-service:8080",
+             "reason": "unreachable: ConnectError"}]}
+```
+
+Some components can fail: one is unreachable, does not send its answer's headers within `HEALTH_POLL_TIMEOUT_SECONDS`,
+refuses (`answered 401 INVALID_SERVICE_TOKEN`), fails (`answered 500`, or `failed: <error>` for anything else, such as a
+registered host that is no address) or is not done after `LOGS_FETCH_DEADLINE_SECONDS`. Each such component is left out
+of the zip and named in `failed`; the download is still `200`. The body is bounded only by the deadline, because an
+instance sends its headers at once and then nothing while it scans its files for a narrow window. A registered `host` is only ever a host in the URL, so it cannot choose the port or the path. A `down`
+instance is not fetched. One download runs at a time; a second one meanwhile is `429` with `Retry-After: 5`. An unknown
+`service` is `400`. `503 LOGS_UNAVAILABLE` when the zip itself cannot be written.
+
 ## 6. Health polling, alerts and notifications
 
 - **Polling.** Every registered instance, `up` and `down`, is checked with `GET http://<host>:<port>/status`
@@ -164,6 +202,8 @@ the instance down. `docker stop` deregisters and raises nothing.
 | Malformed body or path, mark-down other than `down` | `400 VALIDATION_ERROR` |
 | Mark-down of an unknown id, unknown route | `404 NOT_FOUND` |
 | Concurrent task limit reached | `429 TOO_MANY_REQUESTS` + `Retry-After` |
+| A logs download while another one runs | `429 TOO_MANY_REQUESTS` + `Retry-After: 5` |
+| `GET /logs` without a log file, `GET /api/v1/logs` when the zip cannot be written | `503 LOGS_UNAVAILABLE` |
 | Task longer than `HTTP_REQUEST_TIMEOUT` | `408 REQUEST_TIMEOUT` |
 | Anything else | `500 INTERNAL_ERROR`, logged at `error` with the stack trace |
 
@@ -179,7 +219,7 @@ One JSON object per line on stdout, with `time`, `level`, `service` (`service-di
 | `event` | Level | When |
 | --- | --- | --- |
 | `startup` / `shutdown` | `info` | start (the effective settings, `notifications: telegram` or `off`) / stop |
-| `http.request` | `info`; `debug` for `/health`, `/status` | every request: `method`, `path`, `status`, `duration_ms`, `client_ip` |
+| `http.request` | `info`; `debug` for `/health`, `/status`, `/metrics`, `/logs` | every request: `method`, `path`, `status`, `duration_ms`, `client_ip` |
 | `http.error` | `info`; `error` for a `500` (with `stack`) | every error answer: `status`, `code` |
 | `registry.registered` / `registry.deregistered` | `info` | a new record (`instance_version`; `after_expiry: true` for a return) / a `DELETE` |
 | `registry.expired` | `warn` | the TTL sweep removed a record (`last_seen_at`, `ttl_seconds`) |
@@ -192,6 +232,10 @@ One JSON object per line on stdout, with `time`, `level`, `service` (`service-di
 | `alert.emitted` / `alert.subscriber_failed` | `debug` / `warn` | an alert went through the hook / a subscriber raised |
 | `notify.sent` / `notify.failed` / `notify.dropped` | `info` / `warn` / `warn` | a Telegram message was sent / not sent / not queued |
 | `notify.skipped` / `notify.disabled` | `debug` / `warn` | cooldown or no open episode / no bot configured |
+| `logs.file_unavailable` | `warn` | `LOG_FILE` cannot be opened: stdout only (`path`, `error`) |
+| `logs.fetch_failed` / `logs.downloaded` | `warn` / `info` | one component left out of a download (`service_name`, `instance`, `reason`) / a download built (`files`, `failed`, `bytes`, `duration_ms`) |
+
+The same lines also go to `LOG_FILE`, and `GET /logs` reads them back (§5).
 
 uvicorn's own access log is off, and its other lines are at `warn` and above only. The service token and the
 bot token are never logged.

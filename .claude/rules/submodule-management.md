@@ -1,12 +1,13 @@
 # Submodule management
 
-The 8 service submodules and `service-discovery-service` are private. A person can read and write only their own two; the
+The 8 service submodules, `service-discovery-service` and `message-broker-service` are private. A person can read and write only their own two; the
 professors can read all.
 
 | GitHub handle | Submodules                                            |
 | ------------- | ----------------------------------------------------- |
 | DdimaPos      | `player-service`, `server-moderation-session-service` |
 | vvtttvv       | `service-discovery-service` (shared like the Gateway: the repository is Vlad's, every member contributes through PRs) |
+| vvtttvv       | `message-broker-service` (shared like the Gateway: the repository is Vlad's, every member contributes through PRs) |
 | IacovlevMaxim | `applicant-service`, `credential-service`             |
 | dmracovit     | `moderation-service`, `discord-DMs-service`           |
 | vvtttvv       | `server-rules-service`, `university-record-service`   |

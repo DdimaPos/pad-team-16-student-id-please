@@ -30,3 +30,7 @@
 	path = service-discovery-service
 	url = https://github.com/vvtttvv/service-discovery-service
 	branch = dev
+[submodule "message-broker-service"]
+	path = message-broker-service
+	url = https://github.com/vvtttvv/message-broker-service
+	branch = dev

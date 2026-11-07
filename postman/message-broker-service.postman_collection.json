@@ -1,0 +1,121 @@
+{
+  "info": {
+    "name": "Message Broker Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "The Message Broker (Lab 4, #103): the probes and the topics listing. On a new broker the listing is empty; the gRPC API that fills it comes with #106. Set base_url and service_token (the placeholder of .env.example) for your stack."
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8070" },
+    { "key": "service_token", "value": "change_me_too" }
+  ],
+  "item": [
+    {
+      "name": "probes",
+      "item": [
+        {
+          "name": "GET /health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('names the broker', () => pm.expect(pm.response.json().service).to.eql('message-broker'));"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{base_url}}/health" }
+        },
+        {
+          "name": "GET /status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('contract shape', () => pm.expect(b).to.have.all.keys('service','instance_id','version','status','in_flight','max_concurrent_tasks'));",
+                  "pm.test('names the broker', () => pm.expect(b.service).to.eql('message-broker'));",
+                  "pm.test('up', () => pm.expect(b.status).to.eql('up'));"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{base_url}}/status" }
+        }
+      ]
+    },
+    {
+      "name": "topics",
+      "item": [
+        {
+          "name": "GET /api/v1/topics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const topics = pm.response.json().topics;",
+                  "pm.test('a list of topics', () => pm.expect(topics).to.be.an('array'));",
+                  "topics.forEach(t => {",
+                  "  pm.test(`${t.name} has its shape`, () => {",
+                  "    pm.expect(t).to.have.all.keys('name','queues');",
+                  "    t.queues.forEach(q => pm.expect(q).to.have.all.keys('name','service','depth','subscribers'));",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/api/v1/topics"
+          }
+        },
+        {
+          "name": "GET /api/v1/topics without a token: 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('the shared envelope', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{base_url}}/api/v1/topics" }
+        },
+        {
+          "name": "GET /api/v1/topics with a wrong token: 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('the shared envelope', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "not-the-token" }],
+            "url": "{{base_url}}/api/v1/topics"
+          }
+        }
+      ]
+    }
+  ]
+}

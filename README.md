@@ -105,17 +105,34 @@ Every interaction listed below passes through the [Gateway](#gateway): no servic
 
 ![Architecture Diagram](img/ArchitecturalDiagram.png)
 
-The diagram shows the system as it runs since Lab 2. A client reaches the system only through the **Gateway** (REST requests carrying the player's JWT), and the Gateway is connected to each of the eight services, which sit in three groups:
+The diagram shows the system of Lab 4 as it runs after the cutover of #113, when every component runs its `4.x` image. Until then CPR `dev` still runs the Lab 3 stack, in which the Gateway forwards REST to each instance itself (see [Gateway](#gateway)).
+
+A client reaches the system only through the **Gateway** (REST with the player's JWT). The Gateway turns each request into a gRPC `Request` on the **Message Broker**, which puts it into the `requests.<service>` queue of the target service and hands it to one instance of that service. The eight services sit in three groups:
 
 - **Session Layer:** Discord DMs, Server Moderation Session and Player.
 - **Moderation:** Moderation Service and Server Rules Service.
 - **Applicant Data:** Applicant, Credential and University Record.
 
-Each blue line between the Gateway and a service is two-way and stands for both kinds of traffic: the REST calls a service receives or makes, and the events pushed as `POST /api/v1/<service>/events`. No service has a line to another service, because none addresses another directly; a call from one service to another leaves through the Gateway and comes back through it. Which service calls which, and with which rule, is listed in [Every arrow in the diagram](#every-arrow-in-the-diagram-and-the-rule-it-follows).
+Each blue line between the broker and a service is two-way and carries several kinds of traffic over one gRPC connection:
 
-The green dashed line is the one path that does not run through the Gateway: the chat WebSocket. The client first asks the Gateway for a one-time ticket and a WebSocket URL (see [Gateway](#gateway)), then connects to Discord DMs Service directly, so the Gateway is not kept busy carrying the chat.
+- the instance's `Subscribe` stream, which delivers the requests of its `requests.<service>` queue and the events of the `events.<event_type>` topics its service subscribed to;
+- its `Reply` to a request and its `Ack` of an event;
+- its own `Publish` of an event and its `Request` to another service.
 
-Each service owns its database, drawn beneath it, and no database is shared: Player, Session, Moderation, Server Rules, Applicant and University Record use PostgreSQL, Credential uses MongoDB, Session adds a Redis cache, and Discord DMs uses MongoDB for messages and Redis for Pub/Sub. There is no message broker.
+No service has a line to another, because none addresses another directly: a call or an event from one service to another goes through the broker. Which service calls which, and with which rule, is listed in [Every arrow in the diagram](#every-arrow-in-the-diagram-and-the-rule-it-follows); that table is rewritten for the broker with the Lab 4 contract (#105). The broker keeps its queues and dead letters in SQLite on a volume (#108). It listens for gRPC on `:8071` and serves its HTTP side on `:8070`: `/status`, `/logs`, `/metrics`, the topics listing and the dead letters.
+
+The gray dashed lines are direct HTTP calls with **Service Discovery**:
+
+- every instance and the broker register, heartbeat and deregister;
+- Service Discovery polls their `GET /status` and fetches their `GET /logs`, and the Gateway's as a static target;
+- the broker reads the instance list and the loads, marks an instance down after its breaker trips, and posts one alert per dead letter;
+- Service Discovery sends its alerts to Telegram.
+
+The red dotted lines are the monitoring of #113. Prometheus finds the instances through Service Discovery and scrapes the `/metrics` of every component, the Gateway's as a static target, and Grafana shows them. The host ports `9090` and `3000` are still a proposal of #113.
+
+The green dashed line is the one client path that bypasses the Gateway: the chat WebSocket. The client first gets a one-time ticket and a WebSocket URL through the Gateway (see [Gateway](#gateway)), then connects to Discord DMs directly on port `8086`, so the Gateway is not kept busy carrying the chat.
+
+Each service owns its database, drawn beneath it, and no database is shared. Player, Session, Moderation, Server Rules, Applicant and University Record use PostgreSQL, Credential uses MongoDB, and Discord DMs uses MongoDB for messages and Redis for Pub/Sub. Session keeps everything in PostgreSQL ([`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md)), so its Redis cache in [Databases](#databases) is not drawn.
 
 ---
 

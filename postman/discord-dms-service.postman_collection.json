@@ -200,7 +200,7 @@
       "name": "1. Setup: session.started through POST /events",
       "item": [
         {
-          "name": "session.started arrives through POST /events (what Session's relay sends through the Gateway)",
+          "name": "session.started arrives (dev: the broker's event handler, DEV_ENDPOINTS) (what Session's relay sends through the Gateway)",
           "request": {
             "method": "POST",
             "header": [
@@ -213,18 +213,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "events"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/events",
             "description": "Same handler a broker consumer will use. Creates the four channels of {{session_id}} with the access mapping.",
             "body": {
               "mode": "raw",
@@ -275,18 +264,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "events"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/events",
             "description": "",
             "body": {
               "mode": "raw",
@@ -337,18 +315,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "events"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/events",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {}\n}",
@@ -387,18 +354,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "events"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/events",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 2,\n  \"payload\": { \"session_id\": \"{{session_id}}\" }\n}",
@@ -411,7 +367,8 @@
           },
           "response": []
         }
-      ]
+      ],
+      "description": "Lab 4: session.started is published by Session to the broker's topic events.session.started and reaches every copy's stream. A Postman run cannot publish over gRPC, so these requests post the envelope to the dev route POST /api/v1/dev/events, which runs the same handler as a broker delivery and answers the ack it would send (OK / PERMANENT). For the real path: python -m scripts.smoke publish in the broker repository."
     },
     {
       "name": "2. Channels",
@@ -1256,7 +1213,7 @@
       "name": "5. Session end",
       "item": [
         {
-          "name": "session.ended arrives through POST /events",
+          "name": "session.ended arrives (dev: the broker's event handler, DEV_ENDPOINTS)",
           "request": {
             "method": "POST",
             "header": [
@@ -1269,18 +1226,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "events"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/events",
             "description": "Archives the channels and closes every WebSocket of the session.",
             "body": {
               "mode": "raw",
@@ -1511,20 +1457,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/admin/messages/{{last_message_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "admin",
-                "messages",
-                "{{last_message_id}}"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/admin/messages/{{last_message_id}}",
             "description": ""
           },
           "event": [
@@ -1570,25 +1503,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/dev/slow?ms=200",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "dev",
-                "slow"
-              ],
-              "query": [
-                {
-                  "key": "ms",
-                  "value": "200"
-                }
-              ]
-            }
+            "url": "{{service_url}}/api/v1/dev/slow?ms=200"
           },
           "response": []
         },
@@ -1619,25 +1534,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/dev/slow?ms=7000",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "dev",
-                "slow"
-              ],
-              "query": [
-                {
-                  "key": "ms",
-                  "value": "7000"
-                }
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/slow?ms=7000",
             "description": "The Gateway allows 10 s, the service 5 s: the service gives up first and the Gateway passes its 408 through unchanged."
           },
           "response": []
@@ -1734,27 +1631,184 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/dev/slow?ms=50",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "dev",
-                "slow"
-              ],
-              "query": [
-                {
-                  "key": "ms",
-                  "value": "50"
-                }
-              ]
-            }
+            "url": "{{service_url}}/api/v1/dev/slow?ms=50"
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "8. Lab 4: logs, metrics and the direct routes",
+      "description": "Direct to one copy's REST port ({{service_url}}), as Service Discovery and Prometheus call it.",
+      "item": [
+        {
+          "name": "GET /metrics (Prometheus, no credential)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.text();",
+                  "['http_requests_total', 'http_request_duration_seconds', 'tasks_in_flight', 'websocket_connections'].forEach(n => pm.test(n, () => pm.expect(body).to.include(n)));",
+                  "pm.test('route is a template, never a raw id', () => pm.expect(body).to.not.match(/route=\"[^\"]*[0-9a-f]{8}-[0-9a-f]{4}/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{service_url}}/metrics"
+          }
+        },
+        {
+          "name": "GET /logs (this copy's lines, ndjson)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "pm.test('an attachment named after the copy', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\"discord-dms-.+-20200101T000000Z\\.jsonl\"$/));",
+                  "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
+                  "pm.test('info and above, oldest first', () => rows.forEach((r, i) => { pm.expect(r.level).to.not.eql('debug'); if (i) pm.expect(r.time >= rows[i - 1].time).to.be.true; }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{service_url}}/logs?since=2020-01-01T00:00:00Z&level=info"
+          }
+        },
+        {
+          "name": "GET /logs without the token: 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{service_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs with an unknown level: 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('level'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{service_url}}/logs?level=loud"
+          }
+        },
+        {
+          "name": "DELETE /api/v1/admin/messages/{id} without the token: 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": "{{service_url}}/api/v1/admin/messages/00000000-0000-4000-8000-000000000000"
+          }
+        },
+        {
+          "name": "POST /api/v1/events is gone: events come from the broker",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/events",
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
+        },
+        {
+          "name": "GET /health/ready names the broker connection",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('message_broker is READY, IDLE or off', () => pm.expect(['READY', 'IDLE', 'off']).to.include(pm.response.json().checks.message_broker));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{service_url}}/health/ready"
+          }
         }
       ]
     }

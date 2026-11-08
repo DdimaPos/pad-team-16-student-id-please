@@ -105,7 +105,7 @@ Every interaction listed below passes through the [Gateway](#gateway): no servic
 
 ![Architecture Diagram](img/ArchitecturalDiagram.png)
 
-The diagram shows the system of Lab 4 as it runs after the cutover of #113, when every component runs its `4.x` image. Until then CPR `dev` still runs the Lab 3 stack, in which the Gateway forwards REST to each instance itself (see [Gateway](#gateway)). Its editable source is `img/ArchitecturalDiagram.drawio`; open it in [diagrams.net](https://app.diagrams.net) to change it.
+The diagram shows the system of Lab 4 as it runs after the cutover of #113, when every component runs its `4.x` image. Until then CPR `dev` still runs the Lab 3 stack, in which the Gateway forwards REST to each instance itself (see [Gateway](#gateway)).
 
 A client reaches the system only through the **Gateway** (REST with the player's JWT). The Gateway turns each request into a gRPC `Request` on the **Message Broker**, which puts it into the `requests.<service>` queue of the target service and hands it to one instance of that service. The eight services sit in three groups:
 

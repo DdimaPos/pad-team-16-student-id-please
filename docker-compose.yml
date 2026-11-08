@@ -182,9 +182,9 @@ services:
       - student-id-net
 
   moderation-service:
-    image: dmracovit/moderation-service:3.0.0
+    image: dmracovit/moderation-service:4.0.0
     restart: unless-stopped
-    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    # Two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
       replicas: 2
     depends_on:
@@ -198,19 +198,16 @@ services:
       # registration is off only when the container's own environment has an empty SERVICE_DISCOVERY_URL.
       SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
-      # The stack's one X-Service-Token, sent on every call to a peer and on every event push.
+      # The stack's one X-Service-Token: the metadata of every call to the broker; checked here on /logs, /admin and /dev.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       DEV_ENDPOINTS: ${MODERATION_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
       REFERENCE_YEAR: *reference_year
-      # Each peer is reached through the Gateway (README "Deployments"): the Gateway's address plus the
-      # peer's prefix. Clearing a variable in .env (MODERATION_SESSION_URL=) selects the built-in mock
-      # of that peer.
-      SESSION_URL: ${MODERATION_SESSION_URL-http://gateway-service:8080/api/v1/session}
-      APPLICANT_URL: ${MODERATION_APPLICANT_URL-http://gateway-service:8080/api/v1/applicant}
-      CREDENTIAL_URL: ${MODERATION_CREDENTIAL_URL-http://gateway-service:8080/api/v1/credential}
-      UNIVERSITY_RECORD_URL: ${MODERATION_UNIVERSITY_RECORD_URL-http://gateway-service:8080/api/v1/university-record}
-      RULES_URL: ${MODERATION_RULES_URL-http://gateway-service:8080/api/v1/server-rules}
+      # Lab 4 (README "Message Broker"): the five peers are called as requests through the broker (requests.session,
+      # requests.applicant, ...), decision.recorded is published to events.decision.recorded, and the service's own
+      # requests arrive from requests.moderation. Clearing it in .env (MODERATION_MESSAGE_BROKER_URL=) selects the
+      # mock mode, every peer a built-in mock.
+      MESSAGE_BROKER_URL: ${MODERATION_MESSAGE_BROKER_URL-message-broker-service:8071}
     networks:
       - student-id-net
 

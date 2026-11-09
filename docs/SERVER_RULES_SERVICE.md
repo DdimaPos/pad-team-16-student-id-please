@@ -267,7 +267,7 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 - **Lab 4 (#110):** the Gateway keeps only `GET /rulesets/{version}` (player JWT) and `/health` of this
   service, and hands the player route to the broker's `requests.server-rules`; Session and Moderation
   reach this service through the broker, not the Gateway. `GET /logs` and `GET /metrics` are not
-  Gateway routes. #110 is merged into the Gateway's `dev` and ships with its `4.0.0`; until the compose runs
+  Gateway routes. #110 (IacovlevMaxim/gateway-service#15) is merged into the Gateway's `dev` and ships with its `4.0.0`; until the compose runs
   that image the Lab 3 routes above keep working, since `4.0.0` still serves them on its REST port.
 - No CORS headers, no rate limiting, no `Idempotency-Key` support. `POST /evaluations` and
   `POST /admin/rulesets` are not idempotent - two identical requests create two things (a log
@@ -278,9 +278,10 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 ## 10. Recipes for testing against it
 
 The recipes call the service's own port `8083`, which the team compose does not publish: run the image alone
-with `-p 8083:8080`. On the team stack, through the Gateway, replace
-`$BASE/api/v1/` with `http://localhost:8080/api/v1/server-rules/` and send `X-Service-Token` on
-`/admin/*`, `/dev/*`, `rulesets/current` and evaluations.
+with `-p 8083:8080`. None of these routes is a Lab 4 Gateway route (§9), so they go to the instance
+itself, as service calls: no `X-Player-Id`, no token (the instance checks one only on `/logs`). Through the
+Gateway only `GET /health` and `GET rulesets/{version}` (player JWT) remain, at
+`http://localhost:8080/api/v1/server-rules/`.
 
 ```bash
 BASE=http://localhost:8083
@@ -295,13 +296,17 @@ curl -s -X POST "$BASE/api/v1/rulesets/3/evaluations" -H 'Content-Type: applicat
 # => { "ruleset_version": 3, "admitted": true, "violated_rules": [], "allowed_channels": ["general"] }
 
 # The limits: with HTTP_REQUEST_TIMEOUT=2, this sleeps past it and is answered 408 REQUEST_TIMEOUT
-curl -s "$BASE/api/v1/dev/slow?ms=4000" -H "X-Service-Token: $SERVICE_TOKEN" | jq
+curl -s "$BASE/api/v1/dev/slow?ms=4000" | jq
 ```
 
 The full Postman collection (`postman/server-rules-service.postman_collection.json` in the
-CPR) covers every endpoint including the admin surface and every error branch. `GET /logs` and
-`GET /metrics` (`4.0.0`) go to one instance directly through `server_rules_direct_url`, since the
-Gateway does not route them; Postman cannot send the broker's gRPC calls.
+CPR) covers every endpoint including the admin surface and every error branch. Only the Lab 4 Gateway's
+routes of this service go through it (`base_url`): `GET /health` and `GET rulesets/{version}` with a
+player JWT. Every other request (`/health/ready`, `/status`, `rulesets/current`, the evaluations,
+`/admin/*`, `/logs`, `/metrics`) goes to one instance directly through `server_rules_direct_url`, by its
+own path (`/api/v1/...` without the `server-rules` prefix), since the Lab 4 Gateway answers `404` to it
+(§9). A direct request is a service call: no `X-Player-Id` and no token, except `X-Service-Token` on
+`/logs`, the only route the instance checks it on. Postman cannot send the broker's gRPC calls.
 
 ---
 

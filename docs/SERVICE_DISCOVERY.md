@@ -81,6 +81,11 @@ Without `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` it starts as usual and only 
 | `LOGS_STATIC_TARGETS` | `gateway=http://gateway-service:8080` | Components the aggregated download fetches although they do not register, `name=base-url` pairs separated by commas; empty = none. The default is the Gateway of the team compose, which therefore leaves it unset |
 | `LOGS_FETCH_DEADLINE_SECONDS` | `60` | Longest one component's download may take in all |
 
+A startup check makes 3 failed status checks fit the circuit breaker window: when `2 x HEALTH_RECHECK_SECONDS + 4 x
+HEALTH_POLL_TIMEOUT_SECONDS` (12 s with the defaults) is above `HTTP_REQUEST_TIMEOUT` x 3.5, Service Discovery does not
+start (a configuration error naming both numbers), so with the defaults an `HTTP_REQUEST_TIMEOUT` below about 3.43 s
+keeps the container restarting.
+
 ## 5. Endpoints
 
 ### `PUT /api/v1/instances/{instance_id}` - register and heartbeat
@@ -107,7 +112,7 @@ source IP is stored. `topics` is optional (`4.0.0`). `200` with the record:
 - `instance_id`: `<service_name>-<hostname>`, letters, digits, `.`, `_`, `-`, at most 200 characters.
 - `service_name`: one of `player`, `session`, `applicant`, `credential`, `server-rules`,
   `university-record`, `moderation`, `discord-dms`, and from `4.0.0` `message-broker`; `port` 1-65535; `version`
-  non-empty.
+  1-64 characters; `host`, when sent, 1-255 characters.
 - `topics` (`4.0.0`): `{ "publishes": [...], "subscribes": [...] }`, both optional, at most 50 names each, every name
   matching `events(\.[a-z][a-z0-9_]*)+` (at most 200 characters); a name given twice is kept once. A heartbeat without
   `topics` keeps what the record has; one with `topics` replaces it. It documents the intent: the broker is the source
@@ -129,8 +134,10 @@ logged only when a record was removed. A deregistered instance raises no alert.
 
 `200 {"instances": [{instance_id, service_name, host, port, version, status, last_seen_at, topics, load,
 last_checked_at}]}`. Only `up` instances. `service` omitted: every service; empty or unknown: `[]`. `topic`
-(`4.0.0`): only the instances whose registration subscribes to it; empty or unknown: `[]`. This is what the Gateway
-reads every 5 s, and from Lab 4 what the broker routes on (`load`).
+(`4.0.0`): only the instances whose registration subscribes to it; empty or unknown: `[]`. From Lab 4 the broker
+reads it every 5 s (`SERVICE_DISCOVERY_REFRESH_SECONDS`) and routes on it (`load`); the Gateway stops reading it with
+#110 (merged into the Gateway's `dev`), while Gateway `3.1.0`, the one in the team compose until the cutover, still
+reads it every 5 s for its routing table.
 
 ### `GET /api/v1/topics` - topics named by the registrations (`4.0.0`)
 
@@ -172,6 +179,11 @@ scrape_configs:
       - targets: [service-discovery-service:8090]
         labels: {service: service-discovery}
 ```
+
+`service` and `instance_id` always name the scraped target. The broker's `broker_request_duration_seconds{service}`
+has a `service` label of its own, the called service; without `honor_labels` (left off, so a target cannot override
+its labels) Prometheus keeps the target's `service: message-broker` and renames the scraped one to `exported_service`.
+So the called service is queried as `broker_request_duration_seconds{exported_service="player"}`.
 
 ### `GET /metrics` (`4.0.0`)
 
@@ -260,7 +272,8 @@ registered host that is no address) or is not done after `LOGS_FETCH_DEADLINE_SE
 of the zip and named in `failed`; the download is still `200`. The body is bounded only by the deadline, because an
 instance sends its headers at once and then nothing while it scans its files for a narrow window. A registered `host` is only ever a host in the URL, so it cannot choose the port or the path. A `down`
 instance is not fetched. One download runs at a time; a second one meanwhile is `429` with `Retry-After: 5`. An unknown
-`service` is `400`. `503 LOGS_UNAVAILABLE` when the zip itself cannot be written.
+`service`, or an `instance` that is no instance id (letters, digits, `.`, `_`, `-`, at most 200 characters), is `400
+VALIDATION_ERROR`. `503 LOGS_UNAVAILABLE` when the zip itself cannot be written.
 
 ## 6. Health polling, alerts and notifications
 
@@ -326,7 +339,7 @@ One JSON object per line on stdout, with `time`, `level`, `service` (`service-di
 | `http.error` | `info`; `error` for a `500` (with `stack`) | every error answer: `status`, `code` |
 | `registry.registered` / `registry.deregistered` | `info` | a new record (`instance_version`; `after_expiry: true` for a return) / a `DELETE` |
 | `registry.expired` | `warn` | the TTL sweep removed a record (`last_seen_at`, `ttl_seconds`) |
-| `registry.marked_down` / `registry.recovered` | `warn` / `info` | an instance leaves / comes back to the list (`reason`, `marked_down_by`) |
+| `registry.marked_down` / `registry.recovered` | `warn` / `info` | an instance leaves (`reason`, `marked_down_by`) / comes back to the list (`was_marked_down_by`) |
 | `health.checked` | `debug` | every status check (`healthy`, `reason`, `load`, `duration_ms`) |
 | `health.unreachable` / `health.reachable` | `warn` / `info` | a failure streak starts / ends |
 | `health.critical` / `health.load_recovered` | `warn` / `info` | load at or above / back under the threshold |
@@ -338,6 +351,7 @@ One JSON object per line on stdout, with `time`, `level`, `service` (`service-di
 | `notify.skipped` / `notify.disabled` | `debug` / `warn` | cooldown or no open episode / no bot configured |
 | `logs.file_unavailable` | `warn` | `LOG_FILE` cannot be opened: stdout only (`path`, `error`) |
 | `logs.fetch_failed` / `logs.downloaded` | `warn` / `info` | one component left out of a download (`service_name`, `instance`, `reason`) / a download built (`files`, `failed`, `bytes`, `duration_ms`) |
+| `logs.download_failed` | `error` | the zip of `GET /api/v1/logs` could not be written: `503 LOGS_UNAVAILABLE` (`error`, the exception's type) |
 
 The same lines also go to `LOG_FILE`, and `GET /logs` reads them back (§5).
 

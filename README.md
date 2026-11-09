@@ -433,7 +433,7 @@ Service Discovery (Lab 3) keeps the registry of running instances: which instanc
 
 **Deregister - `DELETE /api/v1/instances/{instance_id}`** (service token). Sent on graceful shutdown (SIGTERM/SIGINT) before the server stops, with a 2 s timeout, logged `sd.deregistered`; shutdown never waits on it beyond that. Removes the record: `204 No Content`, also for an unknown id (idempotent), so an instance whose record already expired, or that outlived a Service Discovery restart, does not see its deregistration fail.
 
-**List - `GET /api/v1/instances?service=<name>`** (service token). Read by the Gateway every 5 s.
+**List - `GET /api/v1/instances?service=<name>`** (service token). Read by the Gateway every 5 s (Gateway `3.1.0`); from Lab 4 the broker reads it every 5 s instead (#110).
 
 ```json
 {

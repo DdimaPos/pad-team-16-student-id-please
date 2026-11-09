@@ -2014,6 +2014,7 @@ need to clone the (private) service repository to run one.
 | Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | -         | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS`; since `3.0.0` `SERVICE_DISCOVERY_URL` with `SERVICE_TOKEN` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below                                                 |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; peer URLs `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL` (each falls back to a stub when empty), `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` (event consumers); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below |
 | Service Discovery (Lab 3)         | [`d1vinexd/service-discovery-service`](https://hub.docker.com/r/d1vinexd/service-discovery-service)               | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (empty = alerts only logged), `NOTIFY_COOLDOWN_SECONDS` (`300`), `LOG_LEVEL` (`info`), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS`. No database - see [Service Discovery](#service-discovery) |
+| Message Broker (Lab 4)            | [`d1vinexd/message-broker-service`](https://hub.docker.com/r/d1vinexd/message-broker-service)                     | `8070`, `8071` | `SERVICE_TOKEN` (`X-Service-Token` on its `/api/v1` and `GET /logs`, the `x-service-token` metadata on every RPC); a named volume on `/data` (`MESSAGE_STORE_PATH`, `/data/broker.db`, SQLite; empty = in memory); `SERVICE_DISCOVERY_URL` (registration, instance list, mark-down, dead letter alerts; empty = off); optional `GRPC_MAX_WORKERS` (`64`), `GRPC_RESERVED_WORKERS` (`16`), `MESSAGE_ACK_TIMEOUT_SECONDS` (`5`), `MESSAGE_MAX_ATTEMPTS` (`3`), `MESSAGE_RETENTION_HOURS` (`24`), `LOG_FILE`, `LOG_LEVEL`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). One copy. Not in `docker-compose.yml` yet (#113) - see below and [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) |
 
 **One service token for the whole stack.** Every variable above that holds a service token
 (`SERVICE_TOKEN`) is set to the same value,
@@ -2040,6 +2041,15 @@ publishes host port `8086` and forwards each WebSocket connection to one of the 
 Discord DMs itself publishes no host port. `WS_PUBLIC_URL` stays `ws://localhost:8086`, so nothing
 changes for clients.
 
+**Message Broker (Lab 4).** `d1vinexd/message-broker-service:4.0.0` runs one copy: HTTP on `8070`
+(`/health`, `/status`, `GET /api/v1/topics`, `GET /api/v1/dead-letters`, `/logs`, `/metrics`) and gRPC
+on `8071`, the `message-broker-service:8071` that a service's `MESSAGE_BROKER_URL` names. `SERVICE_TOKEN`
+is its only required variable. Its subscriptions, queues and dead letters live in SQLite at
+`MESSAGE_STORE_PATH` (`/data/broker.db`), so a named volume on `/data` keeps them across a restart or a
+new container. It is not in `docker-compose.yml` yet: its block, the volume, Prometheus and Grafana come
+with #113. Until the Lab 4 contract (#105) merges, its topics, queues and gRPC API run ahead of this
+README; see [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) §15.
+
 **Published host ports.** Three ports are published: the Gateway
 (`8080`), Service Discovery (`8090`, the registry and its `/status`, for the demo and the developers) and the chat port `8086` (since Discord DMs `3.0.0` published by `dms-ws-proxy`, an nginx in front of
 the Discord DMs copies, for the direct WebSocket connection the Gateway negotiates; Discord DMs' REST listens on
@@ -2052,7 +2062,7 @@ the contract.
 (verifies), and lives in `.env` next to `SERVICE_TOKEN`.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
-free number: `8080` and `8086` (`dms-ws-proxy`) are taken above (`-` means not published), `8090` by Service Discovery (Lab 3), and the database containers
+free number: `8080` and `8086` (`dms-ws-proxy`) are taken above (`-` means not published), `8090` by Service Discovery (Lab 3), `8070` and `8071` by the Message Broker (Lab 4, published once #113 adds its block), and the database containers
 hold `5433`-`5438`, `6380`, `27018` and `27019`. Every service listens on `8080` inside its own container except Applicant and
 Credential, which listen on `8081` and `8082`, Moderation, which listens on `8085`, and Discord DMs, which
 listens on `8096` for REST and on `8086` for the WebSocket.

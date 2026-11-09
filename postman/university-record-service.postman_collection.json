@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "University Record Service",
-    "description": "University Record through the Gateway: base_url is {{gateway}}/api/v1/university-record. A player's request names the player in X-Player-Id, which the collection pre-request script turns into a signed Bearer JWT; a service's request carries X-Service-Token. Run the 'scenario' folder top to bottom.\n\nLAB 4 (4.0.0). applicant.initialized, session.started and session.ended arrive from the Message Broker (topics events.<event_type>), not on POST /events, which is removed; this service's own applicant.initialized is published to events.applicant.initialized. Postman cannot send the broker's gRPC calls: the events of the scenario have to be published to the broker with the full envelope first (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711), and the session's scopes are set with the session-service mock (POST /admin/sessions/{id}/scopes).\n\nDIRECT CALLS. GET /logs and GET /metrics are not Gateway routes: they go to one instance directly through {{university_record_direct_url}}. GET /logs needs {{service_token}}.",
+    "description": "University Record through the Gateway where the Gateway serves it, otherwise on the instance itself. base_url is {{gateway}}/api/v1/university-record: since the Gateway's 4.0.0 (#110) it serves only the player route GET /records/{category} and the public GET /health of this service, and answers 404 on every other one. A player's request names the player in X-Player-Id, which the collection pre-request script turns into a signed Bearer JWT on a Gateway request. Run the 'scenario' folder top to bottom.\n\nLAB 4 (4.0.0). applicant.initialized, session.started and session.ended arrive from the Message Broker (topics events.<event_type>), not on POST /events, which is removed; this service's own applicant.initialized is published to events.applicant.initialized. Postman cannot send the broker's gRPC calls: the events of the scenario have to be published to the broker with the full envelope first (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711), and the session's scopes are set with the session-service mock (POST /admin/sessions/{id}/scopes).\n\nDIRECT CALLS. Every request whose route is not a Gateway route goes to one instance directly through {{university_record_direct_url}}, with the service's own path (/api/v1/..., /health/ready, /status, /logs, /metrics; no /university-record prefix): /health/ready, /status, /logs, /metrics, the scenario's step 4 (POST /admin/sessions/{id}/scopes) and step 9 (GET /applicants/{id}/records), POST /events, POST /applicants/next, every /admin/* request and the player-id-on-a-service-only-route edge case. The service validates no token but on GET /logs, which needs {{service_token}}: a direct service call carries no X-Service-Token and no X-Player-Id, and a direct request that plays a player sends X-Player-Id as it is (the pre-request script signs no JWT for a direct request). Direct and Gateway requests must reach the same database: in the team stack forward an instance's port (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711). The Gateway 3.1.0 still in the compose serves the Lab 3 routes too, until the compose runs its 4.0.0.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -12,7 +12,7 @@
     {
       "key": "university_record_direct_url",
       "value": "http://localhost:8084",
-      "description": "The instance itself, not the Gateway: its port is not published in the team stack, so run the service's own compose (APP_HOST_PORT, 8084 by default)."
+      "description": "The instance itself, not the Gateway: its port is not published in the team stack, so forward one instance there (docker run --rm -d --name university-record-direct --network student-id-net -p 8084:8080 alpine/socat TCP-LISTEN:8080,fork,reuseaddr TCP:university-record-service:8080), which shares the stack's database with the Gateway requests, or run the service's own compose (APP_HOST_PORT, 8084 by default) for the direct requests alone."
     },
     {
       "key": "service_token",
@@ -54,9 +54,14 @@
           "// its own from the token's sub. This script signs the token itself: every request that names a",
           "// player in X-Player-Id gets Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id",
           "// header is dropped.",
+          "// A direct request ({{university_record_direct_url}}) reaches the instance itself, which reads",
+          "// X-Player-Id as it is and no JWT: it keeps the header and gets no token.",
           "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
+          "const url = pm.request.url.toString();",
+          "const directUrl = pm.variables.get('university_record_direct_url');",
+          "const direct = url.includes('{{university_record_direct_url}}') || (!!directUrl && url.startsWith(directUrl));",
           "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
-          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
+          "if (!direct && playerHeader && !pm.request.headers.has('Authorization')) {",
           "  const CryptoJS = require('crypto-js');",
           "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
           "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
@@ -74,6 +79,7 @@
   "item": [
     {
       "name": "health",
+      "description": "GET /health goes through the Gateway, a public route of every prefix. The rest goes to the instance directly ({{university_record_direct_url}}): /health/ready and /status are probes of Service Discovery and the orchestrator, /logs is Service Discovery's (the only request that carries {{service_token}}), /metrics is Prometheus'; the Gateway's 4.0.0 answers 404 on all of them.",
       "item": [
         {
           "name": "GET /health (liveness)",
@@ -83,22 +89,16 @@
           }
         },
         {
-          "name": "GET /health/ready (readiness)",
+          "name": "GET /health/ready (readiness - called directly, no credential)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/health/ready",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{university_record_direct_url}}/health/ready"
           }
         },
         {
-          "name": "GET /status (Service Discovery, outside the limiter)",
-          "description": "Shaped { service, instance_id, version, status, in_flight, max_concurrent_tasks }. Service Discovery calls it on the instance itself; through the Gateway it answers once the Gateway forwards /status, otherwise point base_url at the service port.",
-          "request": { "method": "GET", "url": "{{base_url}}/status" },
+          "name": "GET /status (Service Discovery, outside the limiter - called directly, no credential)",
+          "description": "Shaped { service, instance_id, version, status, in_flight, max_concurrent_tasks }. Service Discovery calls it on the instance itself; it is not a Gateway route.",
+          "request": { "method": "GET", "url": "{{university_record_direct_url}}/status" },
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
             "pm.test('status answers 200 with the agreed shape', function () {",
             "  pm.response.to.have.status(200);",
@@ -303,10 +303,10 @@
     },
     {
       "name": "scenario - honest student, identity theft, scopes, session end",
-      "description": "From 4.0.0 the events of this scenario arrive from the Message Broker, which Postman cannot call, so they are not requests here any more. Publish them to the broker with the full envelope (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711) at the missing step numbers: 3 applicant.initialized of the honest FAF student (applicant {{honest_applicant_id}}, actual student_id FAF23117, name Ana Rusu) before step 5; 8 applicant.initialized of an outsider claiming FAF23117 (applicant {{thief_applicant_id}}) before step 9; 10 session.ended of {{session_id}} before step 11. Without them steps 5, 9 and 11 fail their tests. Step 4 sets the scopes with the session-service mock in place of session.started.",
+      "description": "From 4.0.0 the events of this scenario arrive from the Message Broker, which Postman cannot call, so they are not requests here any more. Publish them to the broker with the full envelope (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711) at the missing step numbers: 3 applicant.initialized of the honest FAF student (applicant {{honest_applicant_id}}, actual student_id FAF23117, name Ana Rusu) before step 5; 8 applicant.initialized of an outsider claiming FAF23117 (applicant {{thief_applicant_id}}) before step 9; 10 session.ended of {{session_id}} before step 11. Without them steps 5, 9 and 11 fail their tests. Step 4 sets the scopes with the session-service mock in place of session.started. Steps 4 and 9 are service calls on routes the Gateway's 4.0.0 does not serve (404), so they go to the instance directly ({{university_record_direct_url}}, no X-Service-Token, no X-Player-Id); steps 5, 6, 7 and 11 are the player route, through the Gateway with the JWT. Both must reach the same database (forward an instance of the team stack, docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
       "item": [
         {
-          "name": "4. scopes - A gets enrollment+courses, B gets email-groups+fcim-logs (session-service mock, in place of session.started)",
+          "name": "4. scopes - A gets enrollment+courses, B gets email-groups+fcim-logs (session-service mock, in place of session.started - called directly)",
           "event": [
             {
               "listen": "test",
@@ -320,12 +320,8 @@
           ],
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/admin/sessions/{{session_id}}/scopes",
+            "url": "{{university_record_direct_url}}/api/v1/admin/sessions/{{session_id}}/scopes",
             "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -456,7 +452,7 @@
           }
         },
         {
-          "name": "9. Moderation view of the thief - enrollment shows the VICTIM's name",
+          "name": "9. Moderation view of the thief - enrollment shows the VICTIM's name (called directly, as a service)",
           "event": [
             {
               "listen": "test",
@@ -473,13 +469,7 @@
           ],
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/applicants/{{thief_applicant_id}}/records",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{university_record_direct_url}}/api/v1/applicants/{{thief_applicant_id}}/records"
           }
         },
         {
@@ -528,10 +518,10 @@
     },
     {
       "name": "events - they come from the broker (Lab 4)",
-      "description": "From 4.0.0 applicant.initialized, session.started and session.ended are delivered by the Message Broker (topics events.<event_type>) and settled with Ack OK / PERMANENT / RETRY; POST /events is removed. The old cases of this folder are now Ack outcomes: a repeated event_id is OK (duplicate); an unknown event_type, an unknown version or a profile nested under a 'profile' key is PERMANENT (the old 422 INVALID_EVENT), and the broker dead-letters it (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a76 and \u00a711).",
+      "description": "From 4.0.0 applicant.initialized, session.started and session.ended are delivered by the Message Broker (topics events.<event_type>) and settled with Ack OK / PERMANENT / RETRY; POST /events is removed. The old cases of this folder are now Ack outcomes: a repeated event_id is OK (duplicate); an unknown event_type, an unknown version or a profile nested under a 'profile' key is PERMANENT (the old 422 INVALID_EVENT), and the broker dead-letters it (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a76 and \u00a711). The request below goes to the instance directly, so the 404 is the service's own (the route is removed), not the Gateway's 4.0.0, which answers 404 on it as well.",
       "item": [
         {
-          "name": "POST /events is gone (404)",
+          "name": "POST /events is gone (404 - called directly)",
           "event": [
             {
               "listen": "test",
@@ -545,12 +535,8 @@
           ],
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/events",
+            "url": "{{university_record_direct_url}}/api/v1/events",
             "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -604,17 +590,14 @@
     },
     {
       "name": "applicants/next (this service as generator)",
+      "description": "A service call, sent through the broker in the stack; not a route of the Gateway's 4.0.0 (404). Called on the instance directly, without X-Service-Token or X-Player-Id.",
       "item": [
         {
           "name": "generate a new applicant",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/applicants/next",
+            "url": "{{university_record_direct_url}}/api/v1/applicants/next",
             "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -630,12 +613,8 @@
           "name": "bad difficulty (400 VALIDATION_ERROR)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/applicants/next",
+            "url": "{{university_record_direct_url}}/api/v1/applicants/next",
             "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -651,6 +630,7 @@
     },
     {
       "name": "auth edge cases",
+      "description": "The three requests on GET /records/{category} go through the Gateway: without X-Player-Id the collection signs no JWT and the Gateway answers 401 UNAUTHENTICATED; with 'not-a-uuid' the JWT's sub is not a player id and the Gateway answers 401 UNAUTHENTICATED; an unknown category passes the Gateway (the route matches any category) and the service answers 422. The service-only-route case goes to the instance directly with X-Player-Id as it is, since the Gateway's 4.0.0 answers 404 on /admin/* before any credential: the service answers 403 SERVICE_TOKEN_REQUIRED to a player on a service-only route.",
       "item": [
         {
           "name": "no X-Player-Id on the player route (401 UNAUTHENTICATED)",
@@ -735,10 +715,10 @@
           ]
         },
         {
-          "name": "player id on a service-only route (403 SERVICE_TOKEN_REQUIRED)",
+          "name": "player id on a service-only route (403 SERVICE_TOKEN_REQUIRED - called directly)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/courses",
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses",
             "header": [
               {
                 "key": "X-Player-Id",
@@ -794,31 +774,22 @@
       ]
     },
     {
-      "name": "admin (beyond contract, service-token only)",
+      "name": "admin (beyond contract, service calls only)",
+      "description": "/admin/* is for services only and never a route of the Gateway's 4.0.0 (404), so every request here goes to the instance directly ({{university_record_direct_url}}). The service validates no token on them: a service call is a request without X-Player-Id, so none carries X-Service-Token or X-Player-Id.",
       "item": [
         {
           "name": "list catalog courses",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/courses?limit=10",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses?limit=10"
           }
         },
         {
           "name": "create a course",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/admin/courses",
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses",
             "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -834,64 +805,36 @@
           "name": "delete a course with no registrations",
           "request": {
             "method": "DELETE",
-            "url": "{{base_url}}/admin/courses/TEST101",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses/TEST101"
           }
         },
         {
           "name": "delete PAD - has registrations (409 COURSE_HAS_REGISTRATIONS)",
           "request": {
             "method": "DELETE",
-            "url": "{{base_url}}/admin/courses/PAD",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses/PAD"
           }
         },
         {
           "name": "list applicants (reveals actual - service-only)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/applicants?limit=10",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{university_record_direct_url}}/api/v1/admin/applicants?limit=10"
           }
         },
         {
           "name": "list sessions",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/sessions?limit=10",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{university_record_direct_url}}/api/v1/admin/sessions?limit=10"
           }
         },
         {
           "name": "set scopes manually (session-service mock)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/admin/sessions/{{session_id}}/scopes",
+            "url": "{{university_record_direct_url}}/api/v1/admin/sessions/{{session_id}}/scopes",
             "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json"

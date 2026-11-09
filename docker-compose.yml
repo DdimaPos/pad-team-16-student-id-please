@@ -26,7 +26,7 @@ services:
   # Health polling of every instance's /status every 10 s, alerts in the log and, with TELEGRAM_BOT_TOKEN
   # and TELEGRAM_CHAT_ID set in .env, in the team's Telegram group.
   service-discovery-service:
-    image: d1vinexd/service-discovery-service:3.0.0
+    image: d1vinexd/service-discovery-service:4.0.0
     restart: unless-stopped
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
@@ -34,6 +34,12 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       NOTIFY_COOLDOWN_SECONDS: ${NOTIFY_COOLDOWN_SECONDS:-300}
+      # Lab 4 (4.0.0): GET /logs reads this file. It stays inside the container: never a shared volume.
+      LOG_FILE: /var/log/service-discovery/service-discovery.jsonl
+      # GET /api/v1/logs (the whole system's logs in one zip) also fetches the Gateway, which does not register,
+      # through LOGS_STATIC_TARGETS. Its default, gateway=http://gateway-service:8080, is the Gateway of this file,
+      # so it is not set here; a Gateway without GET /logs is named in the zip's manifest under "failed".
+      # Prometheus (#113) reads its targets from GET /api/v1/instances/prometheus and scrapes GET /metrics.
     ports:
       - "8090:8090"
     healthcheck:

@@ -1,9 +1,14 @@
 # Service Discovery Service - Integration Reference
 
-> **Status:** `3.0.0` released (tag `v3.0.0`, the merge commit of vvtttvv/service-discovery-service#8). Image
-> `d1vinexd/service-discovery-service:3.0.0` and `:latest` (`linux/amd64`, `linux/arm64`). It holds the registry
-> (#69), the mark-down and the circuit breakers (#74), health polling and its alerts (#72), and the Telegram
-> notifications (#73). Added to the team `docker-compose.yml` with #77.
+> **Status:** `4.0.0` (Lab 4, #111; release PR vvtttvv/service-discovery-service#16). Image
+> `d1vinexd/service-discovery-service:4.0.0` and `:latest` (`linux/amd64`, `linux/arm64`), run by the team
+> `docker-compose.yml`. `3.0.0` (tag `v3.0.0`) holds the registry (#69), the mark-down and the circuit breakers (#74),
+> health polling and its alerts (#72), and the Telegram notifications (#73). `4.0.0` adds what the Message Broker and
+> Prometheus need (#111): `topics` in the registration, `load` on the list, `GET /api/v1/instances?topic=`,
+> `GET /api/v1/topics`, `GET /api/v1/instances/prometheus`, `GET /metrics`, `POST /api/v1/alerts`, the broker as the
+> mark-down's caller; the log file, `GET /logs` and the aggregated `GET /api/v1/logs` (#112); it no longer serves
+> `/openapi.json`, and its dependencies are updated. The Lab 4 additions are ahead of the README contract until #105
+> merges: see §10.
 
 ## 1. What this service is
 
@@ -12,7 +17,11 @@ or `down`. Every instance of the eight services registers here and sends a heart
 reads the `up` instances from here and marks an instance down when its circuit breaker trips. Service
 Discovery polls every instance's `GET /status`, raises alerts on a critical load or an instance that stops
 answering, and posts them to the team's Telegram group. It owns no business data and takes part in no
-event. Contract: CPR README "Service Discovery", "Status endpoint", "Logging".
+event. Contract: CPR README "Service Discovery", "Status endpoint", "Logging", "Logs download".
+
+From Lab 4 (`4.0.0`) the Message Broker registers too, with the topics each instance publishes and subscribes to;
+the broker reads the instances and their load from here, is the mark-down's caller and posts its dead letters as
+alerts, and Prometheus finds its targets here (#113).
 
 ## 2. Integration card
 
@@ -22,11 +31,15 @@ event. Contract: CPR README "Service Discovery", "Status endpoint", "Logging".
 | **Container port** | `8090` (host `8090`) |
 | **Address in the stack** | `http://service-discovery-service:8090` = `SERVICE_DISCOVERY_URL` |
 | **Health** | `GET /health`, `GET /status` (no credential) |
-| **Credential** | `X-Service-Token` on every `/api/v1/instances` route, checked by Service Discovery itself |
-| **Storage** | none, in memory, one copy |
-| **Calls out** | each instance's `GET /status` (directly, no credential); the Telegram Bot API when configured |
+| **Metrics** | `GET /metrics`, Prometheus text format, no credential (`4.0.0`) |
+| **Logs** | `GET /logs` (its own lines) and `GET /api/v1/logs` (the whole system's, one zip), `X-Service-Token` (`4.0.0`, #112) |
+| **Credential** | `X-Service-Token` on every `/api/v1/*` route and on `GET /logs`, checked by Service Discovery itself |
+| **Storage** | none, in memory, one copy; its log file inside the container |
+| **Calls out** | each instance's `GET /status` (directly, no credential); each component's `GET /logs` for a download; the Telegram Bot API when configured |
+| **Callers** | every instance and the broker (registration); the Gateway (Lab 3 list and mark-down); from Lab 4 the broker (list, mark-down, alerts) and Prometheus (targets, `/metrics`) |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`, same as every service |
-| **Docker image** | `d1vinexd/service-discovery-service:<lab version>` and `:latest`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `d1vinexd/service-discovery-service:4.0.0` and `:latest`, published by GitHub Actions on merge to `main` |
+| **API schema** | none served: `/docs`, `/redoc` and `/openapi.json` answer `404` (`4.0.0`); this file and the Postman collection document the API |
 
 Instances call it **directly**, not through the Gateway: the Gateway itself needs the registry to route.
 
@@ -34,9 +47,9 @@ Instances call it **directly**, not through the Gateway: the Gateway itself need
 
 ```bash
 docker run --rm --network student-id-net --name service-discovery-service -p 8090:8090 \
-  -e SERVICE_TOKEN=... d1vinexd/service-discovery-service:3.0.0
+  -e SERVICE_TOKEN=... d1vinexd/service-discovery-service:4.0.0
 curl http://localhost:8090/health
-# {"status":"ok","service":"service-discovery","version":"3.0.0"}
+# {"status":"ok","service":"service-discovery","version":"4.0.0"}
 ```
 
 Without `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` it starts as usual and only logs its alerts
@@ -65,7 +78,7 @@ Without `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` it starts as usual and only 
 | `INSTANCE_ID` | `service-discovery-<hostname>` | Its own id, in its logs and `/status` |
 | `LOG_FILE` | `/var/log/service-discovery/service-discovery.jsonl` | The log file next to stdout, read by `GET /logs` (#112); empty = stdout only |
 | `LOG_FILE_MAX_MB` / `LOG_FILE_KEEP` | `50` / `5` | The file rotates at this size; rotated files kept |
-| `LOGS_STATIC_TARGETS` | `gateway=http://gateway-service:8080` | Components the aggregated download fetches although they do not register, `name=base-url` pairs separated by commas |
+| `LOGS_STATIC_TARGETS` | `gateway=http://gateway-service:8080` | Components the aggregated download fetches although they do not register, `name=base-url` pairs separated by commas; empty = none. The default is the Gateway of the team compose, which therefore leaves it unset |
 | `LOGS_FETCH_DEADLINE_SECONDS` | `60` | Longest one component's download may take in all |
 
 ## 5. Endpoints
@@ -73,23 +86,36 @@ Without `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` it starts as usual and only 
 ### `PUT /api/v1/instances/{instance_id}` - register and heartbeat
 
 ```json
-{ "service_name": "player", "port": 8080, "version": "3.0.0" }
+{
+  "service_name": "session", "port": 8080, "version": "4.0.0",
+  "topics": { "publishes": ["events.session.started"], "subscribes": ["events.decision.recorded"] }
+}
 ```
 
 `host` is optional (from `INSTANCE_HOST`, for an instance outside Docker); without it the request's
-source IP is stored. `200` with the record:
+source IP is stored. `topics` is optional (`4.0.0`). `200` with the record:
 
 ```json
 {
-  "instance_id": "player-3f4e2a9b1c7d", "service_name": "player", "host": "172.18.0.12", "port": 8080,
-  "version": "3.0.0", "status": "up", "last_seen_at": "2026-10-27T12:00:00.123Z", "ttl_seconds": 15
+  "instance_id": "session-3f4e2a9b1c7d", "service_name": "session", "host": "172.18.0.12", "port": 8080,
+  "version": "4.0.0", "status": "up", "last_seen_at": "2026-11-09T12:00:00.123Z",
+  "topics": { "publishes": ["events.session.started"], "subscribes": ["events.decision.recorded"] },
+  "load": null, "last_checked_at": null, "ttl_seconds": 15
 }
 ```
 
 - `instance_id`: `<service_name>-<hostname>`, letters, digits, `.`, `_`, `-`, at most 200 characters.
 - `service_name`: one of `player`, `session`, `applicant`, `credential`, `server-rules`,
-  `university-record`, `moderation`, `discord-dms`; `port` 1-65535; `version` non-empty.
-- `400 VALIDATION_ERROR` for a bad body or an unknown `service_name`, `details.errors[]` names the fields.
+  `university-record`, `moderation`, `discord-dms`, and from `4.0.0` `message-broker`; `port` 1-65535; `version`
+  non-empty.
+- `topics` (`4.0.0`): `{ "publishes": [...], "subscribes": [...] }`, both optional, at most 50 names each, every name
+  matching `events(\.[a-z][a-z0-9_]*)+` (at most 200 characters); a name given twice is kept once. A heartbeat without
+  `topics` keeps what the record has; one with `topics` replaces it. It documents the intent: the broker is the source
+  of truth for subscriptions and queues.
+- `load` and `last_checked_at` (`4.0.0`) come from the last status check (§6): `load` is
+  `in_flight / max_concurrent_tasks` rounded to 3 digits, `null` before the first check and after a failed one.
+- `400 VALIDATION_ERROR` for a bad body, an unknown `service_name` or a bad topic name, `details.errors[]` names the
+  fields.
 - Sending it again updates `service_name`, `host`, `port`, `version` and `last_seen_at` of the same
   record. It never changes `status`.
 
@@ -99,15 +125,85 @@ source IP is stored. `200` with the record:
 record, an instance shutting down does not see its deregistration fail. `registry.deregistered` is
 logged only when a record was removed. A deregistered instance raises no alert.
 
-### `GET /api/v1/instances?service=<name>` - list
+### `GET /api/v1/instances?service=<name>&topic=<name>` - list
 
-`200 {"instances": [{instance_id, service_name, host, port, version, status, last_seen_at}]}`. Only `up`
-instances. `service` omitted: every service; empty or unknown: `[]`. This is what the Gateway reads every 5 s.
+`200 {"instances": [{instance_id, service_name, host, port, version, status, last_seen_at, topics, load,
+last_checked_at}]}`. Only `up` instances. `service` omitted: every service; empty or unknown: `[]`. `topic`
+(`4.0.0`): only the instances whose registration subscribes to it; empty or unknown: `[]`. This is what the Gateway
+reads every 5 s, and from Lab 4 what the broker routes on (`load`).
+
+### `GET /api/v1/topics` - topics named by the registrations (`4.0.0`)
+
+```json
+{"topics": [{"name": "events.session.started", "publishers": ["session"], "subscribers": ["discord-dms", "university-record"]}]}
+```
+
+Every topic named in a registration, sorted by name, with the services (not instances) on each side, sorted. `down`
+instances count too, because an outage does not change who means to listen. The broker's own topics listing is the
+source of truth for queues and subscriptions; this one shows who says they publish and listen.
+
+### `GET /api/v1/instances/prometheus` - Prometheus targets (`4.0.0`)
+
+Prometheus `http_sd_configs`: every `up` instance of every service and the broker, one entry each, `200` with
+`application/json` (`[]` for an empty registry; an IPv6 host is written `[fd00::12]:8080`):
+
+```json
+[{"targets": ["172.18.0.12:8080"], "labels": {"service": "player", "instance_id": "player-3f4e2a9b1c7d"}}]
+```
+
+It needs `X-Service-Token`, as every `/api/v1/instances` route does, because the list names the instances' addresses
+and the port is published on the host. The labels `service` and `instance_id` are enough to group the series by service
+and tell the instances apart. The Gateway and Service Discovery do not register, so they are static targets with a
+`service` label of their own. The scrape configuration agreed for #113 (where `prometheus.yml` and the compose block
+live), with the token read from a file so it stays out of `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: instances
+    http_sd_configs:
+      - url: http://service-discovery-service:8090/api/v1/instances/prometheus
+        http_headers:
+          X-Service-Token:
+            files: [/etc/prometheus/service_token]
+  - job_name: static
+    static_configs:
+      - targets: [gateway-service:8080]
+        labels: {service: gateway}
+      - targets: [service-discovery-service:8090]
+        labels: {service: service-discovery}
+```
+
+### `GET /metrics` (`4.0.0`)
+
+The Prometheus text format, no credential, outside the concurrent task limit (like `/status`):
+`http_requests_total{method,route,status}`, `http_request_duration_seconds{method,route}` (histogram),
+`tasks_in_flight` and `breaker_state{target}` (0 closed, 1 open, 2 half-open; `target` is a polled `instance_id` or `telegram`). `route` is
+the route's template, an unknown path is `unmatched` and an unknown method `OTHER`, so a caller cannot grow the number
+of series. A breaker's series goes away with its record.
+
+### `POST /api/v1/alerts` - an alert from the broker (`4.0.0`)
+
+How the broker tells the developers about a dead letter, through the same alert hook (one bot, one cooldown), so the
+broker needs no Telegram code:
+
+```json
+{ "kind": "dead_letter", "service_name": "player", "instance_id": "message-broker-1a2b3c4d5e6f",
+  "detail": "<event_id> on events.session.ended: <reason>" }
+```
+
+- `kind`: only `dead_letter`. `service_name`: the service whose queue held the message, one of the known names above.
+  `instance_id`: the broker's own (the cooldown is per kind and instance). `detail`: 1-500 characters; it goes to the
+  log and to Telegram, so it names ids and the reason, never a message body.
+- `202 {"status": "accepted"}`, logged as `alert.received` (`warn`). The group reads at most one dead letter alert per
+  `NOTIFY_COOLDOWN_SECONDS`; the log has every one.
+- The address in the alert comes from the raiser's record; right after a Service Discovery restart there may be none,
+  and the alert goes out with the source IP and port `0`.
+- `400 VALIDATION_ERROR` for any other `kind`, an unknown `service_name` or a bad `instance_id` or `detail`.
 
 ### `PUT /api/v1/instances/{instance_id}/status` - mark down
 
-Called by the Gateway when the circuit breaker of that instance trips (3 failures within its own task timeout
-x 3.5):
+Called when the circuit breaker of that instance trips: in Lab 3 by the Gateway (3 failures within its own task timeout
+x 3.5), from Lab 4 by the broker, the endpoint's only caller then. The endpoint itself is unchanged in `4.0.0`:
 
 ```json
 { "status": "down", "reason": "breaker_open: 3 failures in 35s" }
@@ -115,8 +211,9 @@ x 3.5):
 
 - `200` with the record (`"status": "down"`) and `ttl_seconds`. The record is kept and heartbeats keep it
   alive, but the list leaves it out until health polling sees 3 healthy checks in a row (20-30 s); heartbeats
-  alone never bring it back. Logged as `registry.marked_down` (`marked_down_by: gateway`, `reason`) and raised
-  as a `marked_down` alert.
+  alone never bring it back. Logged as `registry.marked_down` (`reason`; `marked_down_by: broker` from `4.0.0`,
+  `gateway` in `3.0.0`) and raised as a `marked_down` alert ("marked down by the broker"). `4.0.0` names the broker
+  whoever calls, so while the Gateway of the Lab 3 stack is still the caller its mark-downs read "broker" (§10).
 - Marking a `down` instance again is a no-op `200` (no second log line or alert; the first reason stays).
 - `400 VALIDATION_ERROR` for anything but `"status": "down"` or a missing or empty `reason` (at most 500
   characters); `404 NOT_FOUND` for an unknown id (it expired or deregistered; the Gateway logs it and moves on).
@@ -124,7 +221,7 @@ x 3.5):
 ### `GET /status`
 
 ```json
-{"service": "service-discovery", "instance_id": "service-discovery-1a2b3c4d5e6f", "version": "3.0.0",
+{"service": "service-discovery", "instance_id": "service-discovery-1a2b3c4d5e6f", "version": "4.0.0",
  "status": "up", "in_flight": 0, "max_concurrent_tasks": 64}
 ```
 
@@ -175,6 +272,11 @@ instance is not fetched. One download runs at a time; a second one meanwhile is 
   `down` instance back `up` (`registry.recovered`, a `recovered` alert), whoever marked it down.
 - **Critical load.** `in_flight / max_concurrent_tasks` at or above 0.8 raises `critical_load`; back under it,
   `load_recovered`. The instance stays listed.
+- **Load on the record** (`4.0.0`). Every check stores its `load` (rounded to 3 digits; `null` after a failed one)
+  and `last_checked_at` on the record, which the list returns and the broker routes on.
+- **Alert kinds.** `critical_load`, `unreachable`, `expired`, `marked_down`, `dead_letter` (`4.0.0`, from the broker
+  through `POST /api/v1/alerts`, its own Telegram title) and the recoveries `recovered` (ends `unreachable`,
+  `marked_down` and `expired`) and `load_recovered` (ends `critical_load`).
 - **Expiry.** The TTL sweep raises `expired` for every record it removes (a crashed instance, 10-15 s after the
   crash). When that id registers again (a restarted container keeps its hostname), the new record is `up` at
   once and a `recovered` alert says it is back.
@@ -189,7 +291,8 @@ instance is not fetched. One download runs at a time; a second one meanwhile is 
 
 What a demo shows, with `docker compose logs -f service-discovery-service`: a service held at its
 `MAX_CONCURRENT_TASKS` through its `/dev/slow` endpoint gives `critical_load` within 10 s; `docker kill` gives
-`unreachable`, then `marked_down` (by health polling or by the Gateway, whichever comes first) and `expired`,
+`unreachable`, then `marked_down` (by health polling or by the Gateway, whichever comes first; `4.0.0` names the
+Gateway's mark-down "broker", §10) and `expired`,
 and `docker start` gives `recovered`; requests slower than the Gateway's timeout make the Gateway trip and mark
 the instance down. `docker stop` deregisters and raises nothing.
 
@@ -197,10 +300,10 @@ the instance down. `docker stop` deregisters and raises nothing.
 
 | Situation | Answer |
 | --- | --- |
-| No `X-Service-Token` on `/api/v1/instances*` | `403 SERVICE_TOKEN_REQUIRED` |
+| No `X-Service-Token` on `/api/v1/*` or `GET /logs` | `403 SERVICE_TOKEN_REQUIRED` |
 | Wrong `X-Service-Token` | `401 INVALID_SERVICE_TOKEN` |
-| Malformed body or path, mark-down other than `down` | `400 VALIDATION_ERROR` |
-| Mark-down of an unknown id, unknown route | `404 NOT_FOUND` |
+| Malformed body or path, mark-down other than `down`, a bad topic name, an alert `kind` other than `dead_letter` | `400 VALIDATION_ERROR` |
+| Mark-down of an unknown id, unknown route (`/docs`, `/redoc`, `/openapi.json` included, `4.0.0`) | `404 NOT_FOUND` |
 | Concurrent task limit reached | `429 TOO_MANY_REQUESTS` + `Retry-After` |
 | A logs download while another one runs | `429 TOO_MANY_REQUESTS` + `Retry-After: 5` |
 | `GET /logs` without a log file, `GET /api/v1/logs` when the zip cannot be written | `503 LOGS_UNAVAILABLE` |
@@ -230,6 +333,7 @@ One JSON object per line on stdout, with `time`, `level`, `service` (`service-di
 | `health.error` | `error` | polling of one instance raised; the others go on |
 | `breaker.opened` / `breaker.closed` / `breaker.rejected` | `warn` / `info` / `debug` | a circuit breaker changes state or refuses a call |
 | `alert.emitted` / `alert.subscriber_failed` | `debug` / `warn` | an alert went through the hook / a subscriber raised |
+| `alert.received` | `warn` | `POST /api/v1/alerts` (`4.0.0`): `kind`, `service_name`, `instance`, the detail in `msg` |
 | `notify.sent` / `notify.failed` / `notify.dropped` | `info` / `warn` / `warn` | a Telegram message was sent / not sent / not queued |
 | `notify.skipped` / `notify.disabled` | `debug` / `warn` | cooldown or no open episode / no bot configured |
 | `logs.file_unavailable` | `warn` | `LOG_FILE` cannot be opened: stdout only (`path`, `error`) |
@@ -252,3 +356,23 @@ bot token are never logged.
   updates `host`.
 - **A hung instance** that answers its own requests with `408` after its 5 s task timeout is not a failure for
   the Gateway's breaker (a `4xx`); health polling catches it when its `/status` stops answering within 2 s.
+- **`topics` after a restart** (`4.0.0`): the record is rebuilt from the instance's next `PUT`, so its `topics` are
+  back only when that `PUT` carries them. An instance that sends `topics` with every heartbeat loses nothing.
+
+## 10. Lab 4 contract notes (#105 not merged yet)
+
+`4.0.0` follows the decisions posted on CPR #105 and #113; until the Lab 4 contract merges, the service README at
+`4.0.0` and this file are the reference for them. Where `4.0.0` is ahead of the README contract ("Service Discovery",
+"Logging"):
+
+1. **Additive.** `topics` in the registration and on the record, `load` and `last_checked_at` on the record,
+   `?topic=` on the list, `GET /api/v1/topics`, `GET /api/v1/instances/prometheus`, `GET /metrics`,
+   `POST /api/v1/alerts` with the `dead_letter` alert kind and the `alert.received` log event, and `message-broker` as
+   a known `service_name` (the README still says any name but the eight services is `400`). A Lab 3 caller that
+   ignores unknown fields is not affected.
+2. **Mark-down.** The README says the Gateway marks instances down and names `marked_down_by` only for health
+   polling (`3.0.0` logged a Gateway mark-down as `gateway`). `4.0.0` records every mark-down as `marked_down_by: broker` and its alert as "marked down by the
+   broker", because from Lab 4 the broker is the endpoint's only caller. The endpoint is unchanged, so the Gateway of
+   the Lab 3 stack (`3.1.0` in the team compose) still marks down successfully, but its mark-downs read "broker" in
+   the log and in Telegram until the cutover of #113.
+3. **No API schema.** `/openapi.json` answers `404` from `4.0.0`; the contract never named it.

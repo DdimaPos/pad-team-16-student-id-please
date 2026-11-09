@@ -128,7 +128,7 @@ The gray dashed lines are direct HTTP calls with **Service Discovery**:
 - the broker reads the instance list and the loads, marks an instance down after its breaker trips, and posts one alert per dead letter;
 - Service Discovery sends its alerts to Telegram.
 
-The red dotted lines are the monitoring of #113. Prometheus finds the instances through Service Discovery and scrapes the `/metrics` of every component, the Gateway's as a static target, and Grafana shows them. The host ports `9090` and `3000` are still a proposal of #113.
+The red dotted lines are the monitoring of #113. Prometheus finds the instances through Service Discovery and scrapes the `/metrics` of every component, the Gateway's as a static target, and Grafana shows them. The host ports are final: `9090` for Prometheus and `3000` for Grafana (#113).
 
 The green dashed line is the one client path that bypasses the Gateway: the chat WebSocket. The client first gets a one-time ticket and a WebSocket URL through the Gateway (see [Gateway](#gateway)), then connects to Discord DMs directly on port `8086`, so the Gateway is not kept busy carrying the chat.
 
@@ -475,6 +475,16 @@ Sets the instance `down` and keeps the record (`DELETE` stays for graceful shutd
 - Service Discovery keeps its own circuit breaker per polled instance, counting failed checks in a row, so it opens on the check that sets the instance `down`. While it is open the instance is probed by one trial call per 17.5 s; a successful trial is the first of the 3 healthy checks it needs to come back. Unlike [Circuit breaker](#circuit-breaker), any failed status check counts here, a `4xx` included: a `404` or `429` from `/status` means the address does not serve a healthy instance.
 
 **Alerts and developer notifications.** Every alert carries its kind (critical load, unreachable, expired, marked down, and the recoveries recovered and load recovered), the service, `instance_id`, `host:port`, the load and the UTC time. A recovery names the problems it ends: `recovered` ends unreachable, marked down and expired, `load_recovered` ends critical load. Service Discovery logs every alert and posts it to the team's Telegram group through the Bot API, `POST https://api.telegram.org/bot<token>/sendMessage` with `{ "chat_id", "text", "parse_mode": "HTML" }` (a title with an icon per kind and hashtags of the kind and the service; the plain-text message when Telegram refuses the markup), configured with `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` (empty in `.env.example`) and the optional `NOTIFY_COOLDOWN_SECONDS` (`300`) and `TELEGRAM_TIMEOUT_SECONDS` (`5`). The same problem for the same instance is sent at most once per cooldown; a recovery is sent only when it closes a problem the group was told about, and it never shortens the cooldown. A `429` blocks the whole chat until its `retry_after`: a block ending within 30 s is waited for, a longer one drops the alerts meanwhile. With either variable empty, or without internet, alerts are only logged and Service Discovery starts normally. A failed send is logged as `notify.failed` without the URL, since the URL holds the bot token.
+
+> **Known gap (Lab 4, #111).** Service Discovery `4.0.0` is ahead of this section until the Lab 4
+> contract (#105) merges. It adds `topics` to the registration and the record, `load` and
+> `last_checked_at` to the record, `?topic=` on the list, `GET /api/v1/topics`,
+> `GET /api/v1/instances/prometheus`, `GET /metrics`, `POST /api/v1/alerts` (the `dead_letter` alert
+> kind) and `message-broker` as a known `service_name`, all additive. One thing reads differently: it
+> records every mark-down as `marked_down_by: broker` ("marked down by the broker" in the alert),
+> because from Lab 4 the broker is the endpoint's only caller, so the mark-downs of the Lab 3 Gateway
+> above read "broker" until the cutover of #113; the endpoint itself is unchanged. Details:
+> [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md) §10.
 
 #### API conventions
 
@@ -2013,7 +2023,7 @@ need to clone the (private) service repository to run one.
 | Gateway Service                   | [`stewdh/gateway-service`](https://hub.docker.com/r/stewdh/gateway-service)                                       | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`; since `3.0.0` `SERVICE_DISCOVERY_URL` (instances read from Service Discovery, round-robin; set from `GATEWAY_SERVICE_DISCOVERY_URL`, Service Discovery by default; empty = static mode with the peer base URLs), `GET /status`; since `3.1.0` a circuit breaker per instance that marks it down in Service Discovery - see [`docs/GATEWAY.md`](docs/GATEWAY.md) |
 | Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | -         | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS`; since `3.0.0` `SERVICE_DISCOVERY_URL` with `SERVICE_TOKEN` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below                                                 |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; peer URLs `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL` (each falls back to a stub when empty), `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` (event consumers); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below |
-| Service Discovery (Lab 3)         | [`d1vinexd/service-discovery-service`](https://hub.docker.com/r/d1vinexd/service-discovery-service)               | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (empty = alerts only logged), `NOTIFY_COOLDOWN_SECONDS` (`300`), `LOG_LEVEL` (`info`), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS`. No database - see [Service Discovery](#service-discovery) |
+| Service Discovery (Lab 3)         | [`d1vinexd/service-discovery-service`](https://hub.docker.com/r/d1vinexd/service-discovery-service)               | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (empty = alerts only logged), `NOTIFY_COOLDOWN_SECONDS` (`300`), `LOG_LEVEL` (`info`), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS`; since `4.0.0` optional `LOG_FILE`, `LOG_FILE_MAX_MB` (`50`), `LOG_FILE_KEEP` (`5`), `LOGS_STATIC_TARGETS` (`gateway=http://gateway-service:8080`), `LOGS_FETCH_DEADLINE_SECONDS` (`60`), `GET /metrics`. No database - see [Service Discovery](#service-discovery) and below |
 | Message Broker (Lab 4)            | [`d1vinexd/message-broker-service`](https://hub.docker.com/r/d1vinexd/message-broker-service)                     | `8070`, `8071` | `SERVICE_TOKEN` (`X-Service-Token` on its `/api/v1` and `GET /logs`, the `x-service-token` metadata on every RPC); a named volume on `/data` (`MESSAGE_STORE_PATH`, `/data/broker.db`, SQLite; empty = in memory); `SERVICE_DISCOVERY_URL` (registration, instance list, mark-down, dead letter alerts; empty = off); optional `GRPC_MAX_WORKERS` (`64`), `GRPC_RESERVED_WORKERS` (`16`), `MESSAGE_ACK_TIMEOUT_SECONDS` (`5`), `MESSAGE_MAX_ATTEMPTS` (`3`), `MESSAGE_RETENTION_HOURS` (`24`), `LOG_FILE`, `LOG_LEVEL`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). One copy. Not in `docker-compose.yml` yet (#113) - see below and [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) |
 
 **One service token for the whole stack.** Every variable above that holds a service token
@@ -2094,6 +2104,16 @@ pending until it is set.
 One thing differs from this contract and is worth knowing before integrating. It uses **PostgreSQL
 only** - the Databases table above also assigns it Redis for live shift state, which is not
 implemented.
+
+`d1vinexd/service-discovery-service` is published for `linux/amd64` and `linux/arm64`; `SERVICE_TOKEN` is its
+only required variable. From `4.0.0` (`d1vinexd/service-discovery-service:4.0.0`) it also accepts the Message Broker
+(`message-broker`) and `topics` in a registration, returns `load` and `last_checked_at` on every instance, and serves
+`GET /api/v1/instances?topic=`, `GET /api/v1/topics`, `GET /api/v1/instances/prometheus` (the Prometheus
+`http_sd_configs` targets, with the service token), `GET /metrics` and `POST /api/v1/alerts` (the broker's dead
+letters); it writes its log lines to `LOG_FILE` (default `/var/log/service-discovery/service-discovery.jsonl`, read
+back by `GET /logs`) and builds the whole system's logs download, `GET /api/v1/logs` (see [Logs download](#logs-download)).
+`/openapi.json` is no longer served. Details and the Prometheus scrape configuration:
+[`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md).
 
 The root [`docker-compose.yml`](docker-compose.yml) in this repository runs all of the
 above (plus their own database containers) on the shared `student-id-net` network, referencing

@@ -1539,6 +1539,15 @@ An applicant who breaks an admission rule gets `"admitted": false`, the broken r
 
 None. Server Rules neither produces nor receives events.
 
+> **Known gap (Lab 4, #118).** Server Rules Service `4.0.0` takes its requests from the Message
+> Broker's queue `requests.server-rules` (one gRPC `Subscribe` stream per instance, no topic) and
+> answers with `Reply`. The endpoints above, [Gateway](#gateway) and [Authentication](#authentication)
+> still describe the Lab 3 calls through the Gateway with `X-Service-Token` until the Lab 4 contract
+> (#105) merges. Nothing breaks meanwhile: the REST port still serves every route, so the Lab 3
+> Gateway keeps forwarding to it, and until the broker is deployed (#113) the instances retry their
+> subscription with backoff. Details: [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVICE.md)
+> §7 item 5 and §11.
+
 
 #### University Record Service
 
@@ -2016,7 +2025,7 @@ need to clone the (private) service repository to run one.
 | --------------------------------- | ----------------------------------------------------------------------------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Applicant Service                 | [`stewdh/applicant-service`](https://hub.docker.com/r/stewdh/applicant-service)                                   | -         | `DATABASE_URL` (PostgreSQL 16), `REFERENCE_YEAR` (must match Credential/University Record/Moderation Service); event delivery: `SERVICE_TOKEN`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL` (the Gateway plus the consumer's prefix); since `3.0.0`: `SERVICE_DISCOVERY_URL` (registration, with `SERVICE_TOKEN`), 2 replicas, `GET /status` - see [`docs/APPLICANT_SERVICE.md`](docs/APPLICANT_SERVICE.md) §9.6, §15, §16 |
 | Credential Service                | [`stewdh/credential-service`](https://hub.docker.com/r/stewdh/credential-service)                                 | -         | `MONGODB_URI` (MongoDB 7), `REFERENCE_YEAR` (must match Applicant/University Record/Moderation Service); event delivery: `SERVICE_TOKEN`, `APPLICANT_URL`, `UNIVERSITY_RECORD_URL` (the Gateway plus the consumer's prefix); since `3.0.0`: `SERVICE_DISCOVERY_URL` (registration, with `SERVICE_TOKEN`), 2 replicas, `GET /status` - see [`docs/CREDENTIAL_SERVICE.md`](docs/CREDENTIAL_SERVICE.md) §8.6, §14, §15 |
-| Server Rules Service              | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service)                         | -         | 2 instances (`deploy.replicas: 2`), `ConnectionStrings__RulesDb` (PostgreSQL 17), `SERVICE_DISCOVERY_URL`, `SERVICE_TOKEN` (for Service Discovery only); validates no token                                                                                                                                                                                |
+| Server Rules Service              | [`d1vinexd/server-rules-service`](https://hub.docker.com/r/d1vinexd/server-rules-service)                         | -         | 2 instances (`deploy.replicas: 2`), `ConnectionStrings__RulesDb` (PostgreSQL 17), `SERVICE_DISCOVERY_URL`, `SERVICE_TOKEN`; since `4.0.0` `MESSAGE_BROKER_URL` (gRPC `host:port`, with `SERVICE_TOKEN` as metadata), optional `LOG_FILE`, `LOG_FILE_MAX_MB`, `LOG_FILE_KEEP`, `GET /logs` (the only route that checks `X-Service-Token`), `GET /metrics` - see below                                                                                                                                                                                |
 | University Record Service         | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service)               | -         | 2 instances (`deploy.replicas: 2`), `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential/Moderation Service), `SERVICE_TOKEN` (sent with its events and to Service Discovery), `APPLICANT_URL`, `CREDENTIAL_URL`, `SERVICE_DISCOVERY_URL`                                                                                              |
 | Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | -         | `DATABASE_URL` (PostgreSQL 17), `SERVICE_TOKEN` (sent on every outbound call); peer URLs `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL` = the Gateway plus the peer's prefix (empty = the built-in mock of that peer), `REFERENCE_YEAR`; since `3.0.0` `SERVICE_DISCOVERY_URL` (registration of every instance, with `SERVICE_TOKEN`; empty = off), 2 instances (`deploy.replicas: 2`), `GET /status`; optional `INSTANCE_ID`, `INSTANCE_HOST`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`), `UPSTREAM_TIMEOUT` (`4s`) - see [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md) |
 | Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `REDIS_URL` (required with several copies: fan-out between them), `WS_PUBLIC_URL` (the address clients reach port `8086` at, the base of a ticket's `ws_url`); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration of the REST port of every copy, with `SERVICE_TOKEN`; empty = off), 2 copies (`deploy.replicas: 2`) behind `dms-ws-proxy` (nginx, `deployments/dms-ws-proxy/nginx.conf`), which publishes `8086` and forwards each WebSocket connection to one copy; `GET /status` (REST, with `ws_connections`); optional `INSTANCE_ID`, `INSTANCE_HOST`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). Validates no credential on its requests. The REST API listens on `8096` (`APP_PORT`) inside the network, where the Gateway reaches it (`DISCORD_DMS_URL=http://discord-dms-service:8096`); `8086` (`WS_PORT`) serves the WebSocket only - see [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md) |
@@ -2114,6 +2123,14 @@ letters); it writes its log lines to `LOG_FILE` (default `/var/log/service-disco
 back by `GET /logs`) and builds the whole system's logs download, `GET /api/v1/logs` (see [Logs download](#logs-download)).
 `/openapi.json` is no longer served. Details and the Prometheus scrape configuration:
 [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md).
+
+`d1vinexd/server-rules-service` is published for `linux/amd64` and `linux/arm64`.
+`ConnectionStrings__RulesDb` is its only required variable outside the team stack; migrations and the
+seed of five rulesets run at startup. From `4.0.0` (`d1vinexd/server-rules-service:4.0.0`) it
+subscribes to the Message Broker at `MESSAGE_BROKER_URL` (`message-broker-service:8071` in the compose;
+empty turns it off) and answers the requests of `requests.server-rules` there, while its REST port still
+serves every route; it writes its log lines to `LOG_FILE` (default
+`/var/log/server-rules/server-rules.jsonl`, read back by `GET /logs`) and serves `GET /metrics`.
 
 The root [`docker-compose.yml`](docker-compose.yml) in this repository runs all of the
 above (plus their own database containers) on the shared `student-id-net` network, referencing

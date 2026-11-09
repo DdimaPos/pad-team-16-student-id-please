@@ -239,12 +239,18 @@ body, a token or a raw path. Prometheus finds the broker through Service Discove
 | --- | --- |
 | `http_requests_total{method,route,status}`, `http_request_duration_seconds{method,route}` | The HTTP side; `route` is the template (`unmatched` for an unknown path) |
 | `tasks_in_flight` | The `in_flight` of `/status` |
-| `breaker_state{target}` | 0 closed, 1 open, 2 half-open, one series per instance's breaker; `target` is the instance id |
+| `breaker_state{target}` | 0 closed, 1 open, 2 half-open, one series per instance's breaker; `target` is the instance id. A breaker exists from the instance's first failure and is dropped when its stream ends, so an instance that has not failed has no series rather than a `0` |
 | `broker_queue_depth{queue}` | Messages of a queue not acked yet: every topic queue and every `requests.<service>` queue |
 | `broker_messages_total{queue,outcome}` | `published`, `delivered`, `acked`, `retried`, `redelivered`, `rejected` (`PERMANENT`), `dead_lettered` (out of attempts) |
 | `broker_redeliveries_total` | `retried` and `redelivered` together |
 | `broker_dead_letters_total` | Every message handed to the dead letter channel |
 | `broker_request_duration_seconds{service}` | From a `Request` to its answer, for the requests an instance answered |
+
+**The `service` label once scraped.** Service Discovery's `GET /api/v1/instances/prometheus` gives every target the
+label `service`, `message-broker` for the broker. Prometheus scrapes without `honor_labels`, so a target cannot
+override the labels it attaches, and renames the broker's own `service` label to `exported_service`. In Prometheus the
+called service of `broker_request_duration_seconds` is therefore `exported_service`:
+`broker_request_duration_seconds_count{exported_service="player"}`.
 
 ## 9. gRPC API on `8071`
 
@@ -267,7 +273,7 @@ Every call carries the metadata `x-service-token: <SERVICE_TOKEN>`: missing is `
 | --- | --- | --- |
 | `INVALID_ARGUMENT` | A malformed name or message; a malformed request (unknown method, a path without `/`, a bad service name, no `correlation_id`, larger than 4 MiB minus 64 KiB) | Retrying cannot succeed |
 | `RESOURCE_EXHAUSTED` | A full queue or too many topics; every gRPC worker busy; a `Subscribe` above the workers for long calls | Retry later: the outbox keeps the event pending, an instance subscribes again with backoff |
-| `UNAVAILABLE` | The store cannot write (`Publish`, `Subscribe`, `Ack`) | Retry later |
+| `UNAVAILABLE` | The store cannot write (`Publish`, `Subscribe`, `Ack`) or be read (`ListDeadLetters`) | Retry later |
 
 A stream ends when the client goes away (gRPC keepalive notices a dead one within about 4 s), when the instance
 reconnects, or when the broker stops; the instance then reconnects with backoff.
@@ -304,8 +310,9 @@ on one instance's stream as `Delivery.request`, and waits on the caller's worker
   loss of the stream while it held the request, or a `5xx` except `500 DEPENDENCY_UNAVAILABLE`. The 3rd failure within
   `REQUEST_BREAKER_WINDOW_SECONDS` (35) opens it; after the same time one trial request goes through. Every trip marks
   the instance down in Service Discovery once: `PUT /api/v1/instances/{instance_id}/status`
-  `{"status": "down", "reason": "breaker_open: 3 failures in 35s"}` (`marked_down_by: broker`). An instance Service
-  Discovery lists again after the trip has its breaker closed at once.
+  `{"status": "down", "reason": "breaker_open: 3 failures in 35s"}` (`marked_down_by: broker`); the trip after a
+  failed trial sends `"reason": "breaker_open: trial request failed"`. An instance Service Discovery lists again after
+  the trip has its breaker closed at once.
 - **Workers.** Streams and waiting requests together never hold more than `GRPC_MAX_WORKERS - GRPC_RESERVED_WORKERS`
   (48 of 64), so `Reply`, `Ack` and `Publish` always find a thread and a burst cannot get healthy instances blamed.
 
@@ -320,9 +327,10 @@ When an instance's breaker trips or its stream ends, what it holds goes elsewher
 | A `GET` | sent again under a new `message_id`, `attempt + 1`, within the caller's remaining timeout | `503 SERVICE_UNAVAILABLE` |
 | Any other method | `503`: it may have run already | `503` |
 
-A late `Ack` from the failed instance still settles its event; a late `Reply` is dropped. Nothing is rerouted after a
-reconnect of the same instance (the old stream's events go out after the ack timeout) or while the broker stops. Every
-message taken back is logged `broker.rerouted`.
+A late `Ack` from the failed instance still settles its event; a late `Reply` is dropped. No event is rerouted after a
+reconnect of the same instance (the old stream's events go out after the ack timeout); a request the old stream held is
+rerouted when it is a `GET` and answered `503` otherwise, as in [§10](#10-requestreply-routing-and-breakers). Nothing
+is rerouted while the broker stops. Every message taken back is logged `broker.rerouted`.
 
 ## 12. Threading model (#109)
 
@@ -403,5 +411,6 @@ python -m scripts.smoke topics
 python -m scripts.smoke request --service player --method GET --path /api/v1/players   # answered by player-1
 ```
 
-To fill the dead letter listing, run the subscriber alone with `--outcome permanent` and publish again: the event is
-rejected and appears in `GET /api/v1/dead-letters`.
+`publish` sends the whole envelope of README "Event catalog", `occurred_at` included, with `--producer` (default
+`smoke`) and `--payload` (default `{}`). To fill the dead letter listing, run the subscriber alone with
+`--outcome permanent` and publish again: the event is rejected and appears in `GET /api/v1/dead-letters`.

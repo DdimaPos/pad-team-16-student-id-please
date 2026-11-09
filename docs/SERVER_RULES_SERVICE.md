@@ -19,6 +19,7 @@
 8. [Edge cases](#8-edge-cases)
 9. [Gateway requirements](#9-gateway-requirements)
 10. [Recipes for testing against it](#10-recipes-for-testing-against-it)
+11. [Message Broker, logs and metrics (Lab 4)](#11-message-broker-logs-and-metrics-lab-4)
 
 ---
 
@@ -34,10 +35,12 @@ service, publishes no event, consumes no event, and stores nothing about applica
 - **Owns:** the versioned ruleset - admission rules and channel rules, keyed by `version` and
   `difficulty`.
 - **Does not own:** the admission decision itself (Moderation Service), any applicant data.
-- **Calls:** nothing. Zero outbound dependencies.
+- **Calls:** no other service. Its only outbound connections are the registration with Service
+  Discovery and, from `4.0.0`, one subscription stream to the Message Broker.
 - **Is called by:** Server Moderation Session Service (`GET /rulesets/current` - on the
   critical path of every shift start), Moderation Service (`POST /rulesets/{v}/evaluations`),
-  the game client (`GET /rulesets/{version}`).
+  the game client (`GET /rulesets/{version}`). From `4.0.0` these requests arrive from the broker's
+  queue `requests.server-rules` - see [§11](#11-message-broker-logs-and-metrics-lab-4).
 
 ---
 
@@ -50,10 +53,14 @@ service, publishes no event, consumes no event, and stores nothing about applica
 | **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/server-rules/...` |
 | **Health** | `GET /health` (liveness), `GET /health/ready` (readiness) |
 | **Database** | PostgreSQL, `rules_db` (own container, host port `5434`) |
-| **Events** | none - this service neither produces nor receives events |
-| **Authentication** | Checked by the Gateway, not here: `GET /rulesets/current`, `POST /rulesets/{v}/evaluations` and `/admin/*` only with the service token, `GET /rulesets/{version}` with a player JWT. The service validates no token and reads no header; only `/admin/*` and `/dev/*` refuse a request that carries `X-Player-Id` (`403 SERVICE_TOKEN_REQUIRED`), because a service call arrives without it |
-| **Docker image** | `d1vinexd/server-rules-service:3.0.1` (also tagged `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
-| **Architecture** | Clean Architecture, five projects: `Domain` (pure - the condition DSL, evaluator, channel resolver), `Repositories` (interfaces), `Services` (use cases), `Infrastructure` (EF Core + Npgsql), `Api` (minimal APIs) |
+| **Events** | none - this service neither produces nor receives events, and from `4.0.0` subscribes to no broker topic |
+| **Message Broker** | One gRPC `Subscribe` stream to `MESSAGE_BROKER_URL` as service `server-rules`, no topic; the broker delivers the requests of the queue `requests.server-rules` on it (`4.0.0`) - see [§11](#11-message-broker-logs-and-metrics-lab-4) |
+| **Logs** | One JSON object per line on stdout, and the same lines in the rotating `LOG_FILE`, read back by `GET /logs` (`4.0.0`) |
+| **Metrics** | `GET /metrics`, Prometheus text format, no credential (`4.0.0`) |
+| **Circuit breaker** | None: the service calls no other service, through the broker or otherwise |
+| **Authentication** | Lab 3: checked by the Gateway, not here: `GET /rulesets/current`, `POST /rulesets/{v}/evaluations` and `/admin/*` only with the service token, `GET /rulesets/{version}` with a player JWT. From `4.0.0` the broker checks the token as gRPC metadata of every call and never passes it on. The service validates no token on its API; only `/admin/*` and `/dev/*` refuse a request that carries `X-Player-Id` (`403 SERVICE_TOKEN_REQUIRED`), because a service call arrives without it. The one exception is `GET /logs`, which checks `X-Service-Token` itself (`4.0.0`) |
+| **Docker image** | `d1vinexd/server-rules-service:4.0.0` (also tagged `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
+| **Architecture** | Clean Architecture, five projects: `Domain` (pure - the condition DSL, evaluator, channel resolver), `Repositories` (interfaces), `Services` (use cases), `Infrastructure` (EF Core + Npgsql), `Api` (minimal APIs; from `4.0.0` also `Messaging`, the broker consumer and the loopback dispatch, and the log file and metrics in `Observability`) |
 
 ---
 
@@ -66,11 +73,15 @@ docker network create student-id-net   # once, if it does not already exist
 docker run -d --name server-rules-service --network student-id-net \
   -p 8083:8080 \
   -e ConnectionStrings__RulesDb="Host=<postgres-host>;Port=5432;Database=rules_db;Username=rules_user;Password=<password>" \
-  d1vinexd/server-rules-service:3.0.1
+  d1vinexd/server-rules-service:4.0.0
 ```
 
+Without `MESSAGE_BROKER_URL` the instance takes no request from the broker and logs one
+`broker.disabled` warning; its REST port answers as before.
+
 Or use the team compose in the CPR root (`docker-compose.yml`), which wires this service and
-its own `rules-postgres` container together on `student-id-net`.
+its own `rules-postgres` container together on `student-id-net`, with `MESSAGE_BROKER_URL`
+`message-broker-service:8071`.
 
 ### From source (development)
 
@@ -95,17 +106,20 @@ Moderation Session Service keeps a shift in the lobby otherwise.
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
 | `ConnectionStrings__RulesDb` | - | **yes** | Npgsql connection string |
-| `HTTP_REQUEST_TIMEOUT` | `5` | no | Task timeout in seconds (`5` or `5s`): a longer request is cancelled and answered `408 REQUEST_TIMEOUT`. `/health*` is exempt |
-| `MAX_CONCURRENT_TASKS` | `100` | no | Concurrent task limit: one more request is refused at once with `429 TOO_MANY_REQUESTS` and `Retry-After: 1`, no work done. `/health*` is exempt. The team compose sets `64` |
+| `HTTP_REQUEST_TIMEOUT` | `5` | no | Task timeout in seconds (`5` or `5s`): a longer request is cancelled and answered `408 REQUEST_TIMEOUT`. `/health*` and `/status` are exempt, and from `4.0.0` `/logs` and `/metrics` |
+| `MAX_CONCURRENT_TASKS` | `100` | no | Concurrent task limit: one more request is refused at once with `429 TOO_MANY_REQUESTS` and `Retry-After: 1`, no work done. From `4.0.0` requests from the broker count too, and it is also the `max_concurrent_tasks` of the broker subscription. `/health*` and `/status` are exempt, and from `4.0.0` `/logs` and `/metrics`. The team compose sets `64` |
 | `Dev__EnableTestEndpoints` | `false` | no | Mounts `GET /api/v1/dev/slow?ms=` (service-only, sleeps `ms` milliseconds, at most a minute) to demonstrate the two limits above. The team compose enables it |
-
-`Auth__ServiceToken` of `0.1.0` is gone: the service reads no credential (§2).
 | `Rules__StrictFactShape` | `false` | no | See [§7](#7-divergences-from-the-cpr-contract) - whether an inconsistent fact (e.g. `major` on a `staff` applicant) is a `422` or silently nulled out |
-| `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn` or `error`. One JSON object per line on stdout |
+| `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn` or `error`. One JSON object per line on stdout and, from `4.0.0`, in `LOG_FILE` |
 | `SERVICE_DISCOVERY_URL` | empty | no | Base URL of Service Discovery. Empty turns registration off |
 | `INSTANCE_ID` | `server-rules-<hostname>` | no | Name of this instance in logs, `/status` and Service Discovery |
 | `INSTANCE_HOST` | unset | no | Address the Gateway should use, sent as `host` only when set (a run outside Docker) |
-| `SERVICE_TOKEN` | - | only with `SERVICE_DISCOVERY_URL` | Sent as `X-Service-Token` to Service Discovery. Never checked on incoming requests |
+| `SERVICE_TOKEN` | - | with `SERVICE_DISCOVERY_URL` or `MESSAGE_BROKER_URL` | The stack's one token: sent as `X-Service-Token` to Service Discovery and, from `4.0.0`, as the gRPC metadata `x-service-token` to the broker, and the token `GET /logs` checks. No other route checks it |
+| `MESSAGE_BROKER_URL` | empty | yes in the team stack | `4.0.0`. The broker's gRPC target without a scheme (team stack: `message-broker-service:8071`). Empty turns the request consumer off, with one `broker.disabled` warning: no request reaches the instance through the broker |
+| `LOG_FILE` | `/var/log/server-rules/server-rules.jsonl` | no | `4.0.0`. The log file `GET /logs` reads; the image creates the directory for its non-root user. Empty: stdout only, and `GET /logs` answers `503 LOGS_UNAVAILABLE`. A path that cannot be written logs one `logs.file_unavailable` warning and leaves stdout only |
+| `LOG_FILE_MAX_MB` / `LOG_FILE_KEEP` | `50` / `5` | no | `4.0.0`. The file rotates at this size (`server-rules_001.jsonl`, `_002`, ...); this many rotated files are kept next to the current one |
+
+`Auth__ServiceToken` of `0.1.0` is gone: the service reads no credential on its API (§2).
 
 ---
 
@@ -122,6 +136,11 @@ Moderation Session Service keeps a shift in the lobby otherwise.
 `POST .../evaluations` request/response shapes are exactly as specified in the CPR README.
 **Error precedence:** `404 RULESET_NOT_FOUND` is checked **before** facts validation - the
 ruleset is the resource being addressed, so a bad version wins over bad facts.
+
+From `4.0.0` these requests (and `/admin/*`, `/dev/*`) arrive from the broker's queue
+`requests.server-rules` and are dispatched to the same routes over loopback, so the paths, payloads and
+answers are unchanged - see [§11](#11-message-broker-logs-and-metrics-lab-4). The REST port still
+serves every route.
 
 ### 5.2 Extension endpoints (beyond contract - Lab 1 CRUD requirement)
 
@@ -148,6 +167,25 @@ Standard envelope `{ "error": { "code", "message", "details" } }`. Codes used:
 `/dev/*` called with `X-Player-Id`), `REQUEST_TIMEOUT` (408), `TOO_MANY_REQUESTS` (429, with
 `Retry-After`), `INTERNAL_ERROR` (500). The Gateway answers `401` / `403` for a missing or wrong credential
 before the service is called.
+
+From `4.0.0`, `GET /logs` adds `SERVICE_TOKEN_REQUIRED` (403, no `X-Service-Token`),
+`INVALID_SERVICE_TOKEN` (401, a wrong one), `VALIDATION_ERROR` (400, a bad window) and
+`LOGS_UNAVAILABLE` (503, no log file). A request from the broker that cannot be dispatched locally is
+answered by the instance itself in the same envelope: `400 VALIDATION_ERROR` for a method or path it
+cannot serve, `408 REQUEST_TIMEOUT` when the local call outlives its timeout, `500 INTERNAL_ERROR`
+when it fails.
+
+### 5.4 Operational endpoints (outside `/api/v1`)
+
+| Method | Path | Gateway | Notes |
+| --- | --- | --- | --- |
+| `GET` | `/health` | public | Liveness |
+| `GET` | `/health/ready` | service | Readiness: `503` until the migrations and the seed are done |
+| `GET` | `/status` | called directly | Service Discovery polls it on the instance - see [Lab 3](#lab-3-status-logs-discovery-several-instances) |
+| `GET` | `/logs` | not routed | `4.0.0`. This instance's log lines, `X-Service-Token` checked by the service - see [§11](#11-message-broker-logs-and-metrics-lab-4) |
+| `GET` | `/metrics` | not routed | `4.0.0`. Prometheus scrapes it directly, no credential - see [§11](#11-message-broker-logs-and-metrics-lab-4) |
+
+None counts against the concurrent task limit or the task timeout.
 
 ---
 
@@ -194,6 +232,7 @@ to grants/denies and can never "fail".
 | 2 | `version` is **one global monotonic sequence** shared across all five difficulties (not five independent sequences) - required because `GET /rulesets/{version}` takes no `difficulty` parameter, so a per-difficulty sequence would make that endpoint ambiguous | Anyone assuming version numbers are per-difficulty |
 | 3 | `Rules__StrictFactShape` defaults to **lenient**: an inconsistent fact (e.g. `major` present for `staff`) is nulled out with a warning, not rejected with `422`. Moderation Service builds these facts; a strict default would deadlock the whole decision flow at integration time over a field this service can safely ignore | Moderation Service |
 | 4 | The seeded rulesets for difficulties 1, 2, 4, 5 are **this service's own design** - only difficulty 3 is specified by the contract (verbatim). See the service's own README for the full seed content | Anyone expecting a specific ruleset at another difficulty |
+| 5 | **Ahead of the README contract (Lab 4).** The README still describes every request reaching this service through the Gateway with `X-Service-Token`; `4.0.0` takes them from the broker's queue `requests.server-rules` (§11), since the Lab 4 contract (#105) is not merged. The broker's names (the queue, `Subscribe` / `Reply` / `Ack`, `x-service-token` as metadata), the header policy (`X-Service-Token`, `Authorization`, hop-by-hop headers, `Host` and `Content-Length` dropped; a request id of 1 to 200 visible ASCII characters), the local `408` / `500` replies, the empty `topics` of the Service Discovery registration and the log events `broker.subscribed`, `broker.disabled`, `request.reply_failed` and `broker.ack_failed` follow the broker's and Service Discovery's code. `Protos/broker.proto` is a copy of the broker's `app/brokerpb/broker.proto`, unchanged, until the CPR has `shared/broker.proto` (#105). Nothing breaks meanwhile: the REST port still serves every route, so the Lab 3 Gateway keeps forwarding to it | Session and Moderation (they reach it through the broker from #115, #120), the Gateway (#110) |
 
 ---
 
@@ -201,7 +240,7 @@ to grants/denies and can never "fail".
 
 - **`GET /status`** answers without a credential and outside the concurrent task limit (like `/health`): `{ service, instance_id, version, status, in_flight, max_concurrent_tasks }`, `service` is `server-rules`. `status` is `up`, or `degraded` with `503` when the database does not answer. `/health` and `/health/ready` are unchanged.
 - **Logs** are JSON lines with `time`, `level`, `service`, `instance_id`, `version`, `event`, `msg` and the fields of the event (`http.request` carries `request_id`, `method`, `path`, `status`, `duration_ms`). An error is logged once, with its stack for an unexpected one. `startup` / `shutdown` carry the version, instance id, address and settings (a token only as `service_token_set`).
-- **Service Discovery**: with `SERVICE_DISCOVERY_URL` set the instance registers as `server-rules` (`PUT /api/v1/instances/<instance_id>` with its port, `host` only when `INSTANCE_HOST` is set), repeats it every 5 s as the heartbeat, and removes itself with `DELETE` on a clean stop; calls time out after 2 s and a failure is logged and retried at the next beat, it never stops the service.
+- **Service Discovery**: with `SERVICE_DISCOVERY_URL` set the instance registers as `server-rules` (`PUT /api/v1/instances/<instance_id>` with its port, `host` only when `INSTANCE_HOST` is set; from `4.0.0` also `"topics": {"publishes": [], "subscribes": []}`, #111: it publishes and consumes no event), repeats it every 5 s as the heartbeat, and removes itself with `DELETE` on a clean stop; calls time out after 2 s and a failure is logged and retried at the next beat, it never stops the service.
 - **Database**: the Npgsql pool is capped at 20 connections per instance unless the connection string sets `Maximum Pool Size`. Migrations and seeding run under a Postgres advisory lock, so instances starting together on an empty database run them once.
 - **Several instances**: the rules of a ruleset never change, so each instance caches a resolved version for good. `is_active` and `notes` can change on another instance, so the admin endpoints (and the guards before a change) read the database, never the cache. A public read of a version can show an `is_active` or `notes` another instance has just changed until that instance restarts. This service makes no outbound calls, so it has no circuit breaker.
 
@@ -225,6 +264,11 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 - `/admin/*` and `/dev/*`: service token only, never on a player JWT alone. The service refuses a
   request that carries `X-Player-Id`, as a second line.
 - This service checks no credential on its contract endpoints, so the Gateway is the only guard.
+- **Lab 4 (#110):** the Gateway keeps only `GET /rulesets/{version}` (player JWT) and `/health` of this
+  service, and hands the player route to the broker's `requests.server-rules`; Session and Moderation
+  reach this service through the broker, not the Gateway. `GET /logs` and `GET /metrics` are not
+  Gateway routes. #110 (IacovlevMaxim/gateway-service#15) is merged into the Gateway's `dev` and ships with its `4.0.0`; until the compose runs
+  that image the Lab 3 routes above keep working, since `4.0.0` still serves them on its REST port.
 - No CORS headers, no rate limiting, no `Idempotency-Key` support. `POST /evaluations` and
   `POST /admin/rulesets` are not idempotent - two identical requests create two things (a log
   line; a new ruleset version, respectively). Safe to retry: every `GET`, `PATCH`, `DELETE`.
@@ -234,9 +278,10 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 ## 10. Recipes for testing against it
 
 The recipes call the service's own port `8083`, which the team compose does not publish: run the image alone
-with `-p 8083:8080`. On the team stack, through the Gateway, replace
-`$BASE/api/v1/` with `http://localhost:8080/api/v1/server-rules/` and send `X-Service-Token` on
-`/admin/*`, `/dev/*`, `rulesets/current` and evaluations.
+with `-p 8083:8080`. None of these routes is a Lab 4 Gateway route (§9), so they go to the instance
+itself, as service calls: no `X-Player-Id`, no token (the instance checks one only on `/logs`). Through the
+Gateway only `GET /health` and `GET rulesets/{version}` (player JWT) remain, at
+`http://localhost:8080/api/v1/server-rules/`.
 
 ```bash
 BASE=http://localhost:8083
@@ -251,11 +296,111 @@ curl -s -X POST "$BASE/api/v1/rulesets/3/evaluations" -H 'Content-Type: applicat
 # => { "ruleset_version": 3, "admitted": true, "violated_rules": [], "allowed_channels": ["general"] }
 
 # The limits: with HTTP_REQUEST_TIMEOUT=2, this sleeps past it and is answered 408 REQUEST_TIMEOUT
-curl -s "$BASE/api/v1/dev/slow?ms=4000" -H "X-Service-Token: $SERVICE_TOKEN" | jq
+curl -s "$BASE/api/v1/dev/slow?ms=4000" | jq
 ```
 
 The full Postman collection (`postman/server-rules-service.postman_collection.json` in the
-CPR) covers every endpoint including the admin surface and every error branch.
+CPR) covers every endpoint including the admin surface and every error branch. Only the Lab 4 Gateway's
+routes of this service go through it (`base_url`): `GET /health` and `GET rulesets/{version}` with a
+player JWT. Every other request (`/health/ready`, `/status`, `rulesets/current`, the evaluations,
+`/admin/*`, `/logs`, `/metrics`) goes to one instance directly through `server_rules_direct_url`, by its
+own path (`/api/v1/...` without the `server-rules` prefix), since the Lab 4 Gateway answers `404` to it
+(§9). A direct request is a service call: no `X-Player-Id` and no token, except `X-Service-Token` on
+`/logs`, the only route the instance checks it on. Postman cannot send the broker's gRPC calls.
+
+---
+
+## 11. Message Broker, logs and metrics (Lab 4)
+
+From `4.0.0`.
+
+### The subscription
+
+- One gRPC `Subscribe` stream per instance to `MESSAGE_BROKER_URL`: `service: "server-rules"`,
+  `instance_id: INSTANCE_ID`, `topics: []`, `max_concurrent_tasks: MAX_CONCURRENT_TASKS`. The broker
+  delivers the requests of the queue `requests.server-rules` on it, to the least loaded instance. Every
+  call carries the metadata `x-service-token: SERVICE_TOKEN`.
+- The stream opens once the HTTP listener is up. When it cannot be opened or ends, `broker.subscribe_failed`
+  is logged and it is opened again after 1 s, 2 s, 4 s ... up to 30 s; meanwhile the instance serves
+  `/health`, `/status`, `/logs` and `/metrics`. gRPC keepalive (2 s) notices a dead broker within seconds.
+- `/health/ready` and `/status` do not report the broker.
+- An event delivered anyway (the service subscribes to none) is acked `PERMANENT` with the reason
+  `server-rules consumes no event`, so the broker dead-letters it instead of sending it again.
+- Graceful stop: the stream is closed first, so the broker stops routing here, and the requests already
+  received are still answered, for up to 5 s.
+- No circuit breaker: the service calls nothing through the broker, or otherwise.
+
+### Requests from `requests.server-rules`
+
+Each delivered request (`method`, `path` with its query, `headers`, `body`) is sent to the instance's
+own HTTP pipeline on `http://127.0.0.1:<port>` (the port of `ASPNETCORE_URLS`, `8080`), so the routes,
+`X-Request-ID`, the task timeout, the concurrent task limit (and so `in_flight`, which the broker routes
+by) and the access log work exactly as for a direct call. Requests run concurrently. The answer goes
+back with `Reply`: the same status, headers and body, the request's `correlation_id` and this
+instance's id - a `4xx` or `5xx` too, unchanged.
+
+- **Headers pass verbatim**, `X-Player-Id` included, so a request the Gateway made for a player stays a
+  player's request and a service call (no `X-Player-Id`) stays one: `/admin/*` and `/dev/*` keep
+  refusing a request with `X-Player-Id`. `X-Service-Token`, `Authorization`, hop-by-hop headers, `Host`
+  and `Content-Length` are dropped (#124); no token is ever added. A header value that is not one line
+  of printable ASCII is dropped.
+- **Request id:** the `X-Request-ID` header, else the request's or the delivery's `request_id`, only
+  when it is 1 to 200 visible ASCII characters; otherwise the pipeline generates one. The same rule
+  applies to `X-Request-ID` on a direct call.
+- **Local limits:** the local call may take the caller's `timeout_ms`, 10 s without one, at most 60 s.
+  A method or path that cannot be served is `400 VALIDATION_ERROR`, a local call that outlives its
+  timeout `408 REQUEST_TIMEOUT`, one that fails `500 INTERNAL_ERROR`. The URI always stays on loopback.
+
+### `GET /logs?since=&until=&level=`
+
+As CPR README "Logs download" defines it: the instance's own lines from `LOG_FILE` and its rotated
+files, oldest first, unchanged, `since <= time < until` (RFC 3339 with a zone, both optional), `level`
+and above. Reachable only directly: no request through the broker or the Gateway carries the token.
+
+| Answer | When |
+| --- | --- |
+| `200 application/x-ndjson`, `Content-Disposition: attachment; filename="<instance_id>-<since as 20261105T112700Z, or start>.jsonl"` | the lines, possibly none; headers sent before the files are read |
+| `403 SERVICE_TOKEN_REQUIRED` / `401 INVALID_SERVICE_TOKEN` | no `X-Service-Token` / a wrong one (compared in constant time) |
+| `400 VALIDATION_ERROR`, `details.errors: [{field, message}]` | a time that is not RFC 3339 or has no zone, `until <= since` (field `until`), an unknown `level` |
+| `503 LOGS_UNAVAILABLE` | `LOG_FILE` empty or not writable at startup |
+
+Every file is opened and measured before any is read, so a line written meanwhile is never half
+included; a line that is not one whole JSON object is left out. Outside the concurrent task limit and
+the task timeout; its access line is at `debug`. The file lives in the container: it survives a
+restart, not a recreation.
+
+```bash
+curl -s "http://<instance>:8080/logs?since=2026-11-07T17:00:00Z&level=warn" -H "X-Service-Token: $SERVICE_TOKEN"
+```
+
+### `GET /metrics`
+
+Prometheus text format, no credential, outside the limit, access line at `debug`.
+
+| Series | Labels |
+| --- | --- |
+| `http_requests_total` | `method`, `route` (the route template, `unmatched` for none), `status` |
+| `http_request_duration_seconds` (histogram) | `method`, `route` |
+| `tasks_in_flight` | - (requests holding a concurrent-limit slot) |
+
+A method outside the standard ones is `OTHER`, so no caller can grow the number of series. No
+`breaker_state`, `outbox_pending` or `outbox_parked`: the service has neither a breaker nor an outbox.
+
+### New log events
+
+| `event` | Level | Extra fields |
+| --- | --- | --- |
+| `request.received` / `request.replied` | `info` | `correlation_id`, `message_id`, `method`, `path` (no query), `caller`; `attempt` when received; `status`, `duration_ms` when replied |
+| `request.reply_failed` | `warn` | `correlation_id`, `message_id`, `error` |
+| `broker.subscribed` | `info` | `target`, `max_concurrent_tasks`, `topics` |
+| `broker.subscribe_failed` | `warn` | `target`, `error`, `attempt`, `retry_in_ms` |
+| `broker.disabled` | `warn` | once at startup, `MESSAGE_BROKER_URL` empty |
+| `broker.acked` / `broker.ack_failed` | `warn` | an event rejected `PERMANENT`: `message_id`, `queue`, `event_id`, `event_type`, `outcome`, `reason` / `message_id`, `error` |
+| `logs.file_unavailable` | `warn` | `path`, `error`, once at startup |
+
+`startup` also carries `message_broker_url`, `log_file`, `log_file_max_mb` and `log_file_keep`. A
+request from the broker is dispatched over loopback, so its `http.request` line has `client_ip`
+`127.0.0.1`; its `request_id` is the caller's `X-Request-ID`. Headers and bodies are never logged.
 
 ---
 

@@ -12,7 +12,7 @@
     {
       "key": "university_record_direct_url",
       "value": "http://localhost:8084",
-      "description": "The instance itself, not the Gateway: its port is not published in the team stack, so forward one instance there (docker run --rm -d --name university-record-direct --network student-id-net -p 8084:8080 alpine/socat TCP-LISTEN:8080,fork,reuseaddr TCP:university-record-service:8080), which shares the stack's database with the Gateway requests, or run the service's own compose (APP_HOST_PORT, 8084 by default) for the direct requests alone."
+      "description": "The instance itself, not the Gateway: its port is not published in the team stack, so forward one instance there (docker run --rm -d --name university-record-direct --network student-id-net -p 127.0.0.1:8084:8080 alpine/socat TCP-LISTEN:8080,fork,reuseaddr TCP:university-record-service:8080), bound to this machine only and stopped after the demo, since the instance trusts X-Player-Id as it comes; it shares the stack's database with the Gateway requests, or run the service's own compose (APP_HOST_PORT, 8084 by default) for the direct requests alone."
     },
     {
       "key": "service_token",

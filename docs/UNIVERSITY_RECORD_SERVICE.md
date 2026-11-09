@@ -344,9 +344,12 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 > compose, takes the service-only ones with `X-Service-Token`). The service itself reads no token: on the direct port, send
 > `X-Player-Id: <uuid>` to play a player and no `X-Player-Id` for a service call.
 >
-> To call an instance of the team stack directly, so that direct calls and the Gateway's share one database:
-> `docker run --rm -d --name university-record-direct --network student-id-net -p 8084:8080 alpine/socat TCP-LISTEN:8080,fork,reuseaddr TCP:university-record-service:8080`
-> (the service name reaches one of the copies; `docker stop university-record-direct` when done).
+> To call an instance of the team stack directly, so that direct calls and the Gateway's share one database, forward
+> it to this machine only, for the demo:
+> `docker run --rm -d --name university-record-direct --network student-id-net -p 127.0.0.1:8084:8080 alpine/socat TCP-LISTEN:8080,fork,reuseaddr TCP:university-record-service:8080`
+> (the service name reaches one of the copies; `docker stop university-record-direct` when done). Bind it to
+> `127.0.0.1` and never leave it running: the instance trusts `X-Player-Id` as it comes, which is why the team stack
+> publishes no port of it.
 
 Peers that may be missing are replaced by real code paths, not by throwaway ones:
 

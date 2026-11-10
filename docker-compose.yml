@@ -257,15 +257,17 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:3.0.0
+    image: dmracovit/discord-dms-service:4.0.0
     restart: unless-stopped
-    # Lab 3: two copies, none publishing a port. The one chat port of the stack, 8086, is answered by dms-ws-proxy
+    # Two copies, none publishing a port. The one chat port of the stack, 8086, is answered by dms-ws-proxy
     # below, which hands each WebSocket connection to one of the copies; the Redis fan-out makes every copy deliver
     # every message, so the copy does not matter. More copies: --scale discord-dms-service=3.
     deploy:
       replicas: 2
     depends_on:
       service-discovery-service:
+        condition: service_healthy
+      message-broker-service:
         condition: service_healthy
       dms-mongo:
         condition: service_healthy
@@ -281,9 +283,13 @@ services:
       # negotiated through the Gateway (POST /api/v1/discord-dms/ws-tickets) and connected to the proxy directly.
       WS_PUBLIC_URL: ${DMS_WS_PUBLIC_URL:-ws://localhost:8086}
       # Two listeners: 8086 serves the WebSocket only (reached through dms-ws-proxy); the REST API listens on 8096,
-      # never published, which is what every copy registers with Service Discovery and where the Gateway reaches it.
+      # never published, which is what every copy registers with Service Discovery and where it and Prometheus poll it.
       SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
+      # The stack's one X-Service-Token: the metadata of the broker stream; checked here on /logs, /admin and /dev.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      # Lab 4 (README "Message Broker"): every copy's stream brings the Gateway's requests (requests.discord-dms) and
+      # the events of events.session.started and events.session.ended. The chat path is unchanged.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
     networks:
       - student-id-net
 

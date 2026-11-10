@@ -1,0 +1,888 @@
+{
+  "info": {
+    "name": "Lab 4 shift",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "A full shift through the Gateway and the Message Broker (Lab 4, #113): login, session, applicant, chat, decision, end; and the monitoring endpoints. Run the folders in order with the Collection Runner against `docker compose up -d`. Uses the seeded players repeat_offender and rookie_one (password `seed-password`): the seeded sessions hold the others. Requests that need an event wait for it in their pre-request script. `service_token` must equal SERVICE_TOKEN and `grafana_password` GRAFANA_ADMIN_PASSWORD in .env."
+  },
+  "item": [
+    {
+      "name": "1. Login",
+      "item": [
+        {
+          "name": "Moderator logs in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/player/auth/login",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{moderator_username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"moderator_token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior Moderator logs in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/player/auth/login",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{junior_username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"junior_token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Session",
+      "item": [
+        {
+          "name": "Junior leaves the seeded lobby",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{seeded_lobby_id}}/players/{{junior_id}}",
+            "description": "The seed (SESSION_SEED_ON_START) puts rookie_one in a lobby, and a player in a lobby or an active session cannot join another one (409 PLAYER_ALREADY_IN_SESSION). Leaving is beyond the contract (docs/SERVER_MODERATION_SESSION_SERVICE.md). 404 when the junior already left it (a second run) or the stack is not seeded."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"left the lobby, or was not in it\", () => pm.expect(pm.response.code).to.be.oneOf([204, 404]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator creates a session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"session_id\", pm.response.json().session_id);",
+                  "pm.test(\"in the lobby\", () => pm.expect(pm.response.json().status).to.eql(\"lobby\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior joins",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/players",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator starts the shift",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/start",
+            "description": "Session asks Server Rules for the ruleset through the broker and publishes session.started (University Record, Discord DMs).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moderator_id\": \"{{moderator_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const s = pm.response.json();",
+                  "pm.test(\"active\", () => pm.expect(s.status).to.eql(\"active\"));",
+                  "const j = s.junior_moderators.find(x => x.player_id === pm.collectionVariables.get(\"junior_id\"));",
+                  "pm.collectionVariables.set(\"junior_category\", j.record_scopes[0]);"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "3. Applicant",
+      "item": [
+        {
+          "name": "Moderator asks for the next applicant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/applicants/next",
+            "description": "Session -> broker -> Applicant (requests.applicant); Applicant publishes applicant.initialized to Credential and University Record.",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"applicant_id\", pm.response.json().current_applicant_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator reads the applicant",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator reads the documents",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/credential/applicants/{{applicant_id}}/documents",
+            "description": "Waits (pre-request, up to 10 s) until Credential has received applicant.initialized; until then it answers 404."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// applicant.initialized reaches Credential through the outbox relay and the broker: wait until it has the applicant",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/credential/applicants/{{applicant_id}}/documents\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () =>",
+                  "  pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "    if ((err || res.code !== 200) && Date.now() < deadline) setTimeout(poll, 500);",
+                  "  });",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior searches a record category",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/university-record/records/{{junior_category}}?session_id={{session_id}}&q={{student_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "4. Chat",
+      "item": [
+        {
+          "name": "Junior negotiates the chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+            "description": "Waits (pre-request, up to 10 s) until Discord DMs has received session.started; until then it answers 403 NOT_IN_SESSION.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// session.started reaches Discord DMs through the outbox relay and the broker: wait until it knows the session",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () =>",
+                  "  pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "    if ((err || res.code !== 200) && Date.now() < deadline) setTimeout(poll, 500);",
+                  "  });",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"ws_url with a ticket\", () => pm.expect(pm.response.json().ws_url).to.include(\"ticket=\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator lists the channels",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json().items;",
+                  "pm.collectionVariables.set(\"channel_id\", (c.find(x => x.name === \"general-mod-chat\") || c[0]).channel_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator posts a message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/channels/{{channel_id}}/messages",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Checking the applicant's student ID\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"sent\", () => pm.response.to.be.success);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior reads the history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/channels/{{channel_id}}/messages",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Decision",
+      "item": [
+        {
+          "name": "Moderator submits a decision",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/moderation/decisions",
+            "description": "Moderation calls Session, then Applicant, Credential and University Record in parallel, then Server Rules, all through the broker; it publishes decision.recorded to Session.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator lists the session's decisions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/decisions",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. End",
+      "item": [
+        {
+          "name": "Moderator ends the shift",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/end",
+            "description": "Session publishes session.ended to Player, Discord DMs and University Record.",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ended\", () => pm.expect(pm.response.json().status).to.eql(\"ended\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator reads the profile (XP after session.ended)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/player/players/{{moderator_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Monitoring",
+      "item": [
+        {
+          "name": "Broker topics and queues",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{broker_url}}/api/v1/topics",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Broker dead letters",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{broker_url}}/api/v1/dead-letters",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Prometheus ready",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{prometheus_url}}/-/ready",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Prometheus targets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{prometheus_url}}/api/v1/targets?state=active",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const t = pm.response.json().data.activeTargets;",
+                  "pm.test(\"instances and static targets\", () => pm.expect(t.map(x => x.scrapePool)).to.include.members([\"instances\", \"static\"]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Grafana health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{grafana_url}}/api/health",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Grafana dashboards",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{grafana_url}}/api/search?type=dash-db&tag=lab4",
+            "description": "",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "admin"
+                },
+                {
+                  "key": "password",
+                  "value": "{{grafana_password}}"
+                }
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"System and Broker\", () => pm.expect(pm.response.json().map(d => d.title)).to.include.members([\"System\", \"Broker\"]));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "broker_url",
+      "value": "http://localhost:8070"
+    },
+    {
+      "key": "prometheus_url",
+      "value": "http://localhost:9090"
+    },
+    {
+      "key": "grafana_url",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me_too"
+    },
+    {
+      "key": "grafana_password",
+      "value": "change_me"
+    },
+    {
+      "key": "password",
+      "value": "seed-password"
+    },
+    {
+      "key": "moderator_username",
+      "value": "repeat_offender"
+    },
+    {
+      "key": "moderator_id",
+      "value": "f6b8c0d4-5a7e-4f9c-b123-4d6e8f0a2b54"
+    },
+    {
+      "key": "junior_username",
+      "value": "rookie_one"
+    },
+    {
+      "key": "junior_id",
+      "value": "d4f6a8c1-3e5b-4d7c-9f1a-2b4c6d8e0f32"
+    },
+    {
+      "key": "moderator_token",
+      "value": ""
+    },
+    {
+      "key": "junior_token",
+      "value": ""
+    },
+    {
+      "key": "seeded_lobby_id",
+      "value": "4b8fac2d-3e50-4c7b-9d1f-2a3b4c5d6e7f"
+    },
+    {
+      "key": "session_id",
+      "value": ""
+    },
+    {
+      "key": "junior_category",
+      "value": ""
+    },
+    {
+      "key": "applicant_id",
+      "value": ""
+    },
+    {
+      "key": "student_id",
+      "value": ""
+    },
+    {
+      "key": "channel_id",
+      "value": ""
+    }
+  ]
+}

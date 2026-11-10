@@ -190,6 +190,8 @@ services:
     depends_on:
       service-discovery-service:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
       moderation-postgres:
         condition: service_healthy
     environment:
@@ -205,9 +207,8 @@ services:
       REFERENCE_YEAR: *reference_year
       # Lab 4 (README "Message Broker"): the five peers are called as requests through the broker (requests.session,
       # requests.applicant, ...), decision.recorded is published to events.decision.recorded, and the service's own
-      # requests arrive from requests.moderation. Clearing it in .env (MODERATION_MESSAGE_BROKER_URL=) selects the
-      # mock mode, every peer a built-in mock.
-      MESSAGE_BROKER_URL: ${MODERATION_MESSAGE_BROKER_URL-message-broker-service:8071}
+      # requests arrive from requests.moderation. The same variable and default as the Gateway and every service.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
     networks:
       - student-id-net
 

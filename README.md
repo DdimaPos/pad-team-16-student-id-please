@@ -32,7 +32,7 @@ git submodule update --init --recursive
 
 The system is decomposed following a data ownership principle: for every piece of state, exactly one service is the source of truth and the only service allowed to write it. Other services may read or trigger changes only through that owning service's API. This is why applicant-related data is split into three services (Applicant, Credential, University Record) rather than one - each owns a distinct category of data (identity, documents, hidden institutional records) with a different lifecycle and different access rules, even though they describe the same real-world person.
 
-Every interaction listed below passes through the [Gateway](#gateway): no service calls another service, and no client calls a service, directly. The Gateway itself owns no state (see [9. Gateway](#9-gateway)). The one exception, since Lab 3, is [Service Discovery](#10-service-discovery): every instance registers with it directly and it polls every instance's `GET /status` and, from Lab 4, fetches every component's [`GET /logs`](#logs-download) directly, because the Gateway itself depends on the registry to know where to forward.
+No service calls another service, and no client calls a service, directly. A client reaches a service only through the [Gateway](#gateway); from Lab 4 the Gateway and every service reach a service only through the [Message Broker](#11-message-broker), as a request on its queue or an event on a topic (see [Communication Patterns](#communication-patterns)). Neither the Gateway nor the broker owns business state (see [9. Gateway](#9-gateway), [11. Message Broker](#11-message-broker)). The one exception, since Lab 3, is [Service Discovery](#10-service-discovery): every instance and the broker register with it directly, it polls every instance's `GET /status` and, from Lab 4, fetches every component's [`GET /logs`](#logs-download) directly, because the broker itself depends on the registry to know which instances exist.
 
 **Note on applicant initialization:** the topic allows any of Applicant, Credential, or University Record Service to be the first to encounter a new applicant. To keep this from turning into three services writing to each other's data, we resolve it as follows: whichever service is contacted first generates a shared `applicant_id` and pushes an `ApplicantInitialized` event carrying that ID plus the fields it was given to the other two services, which create their own record under the same `applicant_id`, populated only with the fields relevant to them. Each service still only ever writes its own record - there is no cross-service write, only event-driven record creation.
 
@@ -91,15 +91,21 @@ Every interaction listed below passes through the [Gateway](#gateway): no servic
 
 ### 9. Gateway
 
-- **Owns:** no data. It holds only the routing table (prefix => service), the credential checks and the task timeout and concurrent task limit at the entry point of the system. Since Lab 3 the routing table's instances are read from Service Discovery, and the Gateway keeps one circuit breaker per instance
-- **Does NOT own:** any service's data, the player accounts or the issuing of tokens (Player Service), the chat connection (Discord DMs Service carries it; the Gateway only negotiates it), or the instance registry (Service Discovery)
-- **Interacts with:** every service, by forwarding each REST request to one instance of the service that owns the path; the client, as its single point of entry; Service Discovery, which it reads the instance list from and marks an instance `down` in when that instance's breaker trips. See [Gateway](#gateway)
+- **Owns:** no data. It holds only the table of client routes (prefix => service), the credential checks and the task timeout and concurrent task limit at the entry point of the system. From Lab 4 it keeps one circuit breaker, on the Message Broker
+- **Does NOT own:** any service's data, the player accounts or the issuing of tokens (Player Service), the chat connection (Discord DMs Service carries it; the Gateway only negotiates it), the instance registry (Service Discovery), or the choice of an instance (the Message Broker)
+- **Interacts with:** the client, as its single point of entry; the Message Broker, to which it sends each client request as a `Request` to the owning service's queue and from which it gets the reply. See [Gateway](#gateway)
 
 ### 10. Service Discovery
 
-- **Owns:** the instance registry (Lab 3) - which instance of which service runs where (`instance_id`, `service_name`, `host`, `port`, `version`) and whether it is `up` or `down`
-- **Does NOT own:** routing (the Gateway decides where a request goes), any business data, or any event; it produces and consumes no events
-- **Interacts with:** every service, whose instances register with it and send it heartbeats; every registered instance, whose `GET /status` it polls; the Gateway, which reads the `up` instances from it and marks instances `down` after a circuit breaker trip; the developers, whom it alerts through a Telegram bot. See [Service Discovery](#service-discovery)
+- **Owns:** the instance registry (Lab 3) - which instance of which service runs where (`instance_id`, `service_name`, `host`, `port`, `version`), whether it is `up` or `down`, its last measured `load` and, from Lab 4, the `topics` it says it publishes and subscribes to
+- **Does NOT own:** routing (the Message Broker decides which instance gets a message), subscriptions and queues (the broker), any business data, or any event; it produces and consumes no events
+- **Interacts with:** every service and the Message Broker, whose instances register with it and send it heartbeats; every registered instance, whose `GET /status` it polls and whose `GET /logs` it fetches; the broker, which reads the `up` instances and their loads from it, marks instances `down` after a circuit breaker trip and posts one alert per dead letter; Prometheus, which reads the scrape targets from it; the developers, whom it alerts through a Telegram bot. See [Service Discovery](#service-discovery)
+
+### 11. Message Broker
+
+- **Owns:** delivery (Lab 4) - the topics (`events.<event_type>`), the subscriptions and the queue of each subscribed service, the request queue of every service (`requests.<service>`), the delivery state of every message (attempts, acks) and the dead letter channel; the choice of the instance that gets a message and one circuit breaker per instance
+- **Does NOT own:** any business data (an event's envelope and a request's body pass through it byte for byte), the event catalog (each producer owns its events), or the instance registry (Service Discovery)
+- **Interacts with:** the Gateway and every service, over gRPC: each instance holds one `Subscribe` stream and sends its `Publish`, `Ack`, `Request` and `Reply` on the same connection; Service Discovery, where it registers, reads the `up` instances and their loads, marks a tripped instance `down` and posts its dead letter alerts. See [Message Broker](#message-broker)
 
 ## Architecture Diagram
 
@@ -119,7 +125,7 @@ Each blue line between the broker and a service is two-way and carries several k
 - its `Reply` to a request and its `Ack` of an event;
 - its own `Publish` of an event and its `Request` to another service.
 
-No service has a line to another, because none addresses another directly: a call or an event from one service to another goes through the broker. Which service calls which, and with which rule, is listed in [Every arrow in the diagram](#every-arrow-in-the-diagram-and-the-rule-it-follows); that table is rewritten for the broker with the Lab 4 contract (#105). The broker keeps its queues and dead letters in SQLite on a volume (#108). It listens for gRPC on `:8071` and serves its HTTP side on `:8070`: `/status`, `/logs`, `/metrics`, the topics listing and the dead letters.
+No service has a line to another, because none addresses another directly: a call or an event from one service to another goes through the broker. Which service calls which, and with which rule, is listed in [Every arrow in the diagram](#every-arrow-in-the-diagram-and-the-rule-it-follows); that table shows the broker in the middle. The broker keeps its queues and dead letters in SQLite on a volume (#108). It listens for gRPC on `:8071` and serves its HTTP side on `:8070`: `/status`, `/logs`, `/metrics`, the topics listing and the dead letters.
 
 The gray dashed lines are direct HTTP calls with **Service Discovery**:
 
@@ -140,7 +146,7 @@ Each service owns its database, drawn beneath it, and no database is shared. Pla
 
 ### Languages
 
-The eight services use two languages, **Go** and **C#**. The Gateway, added in Lab 2, is written in **Python** - the language the lab requires for it.
+The eight services use two languages, **Go** and **C#**. The Gateway, added in Lab 2, is written in **Python** - the language the lab requires for it - and so are Service Discovery (Lab 3) and the Message Broker (Lab 4).
 
 | #   | Service                           | Owner              | Language | Framework                 |
 | --- | --------------------------------- | ------------------ | -------- | ------------------------- |
@@ -154,14 +160,17 @@ The eight services use two languages, **Go** and **C#**. The Gateway, added in L
 | 8   | Discord DMs Service               | Racovita Dumitru   | Go       | Gin + `gorilla/websocket` |
 | 9   | Gateway                           | whole team         | Python   | FastAPI + `httpx`         |
 | 10  | Service Discovery                 | Titerez Vladislav  | Python   | FastAPI + uvicorn + `httpx` |
+| 11  | Message Broker                    | Titerez Vladislav  | Python   | `grpcio` + FastAPI + uvicorn |
 
 **Service Discovery (Lab 3) is Python 3.12**, the language the lab bans for the team, with FastAPI + uvicorn and `httpx` for the status polling and the Telegram alerts. Its registry is held in memory in its single copy, with no database: after a restart every instance is back in the registry within one heartbeat (5 s), so there is nothing worth persisting.
+
+**The Message Broker (Lab 4) is Python 3.12** for the same reason: the lab asks for the team's banned language or one not used in a service. It reuses Service Discovery's logging, status and breaker modules. `grpc.server` with a bounded thread pool serves its gRPC API on `8071` (one thread per RPC), FastAPI + uvicorn its HTTP side on `8070` (`/status`, `/logs`, `/metrics`, the topics and dead letter listings). **The limit:** the GIL runs one Python thread at a time, so the threads give concurrency for waiting on streams and on the disk, not parallel CPU work. A broker mostly waits, so this is acceptable here; the thread arithmetic is in [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) §12.
 
 **Why Go for six services.** Most of our services do the same kind of work: receive an HTTP request, call one or two other services, read or write their own database, and answer. Go is built for exactly this. It compiles to one small binary, starts in milliseconds, and goroutines make it simple to call several services at the same time (Moderation Service calls four at once). Go is also quick to learn, which matters because most of the team is picking it up during this course.
 
 **Why C# for the rules and records services.** These two services are about data rules, not traffic. Server Rules answers "does this applicant satisfy rule version 7?" and University Record answers "may this player read the enrollment list?". C# has a strong type system and pattern matching that make such rules explicit in code, and ASP.NET Core has built-in policy-based authorization that expresses "player X may read category Y" directly. Their owner has the most C# experience in the team.
 
-**Trade-off.** Two languages mean two toolchains, two sets of libraries and two ways to write a Dockerfile. We accept that because every service exposes the same interface (REST + JSON, with events delivered as plain HTTP requests), so a Go service and a C# service talk to each other in exactly the same way.
+**Trade-off.** Two languages mean two toolchains, two sets of libraries and two ways to write a Dockerfile. We accept that because every service exposes the same interface - REST + JSON to the client, and from Lab 4 the same gRPC contract with the broker, generated from one [`shared/broker.proto`](shared/broker.proto) - so a Go service and a C# service talk to each other in exactly the same way.
 
 ### Frameworks and libraries
 
@@ -169,12 +178,13 @@ The eight services use two languages, **Go** and **C#**. The Gateway, added in L
 | ----------- | -------------------------------------- | --------------------- |
 | HTTP server | Gin                                    | ASP.NET Core Web API  |
 | HTTP client | `net/http`                             | `HttpClient`          |
+| gRPC (Lab 4, the broker client) | `google.golang.org/grpc` | generated from `Protos/broker.proto` |
 | WebSocket   | `gorilla/websocket` (Discord DMs only) | not needed            |
 | PostgreSQL  | `pgx`                                  | Npgsql + EF Core      |
 | MongoDB     | `mongo-go-driver`                      | `MongoDB.Driver`      |
 | Redis       | `go-redis`                             | `StackExchange.Redis` |
 
-Every service runs in its own Docker container. There is no message broker: services call each other directly.
+Every service runs in its own Docker container. From Lab 4 services reach each other only through the Message Broker (see [Communication Patterns](#communication-patterns)).
 
 ### Databases
 
@@ -193,24 +203,25 @@ We use three engines. PostgreSQL is the default. MongoDB and Redis are used only
 | Moderation                | `moderation_db`               | PostgreSQL        | Each decision is an audit record: who decided, what, whether it was correct, which rules were broken. Queried by session, moderator and applicant. Never changed after it is written.                                                                      |
 | Discord DMs               | `dms_db`, `dms_pubsub`        | MongoDB, Redis    | Messages are appended and read back per channel in time order, which is what a Mongo collection with an index does. Redis Pub/Sub is not storage: it passes each new message to every running instance of the service so all connected players receive it. |
 | Service Discovery         | none                          | in memory         | The registry is rebuilt by the heartbeats within 5 s of a restart, and Service Discovery runs as one copy, so a database would add a dependency without keeping anything that matters.                                                                     |
+| Message Broker            | `/data/broker.db`             | SQLite (WAL)      | Messages, subscriptions and dead letters must survive a restart, but only the broker's one copy reads them. An embedded file on a named volume needs no server; a publish is on disk (`synchronous=FULL`) before it is answered. |
 
 ---
 
 ## Communication Patterns
 
-Every REST request goes through the **Gateway**: a client calling a service, and a service calling another service, alike. A caller never addresses a service directly (the exceptions are the calls of [Service Discovery](#service-discovery)); it addresses `{gateway}/api/v1/<service>/...` and the Gateway forwards the request to that service as `/api/v1/...` (see [Gateway](#gateway)). On that common path, services talk to each other in three ways. Each way has one rule for when to use it.
+A client sends every request to the **Gateway** over REST (`{gateway}/api/v1/<service>/...`, see [Gateway](#gateway)). From Lab 4 everything behind the Gateway travels through the **Message Broker** over gRPC: the Gateway hands a client's request to the broker, and a service calling another service, or announcing an event, talks only to the broker (see [Message Broker](#message-broker)). A caller never addresses a service or an instance directly (the exceptions are the calls of [Service Discovery](#service-discovery)). On that common path, components talk in three ways. Each way has one rule for when to use it.
 
-### Rule 1. You need an answer right now: REST (HTTP + JSON)
+### Rule 1. You need an answer right now: a request (REST at the Gateway, gRPC through the broker)
 
-Example: Session Service needs the next applicant before it can continue. It calls `POST {gateway}/api/v1/applicant/applicants/next`; the Gateway forwards it to Applicant Service as `POST /api/v1/applicants/next`, and Session waits for the reply.
+Example: Session Service needs the next applicant before it can continue. It sends the broker a `Request` for `applicant`, `POST /api/v1/applicants/next`; the broker puts it into the `requests.applicant` queue, delivers it to one Applicant instance on that instance's `Subscribe` stream, and hands that instance's `Reply` back to Session, which waits for it. A client's request takes the same path behind the Gateway: the client calls `POST {gateway}/api/v1/session/sessions/{id}/applicants/next` over REST, and the Gateway sends it to `requests.session` the same way.
 
-Every service exposes a REST API, and services call each other through the same API a client would use, through the same Gateway. We chose REST over gRPC because JSON is easy to read, to test with curl or Postman, and to debug across three languages. gRPC would be faster, but nothing in Lab 0 needs that speed. If the four parallel calls of Moderation Service ever become a bottleneck, that path is the candidate for gRPC.
+A request carries the method, path, headers and JSON body of the endpoint listed under [Endpoints](#endpoints), and the reply its status, headers and body, so every endpoint keeps its contract; only the transport between the components changed. The client keeps REST + JSON because it is easy to read and to test with curl or Postman. Between the components gRPC gives one typed contract for three languages ([`shared/broker.proto`](shared/broker.proto)) and a long-lived stream per instance, so the broker never has to dial a service: an instance that drops its stream is gone.
 
-### Rule 2. Something happened and others should know, no reply needed: event, pushed over HTTP
+### Rule 2. Something happened and others should know, no reply needed: an event, published to a topic
 
-Example: a shift ends. Session Service produces one event, `session.ended`, and pushes it to Player, Discord DMs and University Record. Player Service updates XP, Discord DMs archives the channels. Closing the shift does not wait for any of them.
+Example: a shift ends. Session Service publishes one event, `session.ended`, to the topic `events.session.ended`. Player, Discord DMs and University Record are subscribed to it, so the broker puts a copy into each one's queue. Player Service updates XP, Discord DMs archives the channels. Closing the shift does not wait for any of them.
 
-There is no broker. The producer writes the event to its own outbox table in the same database transaction as the change it announces, and a background relay sends it to every consumer listed in the [event catalog](#event-catalog) - through the Gateway, as `POST {gateway}/api/v1/<consumer>/events` - retrying until each one accepts it. An event may therefore be delivered twice, so every consumer remembers the `event_id` values it has seen and ignores repeats. This is what makes events safe: if Player Service is down for a minute, the event waits in Session's outbox and XP is still awarded exactly once. The full delivery rules are under [Event delivery](#event-delivery).
+The producer writes the event to its own outbox table in the same database transaction as the change it announces, and a background relay publishes it once to `events.<event_type>`, retrying until the broker has stored it. The producer names a topic, never a consumer: who receives it is decided by who subscribed. Each consumer acks a copy only after it applied it, and the broker delivers it again until it does, so an event may arrive twice; every consumer remembers the `event_id` values it has seen and ignores repeats. This is what makes events safe: if Player Service is down for a minute, the event waits in its queue on the broker and XP is still awarded exactly once. The full delivery rules are under [Event delivery](#event-delivery).
 
 ### Rule 3. The client must be pushed to: WebSocket (Discord DMs only)
 
@@ -218,46 +229,49 @@ Players chat in channels and must see new messages instantly. Discord DMs Servic
 
 ### Every arrow in the diagram and the rule it follows
 
-"`A => GW => B`" means A calls the Gateway, which forwards to B. Paths are the service's own paths; through the Gateway they carry the service prefix (`/api/v1/player/...`).
+"`A => GW => MB => B`" means A calls the Gateway over REST, which sends the request through the Message Broker to one instance of B; "`A => MB => B`" is a request from a service through the broker; "`A -> events.x -> B`" is an event A publishes to the topic `events.x`, delivered to B's queue. Paths are the service's own paths; through the Gateway they carry the service prefix (`/api/v1/player/...`).
 
 | Interaction                                                             | Rule                                        | Who calls whom                                                       | Why this rule                                                                                              |
 | ----------------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| Player logs in                                                          | REST `POST /auth/login`                     | client => GW => Player                                               | The client needs a token before anything else                                                              |
-| Player creates or joins a session                                       | REST                                        | client => GW => Session; Session => GW => Player `GET /players/{id}` | Needs an answer now                                                                                        |
-| Session reports shift results                                           | Event `session.ended`                       | Session => GW => Player, University Record `POST /events`            | Player updates XP later; closing the shift must not wait for it                                            |
-| Session picks the ruleset for a new shift                               | REST `GET /rulesets/current`                | Session => GW => Server Rules                                        | The shift cannot start without knowing its `ruleset_version`                                               |
-| Session requests the next applicant                                     | REST                                        | Session => GW => Applicant                                           | Needs the `applicant_id` now                                                                               |
-| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized`               | the service contacted first => GW => the other two `POST /events`    | Two listeners, no waiting, no cross-service writes                                                         |
-| Session assigns record scopes to Junior Moderators                      | Event `session.started`                     | Session => GW => University Record `POST /events`                    | Membership and scopes travel together in one event                                                         |
-| Session supplies channel membership                                     | Events `session.started`, `session.ended`   | Session => GW => Discord DMs `POST /events`                          | Discord DMs creates and archives channels on its own                                                       |
-| Moderator submits a decision                                            | REST `POST /decisions`                      | client => GW => Moderation                                           | The verdict must come back now                                                                             |
-| Session supplies the current applicant                                  | REST `GET /sessions/{id}`                   | Moderation => GW => Session                                          | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
-| Moderation gathers data for the verdict                                 | REST, three calls in parallel               | Moderation => GW => Applicant, Credential, University Record         | All three answers are needed to know what is true about the applicant                                      |
-| Moderation checks the rules                                             | REST `POST /rulesets/{version}/evaluations` | Moderation => GW => Server Rules                                     | Needs the verified facts from the three calls above, so it comes after them                                |
-| Moderation reports the outcome                                          | Event `decision.recorded`                   | Moderation => GW => Session `POST /events`                           | Session updates score and counters; no reply needed                                                        |
-| A player opens the chat                                                 | REST `POST /ws-tickets`, then WebSocket     | client => GW => Discord DMs (ticket); client ↔ Discord DMs (socket)  | The Gateway authorizes the connection but does not carry it                                                |
-| Players chat during a shift                                             | WebSocket (REST for history)                | client ↔ Discord DMs; history client => GW => Discord DMs            | Push in real time                                                                                          |
-| An instance registers and sends heartbeats (Lab 3)                      | REST `PUT /instances/{instance_id}`         | every instance of the eight services => Service Discovery directly   | The Gateway needs the registry to route, so registration cannot go through it                     |
-| An instance shuts down gracefully (Lab 3)                               | REST `DELETE /instances/{instance_id}`      | the instance => Service Discovery directly                           | Removes it from the routing table at once instead of after the 15 s TTL                                    |
-| Service Discovery checks health and load (Lab 3)                        | REST `GET /status`                          | Service Discovery => every registered instance directly              | One specific instance is checked, which a prefix through the Gateway cannot address                        |
-| Service Discovery fetches the logs of the whole system (Lab 4)          | REST `GET /logs`                            | Service Discovery => every `up` instance and the Gateway directly |
-| The Gateway refreshes its routing table (Lab 3)                         | REST `GET /instances`                       | Gateway => Service Discovery                                         | Needs the current `up` instances, every 5 s                                                                |
-| The Gateway removes an instance after a breaker trip (Lab 3)            | REST `PUT /instances/{instance_id}/status`  | Gateway => Service Discovery                                         | Other readers of the registry stop seeing the failing instance                                             |
-| Service Discovery alerts the developers (Lab 3)                         | Telegram Bot API `sendMessage`              | Service Discovery => Telegram                                        | Critical load, an unreachable or removed instance, a recovery                                              |
+| Player logs in                                                          | Request `POST /auth/login`                  | client => GW => MB => Player                                         | The client needs a token before anything else                                                              |
+| Player creates or joins a session                                       | Request                                     | client => GW => MB => Session; Session => MB => Player `GET /players/{id}` | Needs an answer now                                                                                  |
+| Session reports shift results                                           | Event `session.ended`                       | Session -> `events.session.ended` -> Player, University Record       | Player updates XP later; closing the shift must not wait for it                                            |
+| Session picks the ruleset for a new shift                               | Request `GET /rulesets/current`             | Session => MB => Server Rules                                        | The shift cannot start without knowing its `ruleset_version`                                               |
+| Session requests the next applicant                                     | Request `POST /applicants/next`             | Session => MB => Applicant                                           | Needs the `applicant_id` now                                                                               |
+| Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized`               | the service contacted first -> `events.applicant.initialized` -> the other two | Two listeners, no waiting, no cross-service writes                                               |
+| Session assigns record scopes to Junior Moderators                      | Event `session.started`                     | Session -> `events.session.started` -> University Record             | Membership and scopes travel together in one event                                                         |
+| Session supplies channel membership                                     | Events `session.started`, `session.ended`   | Session -> `events.session.started`, `events.session.ended` -> Discord DMs | Discord DMs creates and archives channels on its own                                                 |
+| Moderator submits a decision                                            | Request `POST /decisions`                   | client => GW => MB => Moderation                                     | The verdict must come back now                                                                             |
+| Session supplies the current applicant                                  | Request `GET /sessions/{id}`                | Moderation => MB => Session                                          | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
+| Moderation gathers data for the verdict                                 | Requests, three in parallel                 | Moderation => MB => Applicant, Credential, University Record         | All three answers are needed to know what is true about the applicant                                      |
+| Moderation checks the rules                                             | Request `POST /rulesets/{version}/evaluations` | Moderation => MB => Server Rules                                  | Needs the verified facts from the three calls above, so it comes after them                                |
+| Moderation reports the outcome                                          | Event `decision.recorded`                   | Moderation -> `events.decision.recorded` -> Session                  | Session updates score and counters; no reply needed                                                        |
+| A player opens the chat                                                 | Request `POST /ws-tickets`, then WebSocket  | client => GW => MB => Discord DMs (ticket); client ↔ Discord DMs (socket) | The Gateway authorizes the connection but does not carry it                                           |
+| Players chat during a shift                                             | WebSocket (requests for history)            | client ↔ Discord DMs; history client => GW => MB => Discord DMs      | Push in real time                                                                                          |
+| An instance takes its requests and events (Lab 4)                       | gRPC `Subscribe` stream                     | every instance of the eight services => MB                           | The broker never dials a service; the stream carries its requests and events, and the instance answers on the same connection |
+| An instance registers and sends heartbeats (Lab 3)                      | REST `PUT /instances/{instance_id}`         | every instance of the eight services and the broker => Service Discovery directly | The broker needs the registry to route, so registration cannot go through it                |
+| An instance shuts down gracefully (Lab 3)                               | REST `DELETE /instances/{instance_id}`      | the instance => Service Discovery directly                           | Removes it from the registry at once instead of after the 15 s TTL                                         |
+| Service Discovery checks health and load (Lab 3)                        | REST `GET /status`                          | Service Discovery => every registered instance directly              | One specific instance is checked, which a queue cannot address                                             |
+| Service Discovery fetches the logs of the whole system (Lab 4)          | REST `GET /logs`                            | Service Discovery => every `up` instance, the broker and the Gateway directly | One specific instance is read, and `GET /logs` checks the service token itself                    |
+| The broker reads the instances and their loads (Lab 4)                  | REST `GET /instances`                       | MB => Service Discovery                                              | Routes each message to the least loaded `up` instance, every 5 s                                           |
+| The broker removes an instance after a breaker trip (Lab 4)             | REST `PUT /instances/{instance_id}/status`  | MB => Service Discovery                                              | Other readers of the registry stop seeing the failing instance                                             |
+| The broker reports a dead letter (Lab 4)                                | REST `POST /alerts`                         | MB => Service Discovery                                              | One alert hook, one Telegram bot and one cooldown for the whole system                                     |
+| Prometheus finds and scrapes every component (Lab 4)                    | REST `GET /instances/prometheus`, `GET /metrics` | Prometheus => Service Discovery; Prometheus => every component directly | The metrics of one specific instance; see [Monitoring](#monitoring)                         |
+| Service Discovery alerts the developers (Lab 3)                         | Telegram Bot API `sendMessage`              | Service Discovery => Telegram                                        | Critical load, an unreachable or removed instance, a recovery, a dead letter                               |
 
 ### Worked example: one applicant from start to finish
 
-Every request below passes through the Gateway, which checks the caller's credential before forwarding (see [Authentication](#authentication)).
+Every client request below passes through the Gateway, which checks the caller's credential (see [Authentication](#authentication)), and every request and event between the components through the Message Broker.
 
 0. Each player logs in through Player Service and receives a JWT; the client sends it with every request.
-1. The Moderator asks for the next applicant. Session calls Applicant over REST. Applicant Service creates the applicant and pushes `applicant.initialized` to Credential and University Record, which create their own records under the same `applicant_id`.
-2. Junior Moderators look up records. The client calls University Record over REST. Each player only sees the categories assigned to them in `session.started`.
+1. The Moderator asks for the next applicant. Session sends a request to Applicant through the broker. Applicant Service creates the applicant and publishes `applicant.initialized`; Credential and University Record receive it from their queues and create their own records under the same `applicant_id`.
+2. Junior Moderators look up records. The client calls University Record through the Gateway. Each player only sees the categories assigned to them in `session.started`.
 3. The team discusses in channels: each client obtains a ticket through the Gateway and holds a WebSocket open directly to Discord DMs.
-4. The Moderator submits a decision with `POST /api/v1/decisions`. Moderation Service calls Session (is this the current applicant, and which ruleset does the shift use?), then Applicant, Credential and University Record in parallel. From the records it builds the verified facts and sends them to Server Rules. All calls are REST. It computes the correct verdict, compares it with the Moderator's choice, stores the decision and replies.
-5. Moderation pushes `decision.recorded` to Session. Session updates the score and counters.
-6. The shift ends. Session pushes `session.ended` to Player, Discord DMs and University Record. Player updates XP and history; Discord DMs archives the channels; University Record closes the juniors' access.
+4. The Moderator submits a decision with `POST /api/v1/decisions`. Moderation Service asks Session (is this the current applicant, and which ruleset does the shift use?), then Applicant, Credential and University Record in parallel. From the records it builds the verified facts and sends them to Server Rules. All of these are requests through the broker. It computes the correct verdict, compares it with the Moderator's choice, stores the decision and replies.
+5. Moderation publishes `decision.recorded`; Session receives it, updates the score and counters.
+6. The shift ends. Session publishes `session.ended`; Player, Discord DMs and University Record each receive a copy. Player updates XP and history; Discord DMs archives the channels; University Record closes the juniors' access.
 
-**Note on University Record access.** A player's request is limited to the categories assigned to that player in the session. Moderation Service needs all categories to compute the correct verdict, so it calls University Record's service-only endpoint with the service token. The Gateway checks that token and strips it; University Record recognises the service call by the route and by the absence of `X-Player-Id` (see [Authentication](#authentication)). The token never reaches a client.
+**Note on University Record access.** A player's request is limited to the categories assigned to that player in the session. Moderation Service needs all categories to compute the correct verdict, so it calls University Record's service-only endpoint through the broker, which authenticated Moderation by its service token (see [Through the Message Broker](#through-the-message-broker-lab-4)). University Record recognises the service call by the route and by the absence of `X-Player-Id`; the Gateway does not serve that route at all (see [Gateway](#gateway)). The token never reaches a client.
 
 ---
 
@@ -265,7 +279,7 @@ Every request below passes through the Gateway, which checks the caller's creden
 
 ### Data Management
 
-**Rule: one database per service, and only the owning service writes to it.** If a service needs data it does not own, it either calls the owner's REST API or listens to the owner's events. It never reads another service's tables.
+**Rule: one database per service, and only the owning service writes to it.** If a service needs data it does not own, it either calls the owner's API (from Lab 4 a request through the broker) or listens to the owner's events. It never reads another service's tables.
 
 Why:
 
@@ -298,7 +312,7 @@ Every event has the same envelope; only `payload` differs.
 }
 ```
 
-| `event_type`            | Produced by                                                           | Pushed to                              | Payload (key fields)                                                                                                                        |
+| `event_type`            | Produced by                                                           | Delivered to                           | Payload (key fields)                                                                                                                        |
 | ----------------------- | --------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `applicant.initialized` | the first of Applicant, Credential, University Record to be contacted | the other two                          | `applicant_id`, `session_id`, `initialized_by`, `difficulty`, `claimed`, `actual` (each an [applicant profile](#shared-values) itself, not an object with a `profile` key)                                   |
 | `session.started`       | Server Moderation Session                                             | University Record, Discord DMs         | `session_id`, `moderator_id`, `junior_moderators[] { player_id, record_scopes[] }`, `ruleset_version`, `started_at`                         |
@@ -307,48 +321,70 @@ Every event has the same envelope; only `payload` differs.
 
 `role` in `session.ended` is `moderator` or `junior_moderator`. A consumer that does not need it ignores it.
 
+From Lab 4 each event is published to the topic `events.<event_type>` and delivered to the services subscribed to it, which are the ones in "Delivered to" (see [Event delivery](#event-delivery)).
+
 #### Event delivery
 
-Events travel from the producer to each consumer over HTTP, through the Gateway like every other REST request. There is no broker.
+From Lab 4 events travel from the producer to each consumer through the [Message Broker](#message-broker): the producer publishes once to a topic, and the broker keeps one queue per subscribed service. Nothing is pushed over HTTP any more; `POST /api/v1/events` is gone from every service (#105).
+
+**Names.**
+
+| Name | Example | What |
+| --- | --- | --- |
+| Topic | `events.session.started` | `events.<event_type>`, one per event type in the catalog above. A producer names a topic, never a consumer |
+| Topic queue | `events.session.started.discord-dms` | `<topic>.<service>`, one per subscribed service, shared by all its instances (competing consumers) |
+
+A topic matches `events(\.[a-z][a-z0-9_]*)+` and a service `[a-z][a-z0-9-]*`, each at most 200 characters. A message reaches each subscribed service once, whatever the number of its instances, and one instance of it; each queue's copy has its own `message_id`.
+
+**Subscriptions.** An instance names its service and the topics it consumes in its `Subscribe` call (see [Message Broker](#message-broker)); that call is the source of truth. The `topics` an instance sends in its registration with [Service Discovery](#service-discovery) only document the same intent. A subscription belongs to the service, not the instance: its queue outlives the instances and a broker restart and collects messages while none of them is connected, and a topic with no subscriber yet keeps the message for every service that subscribes later (until `MESSAGE_RETENTION_HOURS`).
+
+| Topic | Published by | Subscribed by |
+| --- | --- | --- |
+| `events.applicant.initialized` | Applicant, Credential, University Record | Applicant, Credential, University Record (each ignores the events it produced itself) |
+| `events.session.started` | Session | University Record, Discord DMs |
+| `events.session.ended` | Session | Player, Discord DMs, University Record |
+| `events.decision.recorded` | Moderation | Session |
+
+Moderation and Server Rules subscribe to no topic; they take only requests.
 
 **Producer side.**
 
 1. The event is written to the producer's own outbox table **in the same database transaction** as the state change it announces, so an event never exists without its change, nor the reverse.
-2. A background relay sends the envelope, unchanged, to **every consumer listed in the catalog above** as `POST {gateway}/api/v1/<consumer>/events`, with the service token (see [Authentication](#authentication)). The producer is configured with each consumer's Gateway URL; the variable names are each service's own and are listed in its `docs/` reference.
-3. Delivery state is tracked per consumer: one consumer being down never holds back the others.
-4. The answer - the consumer's, or the Gateway's when it could not reach the consumer - decides what happens next:
+2. A background relay publishes the envelope, unchanged, **once** to `events.<event_type>` with `Publish` (`topic`, `event_id`, `event_type`, `producer`, `version`, `envelope_json`, `request_id`; see [`shared/broker.proto`](shared/broker.proto)).
+3. `Publish` answers only once the message is on the broker's disk and in every subscribed service's queue (or kept). Then the relay marks the event delivered. Any gRPC error (`UNAVAILABLE`, `RESOURCE_EXHAUSTED` for a full queue, a deadline) leaves it pending, and the relay retries with backoff (capped at 30 s). A producer no longer tracks its consumers: the broker does, per queue.
 
-| Answer                                                                                                        | Producer does                                                      |
-| ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| `2xx`                                                                                                         | Marks the event delivered to that consumer                         |
-| `422 INVALID_EVENT`                                                                                           | Parks it for that consumer and logs it - a retry cannot succeed    |
-| Any other `4xx` (`408`, `429`, `502` from the Gateway included), any `5xx`, a timeout or a refused connection | Retries later with backoff (capped at 30 s), until it gets a `2xx` |
+**Consumer side - a `Delivery` with an `event` on the instance's stream.** The consumer answers it with `Ack(message_id, outcome)`:
 
-The Gateway forwards each push **once** and never retries it on the producer's behalf; retrying is the producer relay's job alone, so the two never multiply.
+| Outcome | When | The broker does |
+| --- | --- | --- |
+| `OK` | The event was applied, or it is a repeat of an `event_id` already applied | Removes the copy from the queue |
+| `RETRY` | A failure that may succeed later (its own database is down) | Delivers it again after `MESSAGE_RETRY_DELAY_SECONDS` (`5`), to another instance when there is one; a failed attempt |
+| `PERMANENT` | It can never succeed: the envelope cannot be parsed, its `event_type` is not one this service consumes, its `version` is unknown, its payload fails validation (the old `422 INVALID_EVENT`) | Moves it to the dead letter channel at once |
+| no `Ack` within `MESSAGE_ACK_TIMEOUT_SECONDS` (`5`, the services' task timeout), or the instance's stream ends | | Delivers it again, to another instance when one is connected; a failed attempt |
 
-**Consumer side - `POST /api/v1/events`.** Every service that consumes at least one event exposes this one endpoint (reached as `{gateway}/api/v1/<consumer>/events`).
+- The consumer records the `event_id` **in the same transaction** as the change the event causes, and acks `OK` only after that transaction commits.
+- An instance holds at most its `max_concurrent_tasks` unanswered messages; the others wait in the queue. Among the connected instances the broker picks the least loaded one (see [Load balancing](#load-balancing)).
+- **Dead letters.** After `MESSAGE_MAX_ATTEMPTS` (`3`) failed attempts, or at once on `PERMANENT`, the copy goes to the broker's dead letter channel (`GET /api/v1/dead-letters` on the broker, read-only), is logged `broker.dead_lettered` and raises one `dead_letter` alert through Service Discovery to the developers. A dead letter stays until a person deals with it; it is never delivered again on its own.
 
-- **Payload:** the envelope. **Auth:** service token only, checked by the Gateway.
-- **Response:** `200 OK` with `{ "event_id": "...", "duplicate": false }`. A repeat of an `event_id` already applied answers `200` with `"duplicate": true` and changes nothing - a repeat is the dedup working, not an error.
-- The consumer records the `event_id` **in the same transaction** as the change the event causes, and answers `2xx` only after that transaction commits.
-- `422 INVALID_EVENT` when the envelope cannot be parsed, its `event_type` is not one this service consumes, its `version` is unknown to this service, or its payload fails validation.
-- `500` for a failure that may succeed later (its own database is down); the producer will retry.
+**Guarantees.** Delivery is at-least-once: a copy acked late, or acked by an instance that crashed before the ack arrived, is delivered again. There is **no ordering guarantee** between events, even from one producer: a consumer must cope, for example, with `session.ended` arriving before `session.started`. Messages, subscriptions and dead letters are durable on the broker's volume (see [Message Broker](#message-broker)).
 
-**Guarantees.** Delivery is at-least-once: a crash between a successful push and the outbox update sends the event again. There is **no ordering guarantee** between events, even from one producer: a consumer must cope, for example, with `session.ended` arriving before `session.started`.
+**Versions.** `version` in the envelope is bumped by one for a breaking payload change of that event. Consumers reject a version they do not know with `PERMANENT`.
 
-**Versions.** `version` in the envelope is bumped by one for a breaking payload change of that event. Consumers reject a version they do not know with `422 INVALID_EVENT`.
+> **Known gap (Credential).** Credential Service `4.0.0` dedups `applicant.initialized` by `applicant_id`, not by
+> `event_id` (see [`docs/CREDENTIAL_SERVICE.md`](docs/CREDENTIAL_SERVICE.md)). The effect is the same for that one
+> event, which creates one record per applicant, but the rule above stays `event_id`.
 
 #### Gateway
 
-The Gateway is the single entry point of the system (Lab 2). Clients **and services** send every REST request to it; nothing calls a service directly, apart from the two exceptions of [Service Discovery](#service-discovery): its status polling and its [logs download](#logs-download). It owns no data and produces no events. Its own reference is [`docs/GATEWAY.md`](docs/GATEWAY.md).
+The Gateway is the single entry point of the system for clients (Lab 2). From Lab 4 it serves **only the client routes** below and sends each request through the [Message Broker](#message-broker); services never call it, and it calls no service directly. It owns no data and produces no events. Its own reference is [`docs/GATEWAY.md`](docs/GATEWAY.md).
 
-**Address.** Container `gateway-service`, port `8080` inside `student-id-net` (`http://gateway-service:8080`), published on host port `8080`.
+**Address.** Container `gateway-service`, port `8080` inside `student-id-net` (`http://gateway-service:8080`), published on host port `8080`. It reaches the broker at `MESSAGE_BROKER_URL` (`message-broker-service:8071`).
 
-**Route scheme.** `{gateway}/api/v1/<prefix>/<rest>` is forwarded to one instance of the service behind `<prefix>` as `/api/v1/<rest>` - the prefix segment is removed, so every service keeps the paths documented under [Endpoints](#endpoints). Example: `GET {gateway}/api/v1/server-rules/rulesets/current?difficulty=3` reaches `GET http://<host>:8080/api/v1/rulesets/current?difficulty=3` of one `server-rules` instance. The prefix also tells apart paths that exist in several services (`POST /applicants/next`, `POST /events`, `/health`).
+**Route scheme.** `{gateway}/api/v1/<prefix>/<rest>` is sent to the service behind `<prefix>` as `/api/v1/<rest>` - the prefix segment is removed, so every service keeps the paths documented under [Endpoints](#endpoints). Example: `GET {gateway}/api/v1/server-rules/rulesets/7` reaches `GET /api/v1/rulesets/7` of one `server-rules` instance. The prefix also tells apart paths that exist in several services (`GET /applicants/{id}`, `/health`).
 
-The prefix is also the service's name everywhere else (Lab 3): `service_name` at registration with Service Discovery, the first part of `instance_id`, `service` in `GET /status` and in every log line.
+The prefix is also the service's name everywhere else: the broker's request queue `requests.<prefix>`, `service_name` at registration with Service Discovery, the first part of `instance_id`, `service` in `GET /status` and in every log line.
 
-| Prefix              | Service                           | Port of its instances (Lab 2 address)   |
+| Prefix              | Service                           | REST port of its instances (Lab 2 address) |
 | ------------------- | --------------------------------- | --------------------------------------- |
 | `player`            | Player Service                    | `8080` (`http://player-service:8080`)            |
 | `session`           | Server Moderation Session Service | `8080` (`http://session-service:8080`)           |
@@ -359,73 +395,130 @@ The prefix is also the service's name everywhere else (Lab 3): `service_name` at
 | `moderation`        | Moderation Service                | `8085` (`http://moderation-service:8085`)        |
 | `discord-dms`       | Discord DMs Service               | `8096` (`http://discord-dms-service:8096`, REST; `8086` is its WebSocket listener) |
 
-A service's own health check is `{gateway}/api/v1/<prefix>/health` (forwarded to `/health`). The Gateway's own is `GET {gateway}/health`.
+The REST port is where Service Discovery polls `GET /status` and fetches `GET /logs`; the Gateway does not use it from Lab 4.
 
-**Routing table from Service Discovery (Lab 3).** The Gateway no longer forwards to the fixed addresses above. It reads the `up` instances of every service from [Service Discovery](#service-discovery) (`GET /api/v1/instances`, with the service token) at startup and every 5 s, and forwards each request to `http://<host>:<port>` of one of them, in **round-robin** across the instances of that service. When Service Discovery is unreachable, the Gateway keeps the last list it read and logs the failure (`sd.refresh`). An answer that lists no instance at all does not replace a list that holds some until 3 such answers come in a row (10 s): a Service Discovery that just restarted is empty until the instances' next heartbeat. With `SERVICE_DISCOVERY_URL` empty the Gateway forwards to the fixed addresses above instead (static mode, one instance per service), for a stack without Service Discovery. Every service is written so that any instance can answer any request (see [Running as several instances](#running-as-several-instances)), which is what makes round-robin safe.
+**Client routes (Lab 4, #110).** The whole route table. Every route needs a player token, except the public ones marked.
 
-**Circuit breaker per instance (Lab 3).** The Gateway keeps one [circuit breaker](#circuit-breaker) per instance, with a 35 s window (its task timeout `10s` x 3.5). While an instance's breaker is open, the round-robin skips it. When the breaker trips, the Gateway marks that instance `down` in Service Discovery once (`PUT /api/v1/instances/{instance_id}/status`, see [Service Discovery](#service-discovery)), logs the outcome as `sd.mark_down` and otherwise ignores any error of that call (a `404` for an instance whose record already expired included). It closes an instance's breaker early when Service Discovery lists the instance as `up` again.
+| Prefix | Routes |
+| --- | --- |
+| every prefix | `GET /health` (public) |
+| `player` | `POST /auth/login` (public), `POST /players` (public, registration), `GET /players`, `GET`/`PATCH`/`DELETE /players/{player_id}`, `GET /players/{player_id}/profile`, `GET /players/{player_id}/shifts`, `GET /players/{player_id}/disciplinary-actions`, `GET`/`POST /players/{player_id}/friends`, `DELETE /players/{player_id}/friends/{friend_id}` |
+| `session` | `GET`/`POST /sessions`, `GET`/`DELETE /sessions/{session_id}`, `POST /sessions/{session_id}/players`, `DELETE /sessions/{session_id}/players/{player_id}`, `POST /sessions/{session_id}/start`, `POST /sessions/{session_id}/applicants/next`, `POST /sessions/{session_id}/end`, `GET /sessions/{session_id}/decisions`, `GET /sessions/{session_id}/events` |
+| `applicant` | `GET /applicants/{applicant_id}` |
+| `credential` | `GET /applicants/{applicant_id}/documents` |
+| `university-record` | `GET /records/{category}` |
+| `server-rules` | `GET /rulesets/{version}` (`version` digits only) |
+| `moderation` | `GET`/`POST /decisions`, `GET /decisions/{decision_id}`, `GET /bans` |
+| `discord-dms` | `POST /ws-tickets`, `GET /sessions/{session_id}/channels`, `GET`/`POST /channels/{channel_id}/messages`, `PATCH /channels/{channel_id}/messages/{message_id}` |
 
-**No live instance (Lab 3).** When a prefix has no `up` instance, or every one of them has an open breaker, the Gateway calls nothing and answers `503 SERVICE_UNAVAILABLE` with `details.service` naming the prefix, logged as `route.no_instance`.
+**Every other path answers `404 NOT_FOUND`**, before any credential is checked, and nothing is sent to the broker: `POST /events`, `/admin/*`, `/dev/*`, `/health/ready`, `/logs`, `/metrics` and every service-to-service route (`POST /applicants/next` of Applicant, Credential and University Record, `GET /applicants/{id}/documents/validation`, `GET /applicants/{id}/records`, `GET /rulesets/current`, `POST /rulesets/{version}/evaluations`, Applicant's and Credential's CRUD extensions, Session's `/deliveries`). A known path with a method it does not take is `404` too. The services keep those handlers for each other, reached through the broker. A path is matched as the service will read it: percent-decoded, case-insensitive, repeated and trailing slashes collapsed.
 
-**Forwarding.** Method, path remainder, query string and body are forwarded unchanged. The status, headers and body of the service's answer are returned unchanged - a service's own errors reach the caller as the service wrote them. The Gateway changes only the credential headers (see [Authentication](#authentication)) and adds `X-Request-ID` when the caller sent none.
+**Sending a request.** Each request on a client route is one `Request` to the broker (see [Message Broker](#message-broker)): `service` (the prefix), a new `correlation_id`, the method, the service's path with the query string, the body, `request_id`, `caller: "gateway"`, `timeout_ms`, and three headers: `X-Request-ID`, `X-Player-Id` (set from the checked player token, never the caller's own) and the caller's `Content-Type`. No other header of the caller is sent. The broker puts it into `requests.<prefix>`, hands it to one instance and returns that instance's `Reply`; its status, headers and body reach the caller unchanged. `timeout_ms` is what is left of the Gateway's `10s` task timeout once the body has arrived, less a tenth (at most 250 ms), so the broker's own `408` comes before the Gateway gives up.
 
 **What the Gateway answers itself**, always in the shared error envelope:
 
 | Situation                                                    | Answer                                                |
 | ------------------------------------------------------------ | ----------------------------------------------------- |
-| Unknown prefix                                               | `404 NOT_FOUND`                                       |
-| Missing or unusable credential, wrong service token          | `401` / `403` - see [Authentication](#authentication) |
-| The service is unreachable (connection refused, DNS failure, no connection within 2 s) | `502 BAD_GATEWAY`              |
-| The service did not answer within the Gateway's timeout      | `408 REQUEST_TIMEOUT`                                 |
+| Unknown prefix, or not a client route                        | `404 NOT_FOUND`                                       |
+| Missing or unusable player token                             | `401` - see [Authentication](#authentication)         |
+| The task ran past the Gateway's timeout (`10s`), the broker's deadline included | `408 REQUEST_TIMEOUT`              |
 | The Gateway's own concurrent task limit is reached           | `429 TOO_MANY_REQUESTS`                               |
-| The service has no `up` instance with a closed breaker (Lab 3) | `503 SERVICE_UNAVAILABLE`, `details.service`        |
+| The broker is unreachable, or the Gateway's breaker on the broker is open | `503 SERVICE_UNAVAILABLE`, `details.service: "message-broker"` |
 
-In all of these the request either never reached the service or its answer was lost; callers treat `408`, `429`, `502` and `503` as "may be retried", except for the non-idempotent `POST`s listed under [API conventions](#api-conventions).
+What the broker answers itself passes through unchanged, in the same envelope: `503 SERVICE_UNAVAILABLE` with `details.service` naming the prefix (no instance of the service, or every one skipped by its breaker), `408 REQUEST_TIMEOUT` (no reply in time) and `429 TOO_MANY_REQUESTS` (the broker's workers are taken). Callers treat `408`, `429` and `503` as "may be retried", except for the non-idempotent `POST`s listed under [API conventions](#api-conventions).
 
-**No retries.** The Gateway forwards a request once. It never retries on its own, so a non-idempotent call such as `POST /applicants/next` is never duplicated by it.
+**No retries.** The Gateway sends a request once. It never retries on its own, so a non-idempotent call such as `POST /decisions` is never duplicated by it.
 
-**Development and admin routes.** Paths under `/api/v1/<prefix>/dev/*` and `/api/v1/<prefix>/admin/*` are beyond the contract. The Gateway forwards them only with a valid service token, never on a player token alone.
+**One circuit breaker, on the broker.** The Gateway keeps one [circuit breaker](#circuit-breaker), on the broker, its only target, with a 35 s window (its task timeout `10s` x 3.5). A failure is a call that failed in transport (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, ...); a reply of any status is not, because the instances' breakers are the broker's. The Gateway no longer reads Service Discovery and never names an instance.
+
+> **Not yet wired (#113).** CPR `dev`'s `docker-compose.yml` still runs Gateway `3.1.0`, which forwards REST to the
+> instances itself as in Lab 3, until #113 switches the stack to the `4.x` images and adds the broker.
+
+#### Message Broker
+
+The Message Broker (Lab 4) carries every request and every event between the components: the Gateway's requests on behalf of clients, the requests one service makes to another, and every event. It owns topics, queues, subscriptions and delivery state, and no business data. Its own reference is [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md).
+
+**Address.** Container `message-broker-service`, one copy. gRPC on `8071` (plaintext HTTP/2 inside `student-id-net`): every service and the Gateway set `MESSAGE_BROKER_URL=message-broker-service:8071`, a `host:port` without a scheme. HTTP on `8070` (`http://message-broker-service:8070`): `GET /health`, `GET /status`, `GET /logs`, `GET /metrics`, and with the service token `GET /api/v1/topics` and `GET /api/v1/dead-letters`. It registers with Service Discovery as `message-broker`, which is also its `service` in `/status` and in its log lines.
+
+**The gRPC contract is [`shared/broker.proto`](shared/broker.proto)** (package `broker.v1`), the one file every client is generated from. Each component keeps a byte-identical copy in its own repository, because a submodule build cannot reach the CPR; a change is made here first. Every call carries the metadata `x-service-token: <SERVICE_TOKEN>` (see [Through the Message Broker](#through-the-message-broker-lab-4)): missing is `UNAUTHENTICATED`, wrong is `PERMISSION_DENIED`.
+
+| RPC | Who calls it | What |
+| --- | --- | --- |
+| `Subscribe(service, instance_id, topics, max_concurrent_tasks)` | every instance of the eight services | One server stream per instance, for as long as it is connected: the requests of `requests.<service>` (attached automatically) and the events of each topic in `topics`. At most `max_concurrent_tasks` (at least 1) unanswered deliveries at a time. A second stream with the same `instance_id` ends the first |
+| `Publish(topic, event_id, event_type, producer, version, envelope_json, request_id)` | a producer's outbox relay | `topic` is `events.<event_type>`. Answers once the message is on disk and in every subscribed service's queue (see [Event delivery](#event-delivery)) |
+| `Ack(message_id, instance_id, outcome, reason)` | a consumer | `OK`, `RETRY` or `PERMANENT` for an event delivery. Idempotent. Never settles a request |
+| `Request(service, correlation_id, method, path, headers, body, request_id, caller, timeout_ms)` | the Gateway; a service calling another | Blocks until one instance of `service` replies, the timeout passes or no instance can take it |
+| `Reply(reply, message_id)` | the instance that got a request | Its `status`, `headers` and `body`, passed to the caller unchanged |
+| `ListTopics()`, `ListDeadLetters(limit, offset)` | developers, tools | The same listings as the HTTP side |
+
+**Request and reply.** A request is put into `requests.<service>`, delivered to one instance as `Delivery.request`, and answered with `Reply`. It is never stored, never acked and never sent twice blindly, since a non-`GET` may already have run. Its headers pass through except `X-Service-Token` and `Authorization`, which never leave the broker. What the broker answers itself is a normal `ServiceReply` in the shared error envelope, never a gRPC error:
+
+| What happened | `ServiceReply` |
+| --- | --- |
+| The instance replied | its status, headers and body, unchanged |
+| No instance of the service is subscribed, or every one is skipped by its open breaker | `503 SERVICE_UNAVAILABLE`, `details.service`, at once |
+| The broker's workers for waiting calls are taken | `429 TOO_MANY_REQUESTS` with `Retry-After`, at once |
+| No reply within the timeout | `408 REQUEST_TIMEOUT` |
+| The instance holding it was lost (stream ended, breaker tripped) | a `GET` is sent to another instance within the remaining timeout; any other method `503` at once |
+
+- **Timeout.** The request's `timeout_ms`; `MESSAGE_REQUEST_TIMEOUT_SECONDS` (`10`, the Gateway's task timeout) when it is 0; at most `MESSAGE_REQUEST_MAX_TIMEOUT_SECONDS` (`60`). The instance gets that timeout less a tenth (at most 250 ms), so its own `408` arrives first. A service calling another sends its own outgoing-call timeout (Session `3s`, Moderation `4s`), below its `5s` task timeout.
+- **A service that called another** treats the broker's `503`, `408` and `429` like any other failure of a peer: `500 DEPENDENCY_UNAVAILABLE` (see [Errors](#errors)).
+- **No `504`.** A request without a reply in time is `408 REQUEST_TIMEOUT` everywhere, the same code as a task timeout.
+
+**Delivery of events**, acks, redelivery and the dead letter channel: see [Event delivery](#event-delivery). **Which instance gets a message:** see [Load balancing](#load-balancing). **Its breakers:** see [Circuit breaker](#circuit-breaker).
+
+**Durability.** Messages, subscriptions and dead letters live in SQLite (WAL) at `MESSAGE_STORE_PATH` (`/data/broker.db`) on a named volume, committed before the call that changed them returns. After a restart the broker rebuilds its queues before it takes a call, and the instances reconnect on their own: an acked copy is never delivered again, one delivered but not acked goes out again. An acked copy is deleted after `MESSAGE_RETENTION_HOURS` (`24`). Above `MESSAGE_QUEUE_MAX_DEPTH` (`10000`) messages in a queue or `MESSAGE_MAX_TOPICS` (`1000`) topics a publish is refused (`RESOURCE_EXHAUSTED`) and changes nothing, so the producer's outbox retries. When the disk cannot be written, `Publish`, `Subscribe` and `Ack` answer `UNAVAILABLE` and `GET /status` answers `503 degraded`.
+
+**Threads.** One thread per RPC from a bounded pool (`GRPC_MAX_WORKERS`, `64`): a stream holds one for its whole life, a `Request` until its reply. `GRPC_RESERVED_WORKERS` (`16`) are kept for `Reply`, `Ack` and `Publish`, so a burst of waiting requests never starves the answers. One more RPC than the pool is `RESOURCE_EXHAUSTED`.
 
 #### Service Discovery
 
-Service Discovery (Lab 3) keeps the registry of running instances: which instance of which service runs where, and whether it is `up` or `down`. The Gateway routes from it; every service instance registers with it. It owns no business data and takes part in no event. Its own reference is [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md).
+Service Discovery (Lab 3) keeps the registry of running instances: which instance of which service runs where, and whether it is `up` or `down`. From Lab 4 the Message Broker routes from it and registers with it, like every service instance; Prometheus reads its scrape targets from it. It owns no business data and takes part in no event. Its own reference is [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md).
 
-**Address.** Container `service-discovery-service`, port `8090` inside `student-id-net` (`http://service-discovery-service:8090`), published on host port `8090`. Every service and the Gateway find it through `SERVICE_DISCOVERY_URL`; an empty value disables registration (one warning line at startup), for local runs and tests.
+**Address.** Container `service-discovery-service`, port `8090` inside `student-id-net` (`http://service-discovery-service:8090`), published on host port `8090`. Every service and the broker find it through `SERVICE_DISCOVERY_URL`; an empty value disables registration (one warning line at startup), for local runs and tests.
 
-**Two exceptions to the rules above**, both because the Gateway itself depends on the registry:
+**Two exceptions to the rules above**, both because the broker itself depends on the registry:
 
-- Registration, heartbeats, deregistration, the status polling and the [logs download](#logs-download) (Lab 4) go **directly** between an instance and Service Discovery, not through the Gateway.
-- Service Discovery **checks `X-Service-Token` itself** on every `/api/v1/instances` endpoint (`401 INVALID_SERVICE_TOKEN` for a wrong token, `403 SERVICE_TOKEN_REQUIRED` for none), the one component besides the Gateway that validates a credential on its API; from Lab 4 every component also checks it on its own [`GET /logs`](#logs-download). `GET /health` and `GET /status` need none.
+- Registration, heartbeats, deregistration, the status polling and the [logs download](#logs-download) (Lab 4) go **directly** between an instance and Service Discovery, not through the Gateway or the broker.
+- Service Discovery **checks `X-Service-Token` itself** on every `/api/v1` endpoint (`401 INVALID_SERVICE_TOKEN` for a wrong token, `403 SERVICE_TOKEN_REQUIRED` for none), like the broker on its own; from Lab 4 every component also checks it on its own [`GET /logs`](#logs-download). `GET /health` and `GET /status` need none.
 
 **Instance identity.**
 
-- `service_name` is the Gateway prefix: `player`, `session`, `applicant`, `credential`, `server-rules`, `university-record`, `moderation`, `discord-dms`. Any other value is `400 VALIDATION_ERROR`.
-- `instance_id` is `<service_name>-<hostname>`, the hostname read from the OS (`os.Hostname()`, `Dns.GetHostName()`, `socket.gethostname()`), which in Docker is the container id prefix: `player-3f4e2a9b1c7d`. A restarted container keeps its id, so an instance marked `down` stays `down` until health polling recovers it. An optional `INSTANCE_ID` variable overrides it for runs outside Docker.
+- `service_name` is the Gateway prefix: `player`, `session`, `applicant`, `credential`, `server-rules`, `university-record`, `moderation`, `discord-dms`, and from Lab 4 `message-broker` for the broker. Any other value is `400 VALIDATION_ERROR`.
+- `instance_id` is `<service_name>-<hostname>` (letters, digits, `.`, `_`, `-`, at most 200 characters), the hostname read from the OS (`os.Hostname()`, `Dns.GetHostName()`, `socket.gethostname()`), which in Docker is the container id prefix: `player-3f4e2a9b1c7d`. A restarted container keeps its id, so an instance marked `down` stays `down` until health polling recovers it. An optional `INSTANCE_ID` variable overrides it for runs outside Docker.
 - `host` is the source IP of the registration or heartbeat request, unless the body carries `host` (set from the optional `INSTANCE_HOST` variable, for a service running outside Docker). A heartbeat from a new IP updates it.
-- `port` is the REST port the Gateway forwards to (Discord DMs: `8096`, not its WebSocket port).
+- `port` is the REST port, where Service Discovery polls `GET /status` (Discord DMs: `8096`, not its WebSocket port; the broker: `8070`, its HTTP side).
 
 **Register and heartbeat - `PUT /api/v1/instances/{instance_id}`** (service token).
 
 ```json
-{ "service_name": "player", "port": 8080, "version": "3.0.0" }
+{
+  "service_name": "session", "port": 8080, "version": "4.0.0",
+  "topics": { "publishes": ["events.session.started", "events.session.ended"], "subscribes": ["events.decision.recorded"] }
+}
 ```
 
-`host` is added only when `INSTANCE_HOST` is set. Response `200 OK`, the stored record:
+`host` is added only when `INSTANCE_HOST` is set. `topics` (Lab 4) is optional: `publishes` and `subscribes`, both optional, at most 50 names each, every name a topic name of [Event delivery](#event-delivery). A heartbeat without `topics` keeps what the record has; one with `topics` replaces it. It documents the intent only: the broker's `Subscribe` call is the source of truth for subscriptions. Response `200 OK`, the stored record:
 
 ```json
 {
-  "instance_id": "player-3f4e2a9b1c7d",
-  "service_name": "player",
+  "instance_id": "session-3f4e2a9b1c7d",
+  "service_name": "session",
   "host": "172.18.0.12",
   "port": 8080,
-  "version": "3.0.0",
+  "version": "4.0.0",
   "status": "up",
-  "last_seen_at": "2026-10-27T12:00:00.123Z",
+  "last_seen_at": "2026-11-09T12:00:00.123Z",
+  "topics": { "publishes": ["events.session.started", "events.session.ended"], "subscribes": ["events.decision.recorded"] },
+  "load": null,
+  "last_checked_at": null,
   "ttl_seconds": 15
 }
 ```
 
-- Errors: `400 VALIDATION_ERROR` (bad body, unknown `service_name`), `401 INVALID_SERVICE_TOKEN`, `403 SERVICE_TOKEN_REQUIRED`, in the shared error envelope.
+- `load` and `last_checked_at` (Lab 4) come from the last status check (see Health polling below): `load` is `in_flight / max_concurrent_tasks` rounded to 3 digits, `null` before the first check and after a failed one.
+
+- Errors: `400 VALIDATION_ERROR` (bad body, unknown `service_name`, a bad topic name), `401 INVALID_SERVICE_TOKEN`, `403 SERVICE_TOKEN_REQUIRED`, in the shared error envelope.
 - The first `PUT` is sent right after the instance's HTTP listener is up, so the polling finds `GET /status` at once. The same `PUT` is then repeated **every 5 s** for the life of the process: that is the heartbeat. Registering again updates `host`, `port`, `version` and `last_seen_at` of the same record and never duplicates it; it **never changes `status`**.
 - A record with no `PUT` for **15 s** (`ttl_seconds`) is removed, logged `registry.expired` (`warn`), and an `expired` alert is raised. This is the alert that reports a crashed instance: its record is removed 10-15 s after the crash; the first failed status check, at most 10 s after the crash, has usually reported it as `unreachable` already. A `DELETE` on graceful shutdown raises no alert. An instance that registers after its record expired (a restarted container keeps its hostname, so its `instance_id`) gets a new record, `up`, logged `registry.registered` with `after_expiry: true`, and a `recovered` alert says it is back. After a Service Discovery restart the registry is empty and every instance reappears at its next `PUT`.
 - A failed `PUT` is logged (`sd.heartbeat_failed`, `warn`) and retried on the next tick; the instance keeps serving. `sd.registered` is logged on the first success only.
@@ -433,7 +526,7 @@ Service Discovery (Lab 3) keeps the registry of running instances: which instanc
 
 **Deregister - `DELETE /api/v1/instances/{instance_id}`** (service token). Sent on graceful shutdown (SIGTERM/SIGINT) before the server stops, with a 2 s timeout, logged `sd.deregistered`; shutdown never waits on it beyond that. Removes the record: `204 No Content`, also for an unknown id (idempotent), so an instance whose record already expired, or that outlived a Service Discovery restart, does not see its deregistration fail.
 
-**List - `GET /api/v1/instances?service=<name>`** (service token). Read by the Gateway every 5 s (Gateway `3.1.0`); from Lab 4 the broker reads it every 5 s instead (#110).
+**List - `GET /api/v1/instances?service=<name>&topic=<name>`** (service token). Read by the broker every 5 s (`SERVICE_DISCOVERY_REFRESH_SECONDS`), which routes on the `load` of each instance (see [Load balancing](#load-balancing)); Gateway `3.1.0` read it for its Lab 3 routing table.
 
 ```json
 {
@@ -443,17 +536,26 @@ Service Discovery (Lab 3) keeps the registry of running instances: which instanc
       "service_name": "player",
       "host": "172.18.0.12",
       "port": 8080,
-      "version": "3.0.0",
+      "version": "4.0.0",
       "status": "up",
-      "last_seen_at": "2026-10-27T12:00:00.123Z"
+      "last_seen_at": "2026-11-09T12:00:00.123Z",
+      "topics": { "publishes": [], "subscribes": ["events.session.ended"] },
+      "load": 0.125,
+      "last_checked_at": "2026-11-09T11:59:58.004Z"
     }
   ]
 }
 ```
 
-Only `up` instances are listed. `service` omitted lists every service; an unknown service, or one with no `up` instance, answers `200` with `{ "instances": [] }`.
+Only `up` instances are listed. `service` omitted lists every service; an unknown service, or one with no `up` instance, answers `200` with `{ "instances": [] }`. `topic` (Lab 4) keeps only the instances whose registration subscribes to it.
 
-**Mark down - `PUT /api/v1/instances/{instance_id}/status`** (service token), called by the Gateway when an instance's circuit breaker trips:
+**Topics - `GET /api/v1/topics`** (service token, Lab 4). Every topic named in a registration, with the services (not instances) on each side, `down` instances included, because an outage does not change who means to listen: `{ "topics": [{ "name": "events.session.started", "publishers": ["session"], "subscribers": ["discord-dms", "university-record"] }] }`. The broker's own `GET /api/v1/topics` is the source of truth for queues.
+
+**Prometheus targets - `GET /api/v1/instances/prometheus`** (service token, Lab 4). Every `up` instance of every service and the broker, in the Prometheus `http_sd_configs` format: `[{ "targets": ["172.18.0.12:8080"], "labels": { "service": "player", "instance_id": "player-3f4e2a9b1c7d" } }]`. See [Monitoring](#monitoring).
+
+**Alert from the broker - `POST /api/v1/alerts`** (service token, Lab 4). `{ "kind": "dead_letter", "service_name": "<the queue's service>", "instance_id": "<the broker's>", "detail": "<ids and reason, 1-500 characters, never a body>" }` answers `202 {"status": "accepted"}`. Only `dead_letter` is a known `kind`. It goes out like any alert below, with the cooldown per kind and instance.
+
+**Mark down - `PUT /api/v1/instances/{instance_id}/status`** (service token), called by the broker when an instance's circuit breaker trips (Lab 4; the Gateway in Lab 3):
 
 ```json
 { "status": "down", "reason": "breaker_open: 3 failures in 35s" }
@@ -463,9 +565,9 @@ Sets the instance `down` and keeps the record (`DELETE` stays for graceful shutd
 
 **Statuses.** An instance is `up` or `down`, nothing else.
 
-- `down` is set by the Gateway (mark-down after a breaker trip) or by Service Discovery itself after **3 consecutive failed status checks**.
-- Back to `up` only after **3 consecutive healthy status checks**, in both cases: 20-30 s after a Gateway mark-down, and up to about 40 s after an instance that polling marked down answers again (the first of the 3 is the breaker's trial call, 17.5 s after the trip). Heartbeats keep a `down` record alive but never clear `down`.
-- **Only the Gateway marks instances down.** A service's own circuit breakers log and fail fast and never call Service Discovery: services call each other through the Gateway and cannot name one instance.
+- `down` is set by the broker (mark-down after a breaker trip, logged `marked_down_by: broker`) or by Service Discovery itself after **3 consecutive failed status checks** (`marked_down_by: health`).
+- Back to `up` only after **3 consecutive healthy status checks**, in both cases: 20-30 s after a broker mark-down, and up to about 40 s after an instance that polling marked down answers again (the first of the 3 is the breaker's trial call, 17.5 s after the trip). Heartbeats keep a `down` record alive but never clear `down`.
+- **Only the broker marks instances down.** A service's or the Gateway's own circuit breaker logs and fails fast and never calls Service Discovery: they call each other through the broker and cannot name one instance.
 
 **Health polling.** Every **10 s** Service Discovery calls `GET http://<host>:<port>/status` of every registered instance, `up` and `down` alike, in parallel, each with a **2 s** timeout, so one slow instance never delays the others. After a failed check, the next check of that instance comes after **2 s** (`HEALTH_RECHECK_SECONDS`) instead of 10 s, so its 3 failed checks fall within 4-12 s, inside the 17.5 s breaker window.
 
@@ -474,17 +576,9 @@ Sets the instance `down` and keeps the record (`DELETE` stays for graceful shutd
 - **Critical load:** a `200` whose `in_flight / max_concurrent_tasks` is at least **0.8** (80 % of `MAX_CONCURRENT_TASKS`) logs `health.critical` (`warn`) and raises a `critical_load` alert once per streak; load back under the threshold logs `health.load_recovered` and raises a `load_recovered` alert. `GET /status` is exempt from the concurrent task limit, so a copy at full load produces a critical-load alert instead of a `429` that would count as a failed check.
 - Service Discovery keeps its own circuit breaker per polled instance, counting failed checks in a row, so it opens on the check that sets the instance `down`. While it is open the instance is probed by one trial call per 17.5 s; a successful trial is the first of the 3 healthy checks it needs to come back. Unlike [Circuit breaker](#circuit-breaker), any failed status check counts here, a `4xx` included: a `404` or `429` from `/status` means the address does not serve a healthy instance.
 
-**Alerts and developer notifications.** Every alert carries its kind (critical load, unreachable, expired, marked down, and the recoveries recovered and load recovered), the service, `instance_id`, `host:port`, the load and the UTC time. A recovery names the problems it ends: `recovered` ends unreachable, marked down and expired, `load_recovered` ends critical load. Service Discovery logs every alert and posts it to the team's Telegram group through the Bot API, `POST https://api.telegram.org/bot<token>/sendMessage` with `{ "chat_id", "text", "parse_mode": "HTML" }` (a title with an icon per kind and hashtags of the kind and the service; the plain-text message when Telegram refuses the markup), configured with `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` (empty in `.env.example`) and the optional `NOTIFY_COOLDOWN_SECONDS` (`300`) and `TELEGRAM_TIMEOUT_SECONDS` (`5`). The same problem for the same instance is sent at most once per cooldown; a recovery is sent only when it closes a problem the group was told about, and it never shortens the cooldown. A `429` blocks the whole chat until its `retry_after`: a block ending within 30 s is waited for, a longer one drops the alerts meanwhile. With either variable empty, or without internet, alerts are only logged and Service Discovery starts normally. A failed send is logged as `notify.failed` without the URL, since the URL holds the bot token.
+**Alerts and developer notifications.** Every alert carries its kind (critical load, unreachable, expired, marked down, the broker's dead letter, and the recoveries recovered and load recovered), the service, `instance_id`, `host:port`, the load and the UTC time. A recovery names the problems it ends: `recovered` ends unreachable, marked down and expired, `load_recovered` ends critical load. Service Discovery logs every alert and posts it to the team's Telegram group through the Bot API, `POST https://api.telegram.org/bot<token>/sendMessage` with `{ "chat_id", "text", "parse_mode": "HTML" }` (a title with an icon per kind and hashtags of the kind and the service; the plain-text message when Telegram refuses the markup), configured with `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in `.env` (empty in `.env.example`) and the optional `NOTIFY_COOLDOWN_SECONDS` (`300`) and `TELEGRAM_TIMEOUT_SECONDS` (`5`). The same problem for the same instance is sent at most once per cooldown; a recovery is sent only when it closes a problem the group was told about, and it never shortens the cooldown. A `429` blocks the whole chat until its `retry_after`: a block ending within 30 s is waited for, a longer one drops the alerts meanwhile. With either variable empty, or without internet, alerts are only logged and Service Discovery starts normally. A failed send is logged as `notify.failed` without the URL, since the URL holds the bot token.
 
-> **Known gap (Lab 4, #111).** Service Discovery `4.0.0` is ahead of this section until the Lab 4
-> contract (#105) merges. It adds `topics` to the registration and the record, `load` and
-> `last_checked_at` to the record, `?topic=` on the list, `GET /api/v1/topics`,
-> `GET /api/v1/instances/prometheus`, `GET /metrics`, `POST /api/v1/alerts` (the `dead_letter` alert
-> kind) and `message-broker` as a known `service_name`, all additive. One thing reads differently: it
-> records every mark-down as `marked_down_by: broker` ("marked down by the broker" in the alert),
-> because from Lab 4 the broker is the endpoint's only caller, so the mark-downs of the Lab 3 Gateway
-> above read "broker" until the cutover of #113; the endpoint itself is unchanged. Details:
-> [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md) §10.
+**Metrics.** Service Discovery serves `GET /metrics` like every component (see [Monitoring](#monitoring)). Details: [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md).
 
 #### API conventions
 
@@ -494,12 +588,12 @@ These apply to every endpoint listed in the next section.
 - Lists are paginated with `?limit=&offset=` and return `{ "items": [], "total": 0 }`.
 - A `POST` that creates something (`POST /applicants/next`, `POST /sessions`, `POST /decisions`) is not idempotent. Callers must not retry it automatically on a timeout, and the Gateway never does.
 - Every service exposes `GET /health`. It needs no credential.
-- Every service, the Gateway and Service Discovery expose `GET /status` (Lab 3), see [Status endpoint](#status-endpoint), and log as [Logging](#logging) says.
-- `X-Request-ID` is read from the request or generated (uuid4), echoed in the response, and **forwarded on every outbound call**, the Gateway's and the relay pushes included (see [Logging](#logging)).
+- Every service, the Gateway, Service Discovery and the Message Broker expose `GET /status` (Lab 3), see [Status endpoint](#status-endpoint), `GET /logs` and `GET /metrics` (Lab 4), see [Logs download](#logs-download) and [Monitoring](#monitoring), and log as [Logging](#logging) says.
+- `X-Request-ID` is read from the request or generated (uuid4), echoed in the response, and **forwarded on every outbound call**; from Lab 4 it travels as `request_id` (and the `X-Request-ID` header of a request) with every `Request` and `Publish` to the broker (see [Logging](#logging)).
 
 ##### Status endpoint
 
-`GET /status` (Lab 3) exists at the root of every service, the Gateway and Service Discovery, next to `/health`; `/health` and `/health/ready` stay as they are. Service Discovery calls it directly, not through the Gateway.
+`GET /status` (Lab 3) exists at the root of every service, the Gateway, Service Discovery and the Message Broker, next to `/health`; `/health` and `/health/ready` stay as they are. Service Discovery calls it directly, not through the Gateway.
 
 ```json
 {
@@ -513,35 +607,37 @@ These apply to every endpoint listed in the next section.
 ```
 
 - `200` with `"status": "up"`; `503` with the same body and `"status": "degraded"` when the instance's own database (PostgreSQL, MongoDB) does not answer a ping. A component without a database (Gateway, Service Discovery) is always `up`.
-- `service` is the Gateway prefix (see [Gateway](#gateway)); Service Discovery uses `service-discovery`, the Gateway `gateway`. `instance_id` as registered (see [Service Discovery](#service-discovery)).
+- `service` is the Gateway prefix (see [Gateway](#gateway)); Service Discovery uses `service-discovery`, the Gateway `gateway`, the broker `message-broker`. `instance_id` as registered (see [Service Discovery](#service-discovery)).
 - `in_flight` is the number of requests holding a concurrent-limit slot right now; `max_concurrent_tasks` is the configured `MAX_CONCURRENT_TASKS`. The load is `in_flight / max_concurrent_tasks`.
 - No credential. **Exempt from the concurrent task limit** and not counted in `in_flight`. Its access log line is `debug`.
-- No other field is added, except by Discord DMs, which adds `ws_connections` (the WebSocket connections this instance holds).
+- No other field is added, except by Discord DMs, which adds `ws_connections` (the WebSocket connections this instance holds), and the broker, which adds `grpc_in_flight` and `grpc_max_workers` (its gRPC threads in use, streams included, which are not part of its load); its `503 degraded` means its store cannot write.
 
 ##### Logging
 
-Every component - the eight services, the Gateway and Service Discovery - logs the same way (Lab 3).
+Every component - the eight services, the Gateway, Service Discovery and the Message Broker - logs the same way (Lab 3).
 
 - **One JSON object per line on stdout**, `snake_case` keys. Level from `LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`).
 - **The same lines in a rotating file** (Lab 4, #112), read back by `GET /logs`: see [Logs download](#logs-download) below.
-- **Every line carries** `time` (ISO 8601 UTC with milliseconds and `Z`), `level` (lowercase), `service` (the Gateway prefix; `gateway`, `service-discovery`), `instance_id`, `version`, `event` (a stable name from the list below) and `msg`.
+- **Every line carries** `time` (ISO 8601 UTC with milliseconds and `Z`), `level` (lowercase), `service` (the Gateway prefix; `gateway`, `service-discovery`, `message-broker`), `instance_id`, `version`, `event` (a stable name from the list below) and `msg`.
 - **`duration_ms` is an integer number of milliseconds** in every component. Applicant's `latency_ms`, Player's and Session's `duration` and any `Elapsed` are renamed.
-- **`request_id`**: the `X-Request-ID` of the request being handled, printed on every line produced while handling it and forwarded on every outbound call. An outbox row stores the `request_id` of the request that created the event, and the relay sends it as `X-Request-ID` with the push (a new one is generated when it is missing).
+- **`request_id`**: the `X-Request-ID` of the request being handled, printed on every line produced while handling it and forwarded on every outbound call. An outbox row stores the `request_id` of the request that created the event, and the relay sends it as `request_id` with the `Publish` (a new one is generated when it is missing); the broker hands it to every consumer in the `Delivery`.
 
 | `event`                                                     | Extra fields                                                                                                       |
 | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
 | `http.request`                                              | `request_id`, `method`, `path` (the path only, never the query string), `status`, `duration_ms`, `player_id` (when known), `client_ip`; `debug` for `/health*`, `/status` and `/logs` |
 | `http.error`                                                | `request_id`, `status`, `code`, `error`; an unexpected error is logged at `error` with its stack trace before the `500` is returned |
-| `outbound.call`                                             | `request_id`, `target` (the prefix), `method`, `path`, `status`, `duration_ms`                                     |
-| `event.pushed` / `event.parked`                             | `event_id`, `event_type`, `consumer`, `status`, `attempt`, `next_attempt_at`; `event.parked` at `error`            |
-| `event.received`                                            | `event_id`, `event_type`, `producer`, `duplicate` (bool)                                                           |
+| `outbound.call`                                             | `request_id`, `target` (the prefix), `method`, `path`, `status`, `duration_ms`; from Lab 4 a request through the broker |
+| `event.pushed` / `event.parked`                             | `event_id`, `event_type`, `attempt`, `next_attempt_at`; the relay's outcome of a `Publish` from Lab 4; `event.parked` at `error` |
+| `event.received`                                            | `event_id`, `event_type`, `producer`, `duplicate` (bool); from Lab 4 also the `Ack` outcome sent                   |
+| `broker.subscribed` / `broker.subscribe_failed` / `broker.disabled` | Lab 4: the instance's `Subscribe` stream opened (`topics`), failed and retried with backoff (`error`, `warn`), or `MESSAGE_BROKER_URL` empty (`warn`, once) |
+| `request.received` / `request.replied`                      | Lab 4: a request delivered by the broker (`correlation_id`, `method`, `path`, `caller`) and its `Reply` (`status`) |
 | `breaker.opened` / `breaker.closed` / `breaker.rejected`    | `target`, `failures`, `window_s`; the Gateway and Service Discovery add `target_instance`                         |
 | `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` | `instance_id`, `error` when failed                                                                                 |
 | `logs.file_unavailable`                                     | `path`, `error`; `warn`, once at startup when `LOG_FILE` cannot be opened (#112)                                   |
 | `startup` / `shutdown`                                      | version, instance id, port, configuration without secrets                                                          |
 | business actions                                            | one line each, with the ids involved: login, register, session create / join / start / next applicant / end, decision, evaluation, scope rejection, ... |
 
-The Gateway adds `target`, `target_instance` and `upstream_duration_ms` to its `http.request` lines, and the events `route.no_instance`, `sd.refresh`, `sd.mark_down` (the outcome of a mark-down: `info`, `warn` when it failed) and `breaker.half_open` (it logs every transition; its `breaker.closed` carries `reason`: `trial request succeeded` or `listed again by Service Discovery`). Service Discovery adds `registry.registered` (`after_expiry` for a return), `registry.expired`, `registry.deregistered`, `registry.marked_down`, `registry.recovered`, `health.unreachable`, `health.reachable`, `health.critical`, `health.load_recovered`, `health.error`, `health.checked` (`debug`), `alert.emitted` (`debug`), `alert.subscriber_failed`, `notify.sent`, `notify.failed`, `notify.skipped`, `notify.dropped` and `notify.disabled`; the levels are in `docs/SERVICE_DISCOVERY.md`.
+From Lab 4 the Gateway adds `target` (the prefix) and `correlation_id` to its `http.request` lines and never names an instance (the broker logs it), and the breaker events of its breaker on the broker (`breaker.half_open` included). The Message Broker logs `broker.published`, `broker.subscribed` / `broker.unsubscribed`, `broker.delivered`, `broker.acked`, `broker.ack_refused`, `broker.redelivered`, `broker.rerouted`, `broker.dead_lettered`, `broker.alert_sent` / `broker.alert_failed` / `broker.alert_dropped`, `request.sent`, `request.replied`, `request.timeout`, `request.lost`, `request.no_instance`, `request.refused`, `request.cancelled`, `breaker.opened` / `breaker.half_open` / `breaker.closed` (with `target_instance`), `sd.mark_down`, `sd.disabled` and `store.unavailable` / `store.recovered` / `store.expired` / `store.in_memory`; a service is named there by `service_name` and an instance by `instance`, and a message body is never logged ([`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) §14). Service Discovery adds `registry.registered` (`after_expiry` for a return), `registry.expired`, `registry.deregistered`, `registry.marked_down`, `registry.recovered`, `health.unreachable`, `health.reachable`, `health.critical`, `health.load_recovered`, `health.error`, `health.checked` (`debug`), `alert.emitted` (`debug`), `alert.subscriber_failed`, `notify.sent`, `notify.failed`, `notify.skipped`, `notify.dropped`, `notify.disabled` and `alert.received` (a `POST /api/v1/alerts` of the broker); the levels are in `docs/SERVICE_DISCOVERY.md`.
 
 **Never logged:** `Authorization`, `X-Service-Token`, `JWT_SECRET`, passwords, the Telegram bot token (it is part of the Telegram URL, so exception messages are sanitized), full request or response bodies, query strings (a `q` of `GET /records/{category}` holds a name, student ID or email, and `?ticket=` a one-time ticket), and applicant personal data other than `applicant_id`.
 
@@ -580,7 +676,7 @@ Lab 4 (#112): the logs of any instance, or of the whole system, can be downloade
 | Limits | Outside the concurrent limit and the task timeout, so a busy instance can still be read and a long answer is not cut off. Its `http.request` line is at `debug`, so reading the logs does not add to them |
 
 - **No broken lines.** Read the current file only up to its size when the request starts, and leave out a last line without its newline. A line that is not one whole JSON object is left out with or without a window: a line cut by a full disk, which the next process wrote onto after a restart, does end in a newline. A rotation that happens during the read must not cut a line or repeat one, so open every file before reading any of them. An open file keeps its content when the rotation renames it.
-- **Not a Gateway route.** `/api/v1/<prefix>/logs` answers `404 NOT_FOUND` and never reaches an instance's `GET /logs` (#105). The logs are fetched from the instance directly, inside `student-id-net`, or through the aggregate below. *Not yet wired:* until the Gateway's routes of #110 merge, it is proxied like any path to the service's `/api/v1/logs` (which does not exist), as a player route, so it answers `401 UNAUTHENTICATED` without a credential.
+- **Not a Gateway route.** `/api/v1/<prefix>/logs` answers `404 NOT_FOUND` and never reaches an instance's `GET /logs` (#105). The logs are fetched from the instance directly, inside `student-id-net`, or through the aggregate below. *Not yet wired:* until the cutover of #113 the compose runs Gateway `3.1.0`, which proxies it like any path to the service's `/api/v1/logs` (which does not exist), as a player route, so it answers `401 UNAUTHENTICATED` without a credential.
 
 **3. The aggregate on Service Discovery: `GET /api/v1/logs?service=&instance=&since=&until=&level=`**, with the service token. Service Discovery knows every `up` instance, so it fetches them all:
 
@@ -598,18 +694,89 @@ unzip logs.zip && jq -c 'select(.request_id == "<id>")' *.jsonl | jq -sc 'sort_b
 
 ##### Circuit breaker
 
-Every component that calls another keeps circuit breakers (Lab 3): the Gateway one per instance, a service one per target - per peer service for its synchronous calls, per consumer for its outbox relay - and Service Discovery one per polled instance and one for Telegram.
+Every component that calls another keeps circuit breakers (Lab 3, moved in Lab 4): **the broker one per instance**, the Gateway and every service **one on the broker**, their only target from Lab 4 (a service uses it for its requests and its relay's publishes), and Service Discovery one per polled instance and one for Telegram.
 
-- **A failure** is no answer within the caller's outgoing-call timeout (`10s` in the Gateway; a service's own, for example Session's `DEPENDENCY_TIMEOUT` `3s`), any `5xx` answer (the Gateway's `502` and `503` included) **except a `500 DEPENDENCY_UNAVAILABLE`**, or a refused connection, connection reset, DNS failure or no connection within 2 s (which a service sees as the Gateway's `502`). Any `4xx`, `408`, `422` and `429` included, is **not** a failure.
-- **`500 DEPENDENCY_UNAVAILABLE` is not a failure** of the instance that answers it: that instance is alive and reports that a service *it* calls failed, whose own instances are counted by their own breakers. Counting it would trip every healthy caller of an unavailable service. An instance whose own database is down answers it too (Applicant and Credential, `details.dependency` naming the database); that case is caught by health polling, since its `GET /status` answers `503 degraded`. Likewise a hung service answers its own `408` after its `5s` task timeout, before the Gateway's `10s`, which is not a failure either: health polling takes it out when its `/status` stops answering within 2 s.
-- **Trip:** 3 failures within a sliding window of task timeout x 3.5: **17.5 s** in a service and Service Discovery, **35 s** in the Gateway. No new variable: the window is `HTTP_REQUEST_TIMEOUT` x 3.5.
-- **While open:** the Gateway skips the instance (`503 SERVICE_UNAVAILABLE` when none is left); a service answers its synchronous call with `500 DEPENDENCY_UNAVAILABLE`, `details.dependency` naming the target, without calling, logged `breaker.rejected`; a relay does **not claim** that consumer's deliveries, which stay pending and untouched.
+- **A failure of an instance (the broker's breakers)** is no reply within the request's timeout, the loss of the instance's stream while it held the request, or any `5xx` reply **except a `500 DEPENDENCY_UNAVAILABLE`**. Any `4xx`, `408`, `422` and `429` included, is **not** a failure.
+- **`500 DEPENDENCY_UNAVAILABLE` is not a failure** of the instance that answers it: that instance is alive and reports that a service *it* calls failed, whose own instances are counted by their own breakers. Counting it would trip every healthy caller of an unavailable service. An instance whose own database is down answers it too (Applicant and Credential, `details.dependency` naming the database); that case is caught by health polling, since its `GET /status` answers `503 degraded`. Likewise a hung service answers its own `408` after its `5s` task timeout, before the broker's timeout, which is not a failure either: health polling takes it out when its `/status` stops answering within 2 s.
+- **A failure of the broker (the Gateway's and a service's breaker)** is a call that failed in transport: `UNAVAILABLE` (the broker unreachable), `DEADLINE_EXCEEDED`, `INTERNAL` and the like. A reply of any status is **not**: a `503` or `408` the broker answers about a service says nothing against the broker, and the instances' breakers are the broker's. A call the broker refused (`UNAUTHENTICATED`, `PERMISSION_DENIED`, `INVALID_ARGUMENT`) is not either.
+- **Trip:** 3 failures within a sliding window of task timeout x 3.5: **35 s** in the broker (the Gateway's `10s` x 3.5) and the Gateway, **17.5 s** in a service and Service Discovery. No new variable: the window is `HTTP_REQUEST_TIMEOUT` x 3.5 (the broker's `REQUEST_BREAKER_WINDOW_SECONDS`).
+- **While open:** the broker sends no request to the instance (`503 SERVICE_UNAVAILABLE` when no instance is left; an event falls back to any connected instance); the Gateway answers `503 SERVICE_UNAVAILABLE` with `details.service: "message-broker"`; a service answers its synchronous call with `500 DEPENDENCY_UNAVAILABLE`, `details.dependency` naming the target, without calling, logged `breaker.rejected`, and its relay leaves its events pending.
 - **Recovery:** after a cooldown equal to the window, half-open: exactly one trial call goes through. Success closes the breaker (`breaker.closed`), failure reopens it (`breaker.opened`). Every transition is logged.
-- **Instance removal (option B):** only the Gateway's breaker, when it trips, marks the instance `down` in Service Discovery, once per trip. Service Discovery counts no failures reported by others, and a service's breaker never calls Service Discovery.
+- **Instance removal (option B):** only the broker's breaker, when it trips, marks the instance `down` in Service Discovery, once per trip (`PUT /api/v1/instances/{instance_id}/status`, `"reason": "breaker_open: 3 failures in 35s"`). Service Discovery counts no failures reported by others, and no other breaker calls Service Discovery. An instance that Service Discovery lists as `up` again has its breaker in the broker closed at once.
+
+> **Known gap (Moderation, Session).** Moderation Service `4.0.0` keeps one breaker per peer service instead of one on
+> the broker, and counts the broker's `503` and `408` replies as failures; Session Service `4.0.0` keeps two breakers
+> on the broker. See [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md) and
+> [`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md) once their Lab 4 deliveries merge.
+
+##### Load balancing
+
+From Lab 4 the broker chooses the instance for every message, requests and events alike (#107, #109). The Gateway and the services never choose one.
+
+- **The least loaded instance.** A message goes to a connected instance of the service (one with a `Subscribe` stream) that holds fewer than its `max_concurrent_tasks` unanswered messages, with the lowest load: the higher of the broker's own `unsettled / max_concurrent_tasks` and Service Discovery's `load` of that instance (`in_flight / max_concurrent_tasks` from its last status check, read every 5 s). Ties go round-robin. A full instance gets nothing more until it answers; the message waits in the queue.
+- **Service Discovery is a preference.** An instance Service Discovery no longer lists as `up` is avoided while another is available. A request never goes to an instance whose breaker is open; an event falls back to any connected instance.
+- **Rerouting.** When an instance's breaker trips or its stream ends, what it holds goes elsewhere at once instead of at a timeout:
+
+| What it held | Another instance can take it | None can |
+| --- | --- | --- |
+| An event | back to the front of its queue as a failed attempt and delivered to the other instance | it waits for the next instance |
+| An event out of attempts | the dead letter channel | the same |
+| A `GET` request | sent again under a new `message_id` within the caller's remaining timeout | `503 SERVICE_UNAVAILABLE` |
+| Any other request | `503 SERVICE_UNAVAILABLE`: it may have run already | `503` |
+
+- **Scaling.** A copy added with `docker compose up -d --scale <service>=N` subscribes and takes its share of the next messages at once; a stopped one stops getting messages when its stream ends.
+
+##### Monitoring
+
+Lab 4 (#113): Prometheus scrapes every component and Grafana shows it.
+
+**`GET /metrics`** on every component's HTTP port (the eight services, the Gateway, Service Discovery and the broker): the Prometheus text format, no credential, outside the concurrent task limit and the task timeout, its `http.request` line at `debug`. It is not a Gateway route (`404`). No series carries a body, a token, an id of a player or applicant, or a raw path.
+
+| Series | Who | What |
+| --- | --- | --- |
+| `http_requests_total{method,route,status}` | every component | Requests handled |
+| `http_request_duration_seconds{method,route}` (histogram) | every component | Their duration |
+| `tasks_in_flight` | every component | Requests holding a concurrent-limit slot: the `in_flight` of `GET /status` |
+| `breaker_state{target}` | every component with a breaker | `0` closed, `1` open, `2` half-open. `target` is `message-broker` in the Gateway and a service, an `instance_id` in the broker, a polled `instance_id` or `telegram` in Service Discovery |
+| `outbox_pending`, `outbox_parked` | a service with an outbox | Events not published yet, and parked |
+| `broker_queue_depth{queue}` | the broker | Messages of a queue not acked yet, every topic queue and `requests.<service>` |
+| `broker_messages_total{queue,outcome}` | the broker | `published`, `delivered`, `acked`, `retried`, `redelivered`, `rejected`, `dead_lettered` |
+| `broker_redeliveries_total`, `broker_dead_letters_total` | the broker | Redeliveries (retried and redelivered), dead letters |
+| `broker_request_duration_seconds{service}` (histogram) | the broker | From a `Request` to its reply, per called service |
+
+- `route` is the route's template (`/api/v1/sessions/{session_id}`), `unmatched` for an unknown path, and a method outside the standard ones is `OTHER`, so a caller cannot grow the number of series.
+- A component may add series of its own (Discord DMs `websocket_connections`); it lists them in its `docs/` reference.
+
+**Discovery.** Prometheus reads the targets from Service Discovery's `GET /api/v1/instances/prometheus` (see [Service Discovery](#service-discovery)): every `up` instance and the broker, labelled `service` and `instance_id`. The Gateway and Service Discovery do not register, so they are static targets with a `service` label of their own. The token is read from a file, so it stays out of `prometheus.yml`:
+
+```yaml
+scrape_configs:
+  - job_name: instances
+    http_sd_configs:
+      - url: http://service-discovery-service:8090/api/v1/instances/prometheus
+        http_headers:
+          X-Service-Token:
+            files: [/etc/prometheus/service_token]
+  - job_name: static
+    static_configs:
+      - targets: [gateway-service:8080]
+        labels: {service: gateway}
+      - targets: [service-discovery-service:8090]
+        labels: {service: service-discovery}
+```
+
+`honor_labels` stays off, so a target cannot override the labels Prometheus attaches; the broker's own `service` label (the called service) is therefore renamed `exported_service`: `broker_request_duration_seconds_count{exported_service="player"}`.
+
+**Prometheus and Grafana** run as one copy each, on host ports `9090` and `3000`, with their configuration and two provisioned dashboards in the CPR's `monitoring/` (#113): **System** (requests per second, latency p50/p95, `tasks_in_flight` per instance, breaker states, instances up and down per service) and **Broker** (queue depth per queue, publish and delivery rates, redeliveries, dead letters, request latency).
+
+> **Known gap (Player, Session).** Player and Session Service `4.0.0` add `max_concurrent_tasks`, `broker_connected`,
+> `events_consumed_total{event_type,outcome}` and the Go collectors, leave `/health*`, `/status`, `/logs` and
+> `/metrics` out of `http_requests_total`, and expose no `breaker_state`; Session counts its relay as
+> `relay_deliveries{status}` instead of `outbox_pending` and `outbox_parked`.
 
 ##### Running as several instances
 
-From Lab 3 every service runs as 2-3 copies behind the Gateway's round-robin, so any copy must give the same answer to the same request.
+From Lab 3 every service runs as 2-3 copies (Lab 3 behind the Gateway's round-robin, from Lab 4 behind the broker's [load balancing](#load-balancing)), so any copy must give the same answer to the same request.
 
 - **No per-process state that changes an answer:** no caches of mutable data, no in-memory dedup, no in-memory sessions. The only per-process state is the concurrent task limiter and the connection pools.
 - **Background workers are safe in every copy:** an outbox relay claims its rows before sending (`FOR UPDATE SKIP LOCKED` plus a lease in PostgreSQL, an atomic compare-and-set in MongoDB), increments `attempts` in the database, and updates a row only while it still holds the claim. A delivery is sent by one copy at a time.
@@ -629,7 +796,7 @@ A client's credentials are checked **at the Gateway, and only there**. Services 
 | Caller            | Header                        | Meaning                                                                                                 |
 | ----------------- | ----------------------------- | ------------------------------------------------------------------------------------------------------- |
 | A player (client) | `Authorization: Bearer <jwt>` | A JWT issued by Player Service's [`POST /api/v1/auth/login`](#post-apiv1authlogin---consumed-by-client) |
-| Another service   | `X-Service-Token: <token>`    | One shared secret, the same value in every service and the Gateway (`SERVICE_TOKEN` in `.env`)          |
+| Another service (Lab 2-3) | `X-Service-Token: <token>` | One shared secret, the same value in every component (`SERVICE_TOKEN` in `.env`). From Lab 4 no service calls the Gateway: the token travels as the broker's gRPC metadata, below |
 
 **The JWT.** Signed with HS256 using the shared secret `JWT_SECRET`, known only to Player Service (which signs) and the Gateway (which verifies). Claims: `sub` = the player's `player_id` (UUID), `iat`, `exp`. The Gateway rejects a token with a bad signature, an expired `exp` or a non-UUID `sub`.
 
@@ -642,7 +809,7 @@ A client's credentials are checked **at the Gateway, and only there**. Services 
 
 **What services receive.** Only `X-Player-Id`. When an endpoint needs to know which player is calling, it reads that header and nothing else; a service validates no token. The exceptions are Service Discovery (Lab 3), which checks `X-Service-Token` itself because instances call it directly, not through the Gateway (see [Service Discovery](#service-discovery)), and `GET /logs` (Lab 4), which Service Discovery calls directly on each component (see [Logs download](#logs-download) and rule 4 below). A request without `X-Player-Id` on a route that needs a calling player answers `401 UNAUTHENTICATED`. Services trust the header because nothing but the Gateway can reach them - their ports are not published (see [Deployments](#deployments)). The one connection that bypasses the Gateway, the Discord DMs WebSocket, is authorized with a one-time ticket instead (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)).
 
-**A service calling another service** sends `X-Service-Token`, never a player's token or a player's `X-Player-Id`. This is Lab 3, through the Gateway; from Lab 4 the call goes through the Message Broker, below.
+**A service calling another service** goes through the Message Broker (Lab 4), authenticated by the service token as the broker's metadata, never with a player's token or a player's `X-Player-Id`, as below. In Lab 2-3 it called the Gateway with `X-Service-Token`.
 
 ###### Through the Message Broker (Lab 4)
 
@@ -660,13 +827,13 @@ Which credential each contract endpoint accepts, enforced by the Gateway:
 | Accepts                | Endpoints                                                                                                                                                                                                                                           |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **None (public)**      | `POST /auth/login` (Player), the health checks                                                                                                                                                                                                      |
-| **Service token only** | `POST /applicants/next` (Applicant, Credential, University Record), `GET /applicants/{id}/documents/validation`, `GET /applicants/{id}/records`, `GET /rulesets/current`, `POST /rulesets/{version}/evaluations`, `POST /events` (every consumer)   |
+| **Service token only** | `POST /applicants/next` (Applicant, Credential, University Record), `GET /applicants/{id}/documents/validation`, `GET /applicants/{id}/records`, `GET /rulesets/current`, `POST /rulesets/{version}/evaluations`, `POST /events` (every consumer, Lab 2-3) |
 | **Player or service**  | `GET /players/{id}`, `GET /sessions/{id}`, `GET /applicants/{id}` (Applicant)                                                                                                                                                                       |
 | **Player only**        | every other contract endpoint: the session actions, `GET /applicants/{id}/documents`, `GET /rulesets/{version}`, `GET /records/{category}`, `POST`/`GET /decisions`, `GET /bans`, `POST /ws-tickets`, the Discord DMs channel and message endpoints |
 
 `GET /ws` (Discord DMs) is not reached through the Gateway at all; it takes a ticket.
 
-From Lab 4 the endpoints listed as **service token only** are reached by services through the broker, which authenticated the caller (rule 1 above), and #110 removes them from the Gateway's client routes, so a client cannot reach them.
+From Lab 4 the endpoints listed as **service token only** are reached by services through the broker, which authenticated the caller (rule 1 above), and they are not client routes of the Gateway (see [Gateway](#gateway)), so a client cannot reach them. `POST /events` is gone: events are delivered by the broker (see [Event delivery](#event-delivery)). The Gateway accepts no service token from Lab 4; the player-or-service endpoints are player routes there and service requests through the broker.
 
 ##### Errors
 
@@ -688,23 +855,23 @@ These codes are shared by every service and the Gateway, and mean the same every
 | `401`  | `INVALID_CREDENTIALS`    | Player Service                                  | `POST /auth/login` only: unknown username or wrong password                                                                                           |
 | `403`  | `SERVICE_TOKEN_REQUIRED` | Gateway; Service Discovery; `GET /logs` of any component | A service-only route was called without `X-Service-Token`                                                                                             |
 | `404`  | `NOT_FOUND`              | service, Gateway                                | No such route, or (Gateway) no such prefix. A missing resource uses its own code (`SESSION_NOT_FOUND`, ...)                                           |
-| `405`  | `METHOD_NOT_ALLOWED`     | service, Gateway                                | Known path, wrong method                                                                                                                              |
-| `408`  | `REQUEST_TIMEOUT`        | service, Gateway                                | The task ran longer than the [task timeout](#task-timeout-and-concurrent-task-limit) and was stopped. **Nothing was changed**                         |
-| `422`  | `INVALID_EVENT`          | service                                         | `POST /events` only - see [Event delivery](#event-delivery)                                                                                           |
-| `429`  | `TOO_MANY_REQUESTS`      | service, Gateway                                | The [concurrent task limit](#task-timeout-and-concurrent-task-limit) is reached. **Nothing was changed.** Comes with `Retry-After` (seconds)          |
+| `405`  | `METHOD_NOT_ALLOWED`     | service                                         | Known path, wrong method. From Lab 4 the Gateway answers `404` instead (see [Gateway](#gateway))                                                     |
+| `408`  | `REQUEST_TIMEOUT`        | service, Gateway, broker                        | The task ran longer than the [task timeout](#task-timeout-and-concurrent-task-limit) and was stopped. **Nothing was changed**                         |
+| `422`  | `INVALID_EVENT`          | service                                         | Lab 2-3 `POST /events` only; from Lab 4 the `PERMANENT` outcome of an `Ack` - see [Event delivery](#event-delivery)                                  |
+| `429`  | `TOO_MANY_REQUESTS`      | service, Gateway, broker                        | The [concurrent task limit](#task-timeout-and-concurrent-task-limit) is reached. **Nothing was changed.** Comes with `Retry-After` (seconds)          |
 | `500`  | `DEPENDENCY_UNAVAILABLE` | service                                         | A service or database this endpoint needs did not answer, or answered `408`/`429`/`502`/`5xx`. **Nothing was changed.** `details.dependency` names it |
 | `500`  | `INTERNAL_ERROR`         | service, Gateway                                | Anything else                                                                                                                                         |
-| `502`  | `BAD_GATEWAY`            | Gateway                                         | The service behind the prefix is unreachable                                                                                                          |
+| `502`  | `BAD_GATEWAY`            | Gateway (Lab 2-3)                               | The service behind the prefix is unreachable                                                                                                          |
 | `503`  | `LOGS_UNAVAILABLE`       | any component                                   | `GET /logs` without a log file, or Service Discovery's `GET /api/v1/logs` when the zip cannot be written; see [Logs download](#logs-download) |
-| `503`  | `SERVICE_UNAVAILABLE`    | Gateway                                         | Lab 3: the service behind the prefix has no `up` instance with a closed circuit breaker; no instance was called. `details.service` names the prefix   |
+| `503`  | `SERVICE_UNAVAILABLE`    | broker, Gateway                                 | The service has no connected instance with a closed circuit breaker (the broker; the Gateway in Lab 3), or the broker itself is unreachable (the Gateway, `details.service: "message-broker"`); no instance was called. `details.service` names the service |
 
 - `422` is reserved for the endpoint-specific codes listed under each endpoint (`INVALID_DIFFICULTY`, `MODERATOR_NOT_IN_SESSION`, ...): the request is well-formed, but its content is not acceptable. A malformed request is always `400 VALIDATION_ERROR`, never `422`.
 - `409` is for a request that is valid but conflicts with the current state (`SESSION_NOT_IN_LOBBY`, `ALREADY_DECIDED`, ...).
-- A service that gets a contract error code from a peer it calls may pass it on unchanged (Session passes on `404 PLAYER_NOT_FOUND`). Any other failure of a peer - including the Gateway's `408`, `429` and `502` - becomes `500 DEPENDENCY_UNAVAILABLE`.
+- A service that gets a contract error code from a peer it calls may pass it on unchanged (Session passes on `404 PLAYER_NOT_FOUND`). Any other failure of a peer - including the broker's `408`, `429` and `503` - becomes `500 DEPENDENCY_UNAVAILABLE`.
 
 ##### Task timeout and concurrent task limit
 
-Every service and the Gateway bound how long one task may run and how many may run at once (Lab 2). A **task** is one inbound HTTP request, `POST /events` included. Background work (the outbox relay) is not counted; it already backs off on its own.
+Every service and the Gateway bound how long one task may run and how many may run at once (Lab 2). A **task** is one inbound HTTP request, or from Lab 4 one request or event the broker delivers. Background work (the outbox relay) is not counted; it already backs off on its own.
 
 | Setting               | Variable               | Default                                 | When reached                                                                            |
 | --------------------- | ---------------------- | --------------------------------------- | --------------------------------------------------------------------------------------- |
@@ -720,14 +887,14 @@ Every service and the Gateway bound how long one task may run and how many may r
 
 For every service this section lists three things: the endpoints it **calls** in other services, the endpoints it **offers**, and the **events** it produces or receives. Paths, field names and errors follow the API conventions above.
 
-**Paths are the service's own.** Every caller - client or service - reaches them through the Gateway with the service's prefix: `GET /api/v1/players/{player_id}` of Player Service is called as `GET {gateway}/api/v1/player/players/{player_id}`. See [Gateway](#gateway).
+**Paths are the service's own.** A client reaches them through the Gateway with the service's prefix: `GET /api/v1/players/{player_id}` of Player Service is called as `GET {gateway}/api/v1/player/players/{player_id}`. See [Gateway](#gateway). From Lab 4 a service reaches them as a `Request` through the broker, with `service` = the prefix and the service's own path (`service: "player"`, `GET /api/v1/players/{player_id}`); "via `{gateway}/api/v1/<prefix>`" on a call between services below means that request on `requests.<prefix>`. See [Message Broker](#message-broker).
 
 How to read it:
 
 - **Client** means the player's game client. Only the client endpoints that start or feed a flow between services are listed here, plus login, which every flow needs. Other account features (register, friends, profile editing) are beyond the contract.
 - **Who is calling.** When an endpoint needs to know which player is calling (for example, "only the Moderator may do this"), it reads the `player_id` from the `X-Player-Id` header the Gateway sets after validating the player's JWT, as [Authentication](#authentication) says. That player is called "the calling player" below. Which credential each endpoint accepts is fixed in the same section.
 - **Errors.** Each endpoint lists only its own error codes. The shared codes in [Errors](#errors) (`400 VALIDATION_ERROR`, `401`, `403 SERVICE_TOKEN_REQUIRED`, `408`, `429`, `500 DEPENDENCY_UNAVAILABLE`, ...) can come from any endpoint and are not repeated.
-- **Events** always use the common envelope from the event catalog, so only the `payload` is shown. "Pushed to X" means the producer sends it to X's `POST /api/v1/events`, through the Gateway, as described in [Event delivery](#event-delivery); a consumer's `POST /api/v1/events` is not repeated under its exposed endpoints.
+- **Events** always use the common envelope from the event catalog, so only the `payload` is shown. "Pushed to X" means, from Lab 4, that the producer publishes it to `events.<event_type>` and X is subscribed to it, as described in [Event delivery](#event-delivery) (in Lab 2-3 it was sent to X's `POST /api/v1/events` through the Gateway).
 - `GET /health` exists in every service and is not repeated below.
 
 #### Shared values
@@ -961,7 +1128,7 @@ email.
   Picks the ruleset when the shift starts. The returned `version` is stored in the session and used for the whole shift.
 - `POST /api/v1/applicants/next` - available in Applicant Service, via `{gateway}/api/v1/applicant`  
   Creates the next applicant. The returned `applicant_id` becomes the session's `current_applicant_id`.
-- `POST /api/v1/events` - available in University Record, Discord DMs and Player Service, via `{gateway}/api/v1/<consumer>`  
+- Publish to `events.<event_type>` (Lab 4; Lab 2-3: `POST /api/v1/events` of University Record, Discord DMs and Player Service)  
   Pushes `session.started` (University Record, Discord DMs) and `session.ended` (Player, Discord DMs,
   University Record), as described in [Event delivery](#event-delivery).
 
@@ -1169,7 +1336,7 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 
 ##### Consumed API endpoints
 
-- `POST /api/v1/events` - available in Credential Service and University Record Service, via `{gateway}/api/v1/<consumer>`  
+- Publish to `events.<event_type>` (Lab 4; Lab 2-3: `POST /api/v1/events` of Credential Service and University Record Service)  
   Pushes `applicant.initialized` when Applicant Service met the applicant first, as described in
   [Event delivery](#event-delivery). Applicant Service makes no other call.
 
@@ -1278,7 +1445,7 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 
 ##### Consumed API endpoints
 
-- `POST /api/v1/events` - available in Applicant Service and University Record Service, via `{gateway}/api/v1/<consumer>`  
+- Publish to `events.<event_type>` (Lab 4; Lab 2-3: `POST /api/v1/events` of Applicant Service and University Record Service)  
   Pushes `applicant.initialized` when Credential Service met the applicant first, as described in
   [Event delivery](#event-delivery). Credential Service makes no other call.
 
@@ -1539,21 +1706,18 @@ An applicant who breaks an admission rule gets `"admitted": false`, the broken r
 
 None. Server Rules neither produces nor receives events.
 
-> **Known gap (Lab 4, #118).** Server Rules Service `4.0.0` takes its requests from the Message
-> Broker's queue `requests.server-rules` (one gRPC `Subscribe` stream per instance, no topic) and
-> answers with `Reply`. The endpoints above, [Gateway](#gateway) and [Authentication](#authentication)
-> still describe the Lab 3 calls through the Gateway with `X-Service-Token` until the Lab 4 contract
-> (#105) merges. Nothing breaks meanwhile: the REST port still serves every route, so the Lab 3
-> Gateway keeps forwarding to it, and until the broker is deployed (#113) the instances retry their
-> subscription with backoff. Details: [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVICE.md)
-> §7 item 5 and §11.
+> **Lab 4 (#118).** Server Rules Service `4.0.0` takes its requests from the broker's queue
+> `requests.server-rules` (one `Subscribe` stream per instance, no topic) and answers with `Reply`, as
+> [Message Broker](#message-broker) says. Its REST port still serves every route, so the Lab 3 Gateway of the
+> compose keeps forwarding to it until the cutover of #113. Details:
+> [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVICE.md) §11.
 
 
 #### University Record Service
 
 ##### Consumed API endpoints
 
-- `POST /api/v1/events` - available in Applicant Service and Credential Service, via `{gateway}/api/v1/<consumer>`  
+- Publish to `events.<event_type>` (Lab 4; Lab 2-3: `POST /api/v1/events` of Applicant Service and Credential Service)  
   Pushes `applicant.initialized` when University Record met the applicant first, as described in
   [Event delivery](#event-delivery). University Record makes no other call; it learns about
   sessions from the events Session pushes to it.
@@ -1698,7 +1862,7 @@ The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a j
   Reads what the university records say about the claimed identity, across all categories.
 - `POST /api/v1/rulesets/{version}/evaluations` - available in Server Rules Service, via `{gateway}/api/v1/server-rules`  
   Checks the verified facts against the ruleset of the shift.
-- `POST /api/v1/events` - available in Server Moderation Session Service, via `{gateway}/api/v1/session`  
+- Publish to `events.<event_type>` (Lab 4; Lab 2-3: `POST /api/v1/events` of Server Moderation Session Service)  
   Pushes `decision.recorded`, as described in [Event delivery](#event-delivery).
 
 Every one of these calls goes through the Gateway and carries `X-Service-Token`, never the Moderator's own token or `X-Player-Id`.
@@ -2039,10 +2203,13 @@ need to clone the (private) service repository to run one.
 (`SERVICE_TOKEN`) is set to the same value,
 `SERVICE_TOKEN` in `.env` - the `X-Service-Token` of [Authentication](#authentication).
 
-**Everything goes through the Gateway.** Every peer URL above (`APPLICANT_URL`, `PLAYER_SERVICE_URL`,
-`SESSION_URL`, ...) is set to the Gateway plus the peer's prefix, for example
-`APPLICANT_URL=http://gateway-service:8080/api/v1/applicant` - see [Gateway](#gateway). A service is
-never configured with another service's own address. The variable names stay each service's own.
+**Everything goes through the broker (Lab 4).** From `4.0.0` a service has no peer URL: every service and the
+Gateway set `MESSAGE_BROKER_URL=message-broker-service:8071` (a gRPC `host:port`, no scheme) and reach every
+other service through it - see [Message Broker](#message-broker). The per-peer URLs of Lab 2-3
+(`APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `SESSION_URL`, `RULES_URL`, `PLAYER_SERVICE_URL`, ...,
+each the Gateway plus the peer's prefix) are removed, with no fallback; a row above that still lists them describes
+the service's `3.x` image until its Lab 4 delivery merges. A service is never configured with another service's own
+address.
 
 **Service Discovery (Lab 3).** Every service and the Gateway get
 `SERVICE_DISCOVERY_URL=http://service-discovery-service:8090` and start after Service Discovery is
@@ -2066,8 +2233,7 @@ on `8071`, the `message-broker-service:8071` that a service's `MESSAGE_BROKER_UR
 is its only required variable. Its subscriptions, queues and dead letters live in SQLite at
 `MESSAGE_STORE_PATH` (`/data/broker.db`), so a named volume on `/data` keeps them across a restart or a
 new container. It is not in `docker-compose.yml` yet: its block, the volume, Prometheus and Grafana come
-with #113. Until the Lab 4 contract (#105) merges, its topics, queues and gRPC API run ahead of this
-README; see [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) §15.
+with #113. Its contract is [Message Broker](#message-broker); details in [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md).
 
 **Published host ports.** Three ports are published: the Gateway
 (`8080`), Service Discovery (`8090`, the registry and its `/status`, for the demo and the developers) and the chat port `8086` (since Discord DMs `3.0.0` published by `dms-ws-proxy`, an nginx in front of
@@ -2263,9 +2429,9 @@ Closes #(issue)
 
 ## Versioning Strategy
 
-Every image - the eight services, the Gateway and Service Discovery - is versioned `MAJOR.MINOR.PATCH`, where **MAJOR is the laboratory number** (Lab 2 grading requires the tag to follow the lab):
+Every image - the eight services, the Gateway, Service Discovery and the Message Broker - is versioned `MAJOR.MINOR.PATCH`, where **MAJOR is the laboratory number** (Lab 2 grading requires the tag to follow the lab):
 
-- **MAJOR** = the lab the release belongs to. Every image of Lab 2 is `2.x.y`, starting at `2.0.0`; every image of Lab 3 is `3.x.y`, starting at `3.0.0`.
+- **MAJOR** = the lab the release belongs to. Every image of Lab 2 is `2.x.y`, starting at `2.0.0`; every image of Lab 3 is `3.x.y`, starting at `3.0.0`; every image of Lab 4 is `4.x.y`, starting at `4.0.0` (the broker's first release is `4.0.0`).
 - **MINOR** (e.g. `2.0.0` => `2.1.0`): a new feature within the lab.
 - **PATCH** (e.g. `2.1.0` => `2.1.1`): a bug fix within the lab.
 

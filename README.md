@@ -704,9 +704,10 @@ Every component that calls another keeps circuit breakers (Lab 3, moved in Lab 4
 - **Recovery:** after a cooldown equal to the window, half-open: exactly one trial call goes through. Success closes the breaker (`breaker.closed`), failure reopens it (`breaker.opened`). Every transition is logged.
 - **Instance removal (option B):** only the broker's breaker, when it trips, marks the instance `down` in Service Discovery, once per trip (`PUT /api/v1/instances/{instance_id}/status`, `"reason": "breaker_open: 3 failures in 35s"`). Service Discovery counts no failures reported by others, and no other breaker calls Service Discovery. An instance that Service Discovery lists as `up` again has its breaker in the broker closed at once.
 
-> **Known gap (Moderation, Session).** Moderation Service `4.0.0` keeps one breaker per peer service instead of one on
-> the broker, and counts the broker's `503` and `408` replies as failures; Session Service `4.0.0` keeps two breakers
-> on the broker. See [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md) and
+> **Known gap (Moderation, Session).** Moderation Service `4.0.0` keeps the one breaker on the broker for its
+> publishes and, next to it, one breaker per peer service on the requests it sends through the broker, which counts
+> the broker's `503` and `408` replies as failures of that peer; Session Service `4.0.0` keeps two breakers on the
+> broker. See [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md) and
 > [`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md) once their Lab 4 deliveries merge.
 
 ##### Load balancing

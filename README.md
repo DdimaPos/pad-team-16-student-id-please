@@ -673,7 +673,7 @@ Lab 4 (#112): the logs of any instance, or of the whole system, can be downloade
 | Limits | Outside the concurrent limit and the task timeout, so a busy instance can still be read and a long answer is not cut off. Its `http.request` line is at `debug`, so reading the logs does not add to them |
 
 - **No broken lines.** Read the current file only up to its size when the request starts, and leave out a last line without its newline. A line that is not one whole JSON object is left out with or without a window: a line cut by a full disk, which the next process wrote onto after a restart, does end in a newline. A rotation that happens during the read must not cut a line or repeat one, so open every file before reading any of them. An open file keeps its content when the rotation renames it.
-- **Not a Gateway route.** `/api/v1/<prefix>/logs` answers `404 NOT_FOUND` and never reaches an instance's `GET /logs` (#105). The logs are fetched from the instance directly, inside `student-id-net`, or through the aggregate below.
+- **Not a Gateway route.** `/api/v1/<prefix>/logs` answers `404 NOT_FOUND` and never reaches an instance's `GET /logs` (#105). The logs are fetched from the instance directly, inside `student-id-net`, or through the aggregate below. The Gateway answers it `404` from `4.0.0` (#110), whatever the credential.
 
 **3. The aggregate on Service Discovery: `GET /api/v1/logs?service=&instance=&since=&until=&level=`**, with the service token. Service Discovery knows every `up` instance, so it fetches them all:
 
@@ -2323,6 +2323,13 @@ within `EVENT_PUSH_TIMEOUT` (`5` s), no longer exposes `POST /api/v1/events` or 
 `/var/log/university-record/university-record.jsonl`, rotated at `LOG_FILE_MAX_MB` `50`, `LOG_FILE_KEEP` `5` kept,
 read back by `GET /logs`) and serves `GET /metrics`. Its outbox migration `20261107120000_OutboxThroughBroker` runs at
 startup and folds a `3.x` database's rows (one per consumer) into one per event.
+
+`stewdh/gateway-service` is published for `linux/amd64` and `linux/arm64`; `JWT_SECRET` and `SERVICE_TOKEN` are its
+only required variables. From `4.0.0` (`stewdh/gateway-service:4.0.0`) it sends every client request to the Message
+Broker at `MESSAGE_BROKER_URL` (`message-broker-service:8071` in the compose) and needs the broker to answer anything
+but its own routes; it serves only the client's routes, writes its log lines to `LOG_FILE` (default
+`/var/log/gateway/gateway.jsonl`, read back by `GET /logs`) and serves `GET /metrics`, which Prometheus scrapes as a
+static target. It does not register with Service Discovery.
 
 The root [`docker-compose.yml`](docker-compose.yml) in this repository runs all of the
 above (plus their own database containers) on the shared `student-id-net` network, referencing

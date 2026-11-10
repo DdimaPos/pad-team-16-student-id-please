@@ -27,7 +27,7 @@ The session owner is the git user; ask if it does not match a handle.
 After a change in an owned submodule, check each item and report which are missing. Do not push
 images, tags or commits unless asked.
 
-1. `VERSION` file bumped within the lab's `N.x.y` (README "Versioning Strategy"; Lab 2 = `2.x.y`).
+1. `VERSION` file bumped within the lab's `N.x.y` (README "Versioning Strategy"; Lab 2 = `2.x.y`, Lab 3 = `3.x.y`, Lab 4 = `4.x.y`).
 2. Image published to Docker Hub under that tag and `latest`, by the CI workflow on merge to `main`
    (a release PR merged with a merge commit), and a git tag `v<VERSION>` with a GitHub Release holding the
    release notes (README "Release Notes Format").

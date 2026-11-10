@@ -1,0 +1,58 @@
+// The broker's gRPC contract (Lab 4). The source of truth is `shared/broker.proto` in the CPR
+// (DdimaPos/pad-team-16-student-id-please, #105); this is a copy, because a submodule build cannot reach the CPR.
+// Change it there first, then copy it here and run `scripts/gen-proto.sh`.
+//
+// Every call carries the metadata `x-service-token: <SERVICE_TOKEN>`: missing -> UNAUTHENTICATED,
+// wrong -> PERMISSION_DENIED.
+
+syntax = "proto3";
+package broker.v1;
+
+service Broker {
+  // Events: fire and forget to a topic. Returns once the message is durable (grade 9) or accepted (before).
+  rpc Publish (PublishRequest) returns (PublishResponse);
+  // One stream per instance: everything the instance's service is subscribed to, plus its request queue.
+  rpc Subscribe (SubscribeRequest) returns (stream Delivery);
+  // Outcome of an event delivery: ok, retry, or permanent (dead letter). A request is settled by Reply, not Ack.
+  rpc Ack (AckRequest) returns (AckResponse);
+  // Request/reply: the caller waits for one instance of `service`. A broker-side outcome (no instance, timeout)
+  // is a normal ServiceReply with status 503 or 408 and the shared error envelope as body, never a gRPC error.
+  rpc Request (ServiceRequest) returns (ServiceReply);
+  // The instance answers a request it received on its stream.
+  rpc Reply (ReplyRequest) returns (ReplyResponse);
+  rpc ListTopics (ListTopicsRequest) returns (ListTopicsResponse);
+  rpc ListDeadLetters (ListDeadLettersRequest) returns (ListDeadLettersResponse);
+}
+
+message PublishRequest  { string topic = 1; string event_id = 2; string event_type = 3; string producer = 4;
+                          int32 version = 5; bytes envelope_json = 6; string request_id = 7; }
+message PublishResponse { string message_id = 1; }
+
+message SubscribeRequest { string service = 1; string instance_id = 2; repeated string topics = 3;
+                           int32 max_concurrent_tasks = 4; }
+message Delivery {
+  string message_id = 1; string queue = 2; int32 attempt = 3; string request_id = 4;
+  oneof body { Event event = 5; ServiceRequest request = 6; }
+}
+message Event { string event_id = 1; string event_type = 2; string producer = 3; int32 version = 4;
+                bytes envelope_json = 5; }
+message AckRequest { string message_id = 1; string instance_id = 2;
+                     enum Outcome { OK = 0; RETRY = 1; PERMANENT = 2; } Outcome outcome = 3; string reason = 4; }
+message AckResponse {}
+
+message ServiceRequest { string service = 1; string correlation_id = 2; string method = 3; string path = 4;
+                         map<string, string> headers = 5; bytes body = 6; string request_id = 7;
+                         string caller = 8; int32 timeout_ms = 9; }
+message ServiceReply  { string correlation_id = 1; int32 status = 2; map<string, string> headers = 3;
+                        bytes body = 4; string instance_id = 5; }
+message ReplyRequest  { ServiceReply reply = 1; string message_id = 2; }
+message ReplyResponse {}
+
+message ListTopicsRequest {}
+message ListTopicsResponse { repeated Topic topics = 1; }
+message Topic { string name = 1; repeated Queue queues = 2; }
+message Queue { string name = 1; string service = 2; int32 depth = 3; int32 subscribers = 4; }
+message ListDeadLettersRequest { int32 limit = 1; int32 offset = 2; }
+message ListDeadLettersResponse { repeated DeadLetter items = 1; int32 total = 2; }
+message DeadLetter { string message_id = 1; string queue = 2; int32 attempts = 3; string reason = 4;
+                     string created_at = 5; string dead_at = 6; Delivery delivery = 7; }

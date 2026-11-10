@@ -113,33 +113,16 @@
           ]
         },
         {
-          "name": "GET /health/ready",
+          "name": "GET /health/ready (direct: not a Gateway route since Lab 4)",
           "request": {
             "method": "GET",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}",
-                "description": "Readiness is a service route at the Gateway (it reports dependency state)"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/health/ready",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "health",
-                "ready"
-              ]
-            },
+            "url": "{{service_url}}/health/ready",
             "description": ""
           },
           "event": [
@@ -1549,14 +1532,14 @@
                 "exec": [
                   "// Fill every slot with slow tasks, then send the request above the limit and keep its answer for the tests.",
                   "const n = Number(pm.variables.get('max_concurrent_tasks'));",
-                  "const slow = pm.variables.get('base_url') + '/api/v1/discord-dms/dev/slow?ms=3000';",
+                  "const slow = pm.variables.get('service_url') + '/api/v1/dev/slow?ms=3000';",
                   "const headers = [{ key: 'X-Service-Token', value: pm.variables.get('service_token') }];",
                   "pm.variables.set('overflow', '');",
                   "for (let i = 0; i < n; i++) pm.sendRequest({ url: slow, method: 'GET', header: headers }, () => {});",
                   "// A moment for the burst to reach the service, then the one request too many.",
                   "setTimeout(() => {",
                   "  const started = Date.now();",
-                  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/v1/discord-dms/dev/slow?ms=100', method: 'GET', header: headers }, (err, res) => {",
+                  "  pm.sendRequest({ url: pm.variables.get('service_url') + '/api/v1/dev/slow?ms=100', method: 'GET', header: headers }, (err, res) => {",
                   "    let body = null; try { body = res.json(); } catch (e) {}",
                   "    pm.variables.set('overflow', JSON.stringify({ error: err ? String(err) : null, status: res && res.code, retryAfter: res && res.headers.get('Retry-After'), body, ms: Date.now() - started }));",
                   "  });",
@@ -1675,7 +1658,7 @@
                   "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
                   "pm.test('an attachment named after the copy', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\"discord-dms-.+-20200101T000000Z\\.jsonl\"$/));",
                   "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
-                  "pm.test('info and above, oldest first', () => rows.forEach((r, i) => { pm.expect(r.level).to.not.eql('debug'); if (i) pm.expect(r.time >= rows[i - 1].time).to.be.true; }));"
+                  "pm.test('info and above, in file order (a line may land a few ms out of time order)', () => rows.forEach((r, i) => { pm.expect(r.level).to.not.eql('debug'); pm.expect(r.time).to.be.a('string'); if (i) pm.expect(Date.parse(r.time) - Date.parse(rows[i - 1].time)).to.be.at.least(-2000); }));"
                 ]
               }
             }

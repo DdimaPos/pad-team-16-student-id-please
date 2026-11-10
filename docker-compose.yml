@@ -267,6 +267,8 @@ services:
     depends_on:
       service-discovery-service:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
       dms-mongo:
         condition: service_healthy
       dms-redis:
@@ -287,7 +289,7 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       # Lab 4 (README "Message Broker"): every copy's stream brings the Gateway's requests (requests.discord-dms) and
       # the events of events.session.started and events.session.ended. The chat path is unchanged.
-      MESSAGE_BROKER_URL: ${DMS_MESSAGE_BROKER_URL-message-broker-service:8071}
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
     networks:
       - student-id-net
 

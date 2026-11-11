@@ -1,0 +1,30 @@
+# Prometheus for the team stack (Lab 4, #113; README "Monitoring"). Every component serves GET /metrics.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # Every up instance of the eight services and the Message Broker, read from Service Discovery every 5 s.
+  # An instance marked down or expired leaves the list, so its series stop: the gap on the dashboards.
+  - job_name: instances
+    http_sd_configs:
+      - url: http://service-discovery-service:8090/api/v1/instances/prometheus
+        refresh_interval: 5s
+        http_headers:
+          X-Service-Token:
+            files: [/etc/prometheus/service_token]
+    relabel_configs:
+      # Name each target by its instance_id instead of host:port.
+      - source_labels: [instance_id]
+        target_label: instance
+
+  # The Gateway and Service Discovery do not register, so they are static targets.
+  - job_name: static
+    static_configs:
+      - targets: ["gateway-service:8080"]
+        labels: {service: gateway, instance_id: gateway}
+      - targets: ["service-discovery-service:8090"]
+        labels: {service: service-discovery, instance_id: service-discovery}
+    relabel_configs:
+      - source_labels: [instance_id]
+        target_label: instance

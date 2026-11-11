@@ -111,7 +111,7 @@ No service calls another service, and no client calls a service, directly. A cli
 
 ![Architecture Diagram](img/ArchitecturalDiagram.png)
 
-The diagram shows the system of Lab 4 as it runs after the cutover of #113, when every component runs its `4.x` image. Until then CPR `dev` still runs the Lab 3 stack, in which the Gateway forwards REST to each instance itself (see [Gateway](#gateway)).
+The diagram shows the system of Lab 4 as it runs when every component runs its `4.x` image. `docker-compose.yml` runs the broker, the Gateway `4.0.0` and the monitoring since #113; each service runs its `4.x` image once its own Lab 4 delivery is merged.
 
 A client reaches the system only through the **Gateway** (REST with the player's JWT). The Gateway turns each request into a gRPC `Request` on the **Message Broker**, which puts it into the `requests.<service>` queue of the target service and hands it to one instance of that service. The eight services sit in three groups:
 
@@ -431,9 +431,6 @@ What the broker answers itself passes through unchanged, in the same envelope: `
 
 **One circuit breaker, on the broker.** The Gateway keeps one [circuit breaker](#circuit-breaker), on the broker, its only target, with a 35 s window (its task timeout `10s` x 3.5). A failure is a call that failed in transport (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, ...); a reply of any status is not, because the instances' breakers are the broker's. The Gateway no longer reads Service Discovery and never names an instance.
 
-> **Not yet wired (#113).** CPR `dev`'s `docker-compose.yml` still runs Gateway `3.1.0`, which forwards REST to the
-> instances itself as in Lab 3, until #113 switches the stack to the `4.x` images and adds the broker.
-
 #### Message Broker
 
 The Message Broker (Lab 4) carries every request and every event between the components: the Gateway's requests on behalf of clients, the requests one service makes to another, and every event. It owns topics, queues, subscriptions and delivery state, and no business data. Its own reference is [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md).
@@ -676,7 +673,7 @@ Lab 4 (#112): the logs of any instance, or of the whole system, can be downloade
 | Limits | Outside the concurrent limit and the task timeout, so a busy instance can still be read and a long answer is not cut off. Its `http.request` line is at `debug`, so reading the logs does not add to them |
 
 - **No broken lines.** Read the current file only up to its size when the request starts, and leave out a last line without its newline. A line that is not one whole JSON object is left out with or without a window: a line cut by a full disk, which the next process wrote onto after a restart, does end in a newline. A rotation that happens during the read must not cut a line or repeat one, so open every file before reading any of them. An open file keeps its content when the rotation renames it.
-- **Not a Gateway route.** `/api/v1/<prefix>/logs` answers `404 NOT_FOUND` and never reaches an instance's `GET /logs` (#105). The logs are fetched from the instance directly, inside `student-id-net`, or through the aggregate below. *Not yet wired:* until the cutover of #113 the compose runs Gateway `3.1.0`, which proxies it like any path to the service's `/api/v1/logs` (which does not exist), as a player route, so it answers `401 UNAUTHENTICATED` without a credential.
+- **Not a Gateway route.** `/api/v1/<prefix>/logs` answers `404 NOT_FOUND` and never reaches an instance's `GET /logs` (#105). The logs are fetched from the instance directly, inside `student-id-net`, or through the aggregate below.
 
 **3. The aggregate on Service Discovery: `GET /api/v1/logs?service=&instance=&since=&until=&level=`**, with the service token. Service Discovery knows every `up` instance, so it fetches them all:
 
@@ -767,6 +764,8 @@ scrape_configs:
 ```
 
 `honor_labels` stays off, so a target cannot override the labels Prometheus attaches; the broker's own `service` label (the called service) is therefore renamed `exported_service`: `broker_request_duration_seconds_count{exported_service="player"}`.
+
+**Logs.** Alloy reads every container's stdout (the JSON lines of [Logging](#logging)) and sends it to Loki, so Grafana shows the logs next to the metrics, with `level`, `service` and `event` as labels; see [Monitoring stack](#monitoring-stack-lab-4).
 
 **Prometheus and Grafana** run as one copy each, on host ports `9090` and `3000`, with their configuration and two provisioned dashboards in the CPR's `monitoring/` (#113): **System** (requests per second, latency p50/p95, `tasks_in_flight` per instance, breaker states, instances up and down per service) and **Broker** (queue depth per queue, publish and delivery rates, redeliveries, dead letters, request latency).
 
@@ -1709,8 +1708,8 @@ None. Server Rules neither produces nor receives events.
 
 > **Lab 4 (#118).** Server Rules Service `4.0.0` takes its requests from the broker's queue
 > `requests.server-rules` (one `Subscribe` stream per instance, no topic) and answers with `Reply`, as
-> [Message Broker](#message-broker) says. Its REST port still serves every route, so the Lab 3 Gateway of the
-> compose keeps forwarding to it until the cutover of #113. Details:
+> [Message Broker](#message-broker) says. Its REST port still serves every route, for
+> Service Discovery's `GET /status` and `GET /logs` and for direct calls inside the network. Details:
 > [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVICE.md) §11.
 
 
@@ -2194,11 +2193,15 @@ need to clone the (private) service repository to run one.
 | University Record Service         | [`d1vinexd/university-record-service`](https://hub.docker.com/r/d1vinexd/university-record-service)               | -         | 2 instances (`deploy.replicas: 2`), `ConnectionStrings__UniversityRecordDb` (PostgreSQL 17), `REFERENCE_YEAR` (must match Applicant/Credential/Moderation Service), `SERVICE_TOKEN` (sent with its events and to Service Discovery), `APPLICANT_URL`, `CREDENTIAL_URL`, `SERVICE_DISCOVERY_URL`                                                                                              |
 | Moderation Service                | [`dmracovit/moderation-service`](https://hub.docker.com/r/dmracovit/moderation-service)                           | -         | `DATABASE_URL` (PostgreSQL 17), `REFERENCE_YEAR`; `SERVICE_DISCOVERY_URL` (registration of every instance, with `SERVICE_TOKEN`; empty = off), 2 instances (`deploy.replicas: 2`), `GET /status`; since `4.0.0`: `MESSAGE_BROKER_URL` (`message-broker-service:8071`, gRPC, with `SERVICE_TOKEN` as metadata; the five peers as requests, `decision.recorded` published; replaces `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL`, `RULES_URL`; empty = the mock mode), `GET /logs` (`LOG_FILE`), `GET /metrics`, `X-Service-Token` checked on `/logs`, `/admin/*`, `/dev/*`; optional `INSTANCE_ID`, `INSTANCE_HOST`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`), `UPSTREAM_TIMEOUT` (`4s`) - see [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md) |
 | Discord DMs Service               | [`dmracovit/discord-dms-service`](https://hub.docker.com/r/dmracovit/discord-dms-service)                         | `8086`    | `MONGODB_URI` (MongoDB 7), `REDIS_URL` (required with several copies: fan-out between them), `WS_PUBLIC_URL` (the address clients reach port `8086` at, the base of a ticket's `ws_url`); since `4.0.0`: `MESSAGE_BROKER_URL` (`message-broker-service:8071`, gRPC, with `SERVICE_TOKEN` as metadata; one stream per copy for `requests.discord-dms` and the topics `events.session.started`, `events.session.ended`; `POST /api/v1/events` is gone), `GET /logs` (`LOG_FILE`), `GET /metrics`, `X-Service-Token` checked on `/logs`, `/admin/*`, `/dev/*`; `SERVICE_DISCOVERY_URL` (registration of the REST port of every copy, with `SERVICE_TOKEN`; empty = off), 2 copies (`deploy.replicas: 2`) behind `dms-ws-proxy` (nginx, `deployments/dms-ws-proxy/nginx.conf`), which publishes `8086` and forwards each WebSocket connection to one copy; `GET /status` (REST, with `ws_connections`); optional `INSTANCE_ID`, `INSTANCE_HOST`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). Validates no credential on its requests. The REST API listens on `8096` (`APP_PORT`) inside the network, where the Gateway reaches it (`DISCORD_DMS_URL=http://discord-dms-service:8096`); `8086` (`WS_PORT`) serves the WebSocket only - see [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md) |
-| Gateway Service                   | [`stewdh/gateway-service`](https://hub.docker.com/r/stewdh/gateway-service)                                       | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`; since `3.0.0` `SERVICE_DISCOVERY_URL` (instances read from Service Discovery, round-robin; set from `GATEWAY_SERVICE_DISCOVERY_URL`, Service Discovery by default; empty = static mode with the peer base URLs), `GET /status`; since `3.1.0` a circuit breaker per instance that marks it down in Service Discovery - see [`docs/GATEWAY.md`](docs/GATEWAY.md) |
+| Gateway Service                   | [`stewdh/gateway-service`](https://hub.docker.com/r/stewdh/gateway-service)                                       | `8080`    | `JWT_SECRET`, `SERVICE_TOKEN`; since `4.0.0` `MESSAGE_BROKER_URL` (`message-broker-service:8071`; every client request goes through the broker, only the client routes are served), optional `LOG_FILE` (`/var/log/gateway/gateway.jsonl`), `LOG_FILE_MAX_MB`, `LOG_FILE_KEEP`, `HTTP_REQUEST_TIMEOUT` (`10s`), `MAX_CONCURRENT_TASKS` (`64`), `GET /status`, `GET /logs`, `GET /metrics`, one circuit breaker on the broker. No longer reads `SERVICE_DISCOVERY_URL` and does not register (a static target of Prometheus and of the logs download) - see [`docs/GATEWAY.md`](docs/GATEWAY.md) |
 | Player Service                    | [`dimapos/player-service`](https://hub.docker.com/r/dimapos/player-service)                                       | -         | `POSTGRES_PASSWORD` (PostgreSQL 17; `POSTGRES_HOST`/`PORT`/`USER`/`DB` optional), `JWT_SECRET` (same value as the Gateway's); optional `HTTP_REQUEST_TIMEOUT`, `MAX_CONCURRENT_TASKS`; since `3.0.0` `SERVICE_DISCOVERY_URL` with `SERVICE_TOKEN` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below                                                 |
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; peer URLs `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL` (each falls back to a stub when empty), `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` (event consumers); since `3.0.0` `SERVICE_DISCOVERY_URL` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below |
 | Service Discovery (Lab 3)         | [`d1vinexd/service-discovery-service`](https://hub.docker.com/r/d1vinexd/service-discovery-service)               | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (empty = alerts only logged), `NOTIFY_COOLDOWN_SECONDS` (`300`), `LOG_LEVEL` (`info`), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS`; since `4.0.0` optional `LOG_FILE`, `LOG_FILE_MAX_MB` (`50`), `LOG_FILE_KEEP` (`5`), `LOGS_STATIC_TARGETS` (`gateway=http://gateway-service:8080`), `LOGS_FETCH_DEADLINE_SECONDS` (`60`), `GET /metrics`. No database - see [Service Discovery](#service-discovery) and below |
-| Message Broker (Lab 4)            | [`d1vinexd/message-broker-service`](https://hub.docker.com/r/d1vinexd/message-broker-service)                     | `8070`, `8071` | `SERVICE_TOKEN` (`X-Service-Token` on its `/api/v1` and `GET /logs`, the `x-service-token` metadata on every RPC); a named volume on `/data` (`MESSAGE_STORE_PATH`, `/data/broker.db`, SQLite; empty = in memory); `SERVICE_DISCOVERY_URL` (registration, instance list, mark-down, dead letter alerts; empty = off); optional `GRPC_MAX_WORKERS` (`64`), `GRPC_RESERVED_WORKERS` (`16`), `MESSAGE_ACK_TIMEOUT_SECONDS` (`5`), `MESSAGE_MAX_ATTEMPTS` (`3`), `MESSAGE_RETENTION_HOURS` (`24`), `LOG_FILE`, `LOG_LEVEL`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). One copy. Not in `docker-compose.yml` yet (#113) - see below and [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) |
+| Message Broker (Lab 4)            | [`d1vinexd/message-broker-service`](https://hub.docker.com/r/d1vinexd/message-broker-service)                     | `8070`, `8071` | `SERVICE_TOKEN` (`X-Service-Token` on its `/api/v1` and `GET /logs`, the `x-service-token` metadata on every RPC); a named volume on `/data` (`MESSAGE_STORE_PATH`, `/data/broker.db`, SQLite; empty = in memory); `SERVICE_DISCOVERY_URL` (registration, instance list, mark-down, dead letter alerts; empty = off); optional `GRPC_MAX_WORKERS` (`64`), `GRPC_RESERVED_WORKERS` (`16`), `MESSAGE_ACK_TIMEOUT_SECONDS` (`5`), `MESSAGE_MAX_ATTEMPTS` (`3`), `MESSAGE_RETENTION_HOURS` (`24`), `LOG_FILE`, `LOG_LEVEL`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). One copy, named volume `broker_data` - see below and [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) |
+| Prometheus (Lab 4)                | [`prom/prometheus`](https://hub.docker.com/r/prom/prometheus) `v3.5.0`                                          | `9090`    | `monitoring/prometheus/prometheus.yml`; the service token as the file `/etc/prometheus/service_token` (a compose `config` from `SERVICE_TOKEN`); named volume `prometheus_data`, 7 days kept - see [Monitoring stack](#monitoring-stack-lab-4) |
+| Loki (Lab 4)                      | [`grafana/loki`](https://hub.docker.com/r/grafana/loki) `3.7.9`                                                 | -         | Its built-in single-binary configuration; named volume `loki_data` |
+| Alloy (Lab 4)                     | [`grafana/alloy`](https://hub.docker.com/r/grafana/alloy) `v1.21.0`                                             | -         | `monitoring/alloy/config.alloy`; the Docker socket, read-only |
+| Grafana (Lab 4)                   | [`grafana/grafana`](https://hub.docker.com/r/grafana/grafana) `12.4.14`                                         | `3000`    | `GRAFANA_ADMIN_PASSWORD` (user `admin`); provisioning and dashboards from `monitoring/grafana`; named volume `grafana_data` |
 
 **One service token for the whole stack.** Every variable above that holds a service token
 (`SERVICE_TOKEN`) is set to the same value,
@@ -2218,7 +2221,8 @@ healthy; every service also reads the optional `INSTANCE_HOST` and `INSTANCE_ID`
 [Service Discovery](#service-discovery)) and `LOG_LEVEL` (see [Logging](#logging)).
 
 **Instances per service (Lab 3).** Each of the eight services runs `deploy.replicas: 2` in
-`docker-compose.yml`; the Gateway, Service Discovery and every database run one copy. Copies are added
+`docker-compose.yml`; the Gateway, Service Discovery, the Message Broker (Lab 4), every database and every
+monitoring container run one copy. Copies are added
 or removed at runtime with `docker compose up -d --scale <service>=N`, for example
 `docker compose up -d --scale moderation-service=3` in the demo. A scaled service has no
 `container_name` and no published host port (see [Running as several instances](#running-as-several-instances)).
@@ -2233,22 +2237,23 @@ changes for clients.
 on `8071`, the `message-broker-service:8071` that a service's `MESSAGE_BROKER_URL` names. `SERVICE_TOKEN`
 is its only required variable. Its subscriptions, queues and dead letters live in SQLite at
 `MESSAGE_STORE_PATH` (`/data/broker.db`), so a named volume on `/data` keeps them across a restart or a
-new container. It is not in `docker-compose.yml` yet: its block, the volume, Prometheus and Grafana come
-with #113. Its contract is [Message Broker](#message-broker); details in [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md).
+new container: `docker-compose.yml` mounts the named volume `broker_data` there (#113). The Gateway and Server
+Rules start after its healthcheck (`GET /health` on `8070`); a service started before it retries its subscription
+with backoff. Its contract is [Message Broker](#message-broker); details in [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md).
 
-**Published host ports.** Three ports are published: the Gateway
-(`8080`), Service Discovery (`8090`, the registry and its `/status`, for the demo and the developers) and the chat port `8086` (since Discord DMs `3.0.0` published by `dms-ws-proxy`, an nginx in front of
-the Discord DMs copies, for the direct WebSocket connection the Gateway negotiates; Discord DMs' REST listens on
-`8096` inside the network, reached through the Gateway), and from Lab 3 Service Discovery (`8090`). Every
-other service is reachable only inside `student-id-net`, through the Gateway - which is what lets
-services trust `X-Player-Id` (see [Authentication](#authentication)). Database ports are not part of
-the contract.
+**Published host ports.** The Gateway (`8080`), the chat port `8086` (since Discord DMs `3.0.0` published by
+`dms-ws-proxy`, an nginx in front of the Discord DMs copies, for the direct WebSocket connection the Gateway
+negotiates; Discord DMs' REST listens on `8096` inside the network), Service Discovery (`8090`, Lab 3, the registry
+and its `/status`, for the demo and the developers), and from Lab 4 the Message Broker (`8070` HTTP, `8071` gRPC, for
+the demo and the developers), Prometheus (`9090`) and Grafana (`3000`). Every service is reachable only inside
+`student-id-net`, through the Gateway and the broker - which is what lets services trust `X-Player-Id` (see
+[Authentication](#authentication)). Database ports are not part of the contract.
 
 **`JWT_SECRET`** is shared by exactly two containers, Player Service (signs) and the Gateway
 (verifies), and lives in `.env` next to `SERVICE_TOKEN`.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
-free number: `8080` and `8086` (`dms-ws-proxy`) are taken above (`-` means not published), `8090` by Service Discovery (Lab 3), `8070` and `8071` by the Message Broker (Lab 4, published once #113 adds its block), and the database containers
+free number: `8080` and `8086` (`dms-ws-proxy`) are taken above (`-` means not published), `8090` by Service Discovery (Lab 3), `8070` and `8071` by the Message Broker (Lab 4), `9090` by Prometheus and `3000` by Grafana (Lab 4), and the database containers
 hold `5433`-`5438`, `6380`, `27018` and `27019`. Every service listens on `8080` inside its own container except Applicant and
 Credential, which listen on `8081` and `8082`, Moderation, which listens on `8085`, and Discord DMs, which
 listens on `8096` for REST and on `8086` for the WebSocket.
@@ -2313,7 +2318,32 @@ this contract) live in [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVIC
 [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md),
 [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md) and
 [`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md). Postman
-collections are in [`postman/`](postman/).
+collections are in [`postman/`](postman/); [`postman/lab4-shift.postman_collection.json`](postman/lab4-shift.postman_collection.json)
+runs a whole shift through the Gateway and the broker (login, session, applicant, chat, decision, end) and checks
+the monitoring endpoints (Lab 4, #113).
+
+### Monitoring stack (Lab 4)
+
+Four containers in `docker-compose.yml` (#113), configured from [`monitoring/`](monitoring/):
+
+- **Prometheus** (`localhost:9090`) reads its targets from Service Discovery's `GET /api/v1/instances/prometheus` every
+  5 s (every `up` instance of the eight services and the broker), adds the Gateway and Service Discovery as static
+  targets and scrapes every `GET /metrics` every 5 s. The `instance` label is the `instance_id`.
+- **Alloy** reads the stdout of every container of the project through the Docker API (the socket, read-only) and
+  sends it to **Loki**. Each component's line is one JSON object (see [Logging](#logging)), so `level`, `service` and
+  `event` become labels; `compose_service` and `container` name the container. No log file or volume is shared.
+- **Grafana** (`localhost:3000`, user `admin`, `GRAFANA_ADMIN_PASSWORD`) has Prometheus and Loki provisioned as data
+  sources and two dashboards in the folder "Student ID, please":
+  - **System:** requests per second and `5xx` per service, latency p50/p95, `tasks_in_flight` per instance, every
+    circuit breaker, instances up per service, warnings and errors of every component, and Service Discovery's
+    instance alerts (`health.unreachable`, `registry.marked_down`, `registry.expired`, `registry.recovered`,
+    `health.critical`) as a logs panel and as red annotations on the graphs.
+  - **Broker:** queue depth per queue, messages per second by outcome, published and delivered per queue,
+    redeliveries and dead letters, request latency p50/p95 and rate per called service, the breaker of each
+    instance, and the broker's dead letter, reroute, timeout and trip lines.
+
+When an instance stops, its series end (the gap), Service Discovery's alert lines appear as annotations, and the
+broker's breaker and reroute lines show where its messages went.
 
 ---
 

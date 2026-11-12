@@ -91,33 +91,16 @@
           ]
         },
         {
-          "name": "GET /health/ready",
+          "name": "GET /health/ready (direct: not a Gateway route since Lab 4)",
           "request": {
             "method": "GET",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}",
-                "description": "Readiness is a service route at the Gateway (it reports dependency state)"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/health/ready",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "health",
-                "ready"
-              ]
-            },
+            "url": "{{service_url}}/health/ready",
             "description": ""
           },
           "event": [
@@ -191,20 +174,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/applicants",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "applicants"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/applicants",
             "description": ""
           },
           "event": [
@@ -233,20 +203,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/sessions",
             "description": ""
           },
           "event": [
@@ -303,24 +260,19 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "const base = pm.variables.get('base_url');",
+                  "// Direct on the service's REST port: /admin/* left the Gateway in Lab 4 (#110), and a player route called",
+                  "// directly takes X-Player-Id as the service trusts it. The Gateway is only for the collection's own requests.",
+                  "const svc = pm.variables.get('service_url');",
                   "const svcHeaders = [{ key: 'X-Service-Token', value: pm.variables.get('service_token') }];",
-                  "// GET /bans is a player route: the Gateway wants a JWT, not X-Player-Id. pm.sendRequest skips the",
-                  "// collection pre-request script, so the token is signed here the same way.",
-                  "const cryptoJs = require('crypto-js');",
-                  "const b64url = (words) => cryptoJs.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
-                  "const part = (obj) => b64url(cryptoJs.enc.Utf8.parse(JSON.stringify(obj)));",
-                  "const now = Math.floor(Date.now() / 1000);",
-                  "const unsigned = part({ alg: 'HS256', typ: 'JWT' }) + '.' + part({ sub: pm.variables.get('moderator_id'), iat: now, exp: now + 300 });",
-                  "const playerHeaders = [{ key: 'Authorization', value: 'Bearer ' + unsigned + '.' + b64url(cryptoJs.HmacSHA256(unsigned, pm.variables.get('jwt_secret'))) }];",
+                  "const playerHeaders = [{ key: 'X-Player-Id', value: pm.variables.get('moderator_id') }];",
                   "const sid = pm.variables.get('session_id');",
                   "const items = pm.response.json().items || [];",
                   "console.log('reset: deleting ' + items.length + ' decision(s) of session ' + sid);",
-                  "items.forEach(d => pm.sendRequest({ url: base + '/api/v1/moderation/admin/decisions/' + d.decision_id, method: 'DELETE', header: svcHeaders }, (err, res) => console.log('delete decision', d.decision_id.slice(0, 8), err ? String(err) : res.code)));",
-                  "pm.sendRequest({ url: base + '/api/v1/moderation/bans?q=FAF23104&limit=100', method: 'GET', header: playerHeaders }, (err, res) => {",
+                  "items.forEach(d => pm.sendRequest({ url: svc + '/api/v1/admin/decisions/' + d.decision_id, method: 'DELETE', header: svcHeaders }, (err, res) => console.log('delete decision', d.decision_id.slice(0, 8), err ? String(err) : res.code)));",
+                  "pm.sendRequest({ url: svc + '/api/v1/bans?q=FAF23104&limit=100', method: 'GET', header: playerHeaders }, (err, res) => {",
                   "  if (err || !res) { console.log('ban lookup failed', String(err)); return; }",
                   "  pm.test('ban lookup succeeded', () => pm.expect(res.code).to.eql(200));",
-                  "  (res.json().items || []).filter(b => b.session_id === sid).forEach(b => pm.sendRequest({ url: base + '/api/v1/moderation/admin/bans/' + b.ban_id, method: 'DELETE', header: svcHeaders }, (e, r) => console.log('delete ban', b.ban_id.slice(0, 8), e ? String(e) : r.code)));",
+                  "  (res.json().items || []).filter(b => b.session_id === sid).forEach(b => pm.sendRequest({ url: svc + '/api/v1/admin/bans/' + b.ban_id, method: 'DELETE', header: svcHeaders }, (e, r) => console.log('delete ban', b.ban_id.slice(0, 8), e ? String(e) : r.code)));",
                   "});",
                   "pm.collectionVariables.set('last_decision_id', '');",
                   "pm.collectionVariables.set('ban_id', '');"
@@ -348,22 +300,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions",
-                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-                "current-applicant"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
             "description": "",
             "body": {
               "mode": "raw",
@@ -508,22 +445,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions",
-                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-                "current-applicant"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
             "description": "",
             "body": {
               "mode": "raw",
@@ -617,22 +539,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions",
-                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-                "current-applicant"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
             "description": "",
             "body": {
               "mode": "raw",
@@ -726,22 +633,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions",
-                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-                "current-applicant"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
             "description": "",
             "body": {
               "mode": "raw",
@@ -835,22 +727,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions",
-                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-                "current-applicant"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
             "description": "",
             "body": {
               "mode": "raw",
@@ -944,22 +821,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions",
-                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-                "current-applicant"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
             "description": "",
             "body": {
               "mode": "raw",
@@ -1053,22 +915,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions",
-                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-                "current-applicant"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
             "description": "",
             "body": {
               "mode": "raw",
@@ -1162,22 +1009,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions",
-                "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-                "current-applicant"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
             "description": "",
             "body": {
               "mode": "raw",
@@ -1626,20 +1458,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/admin/decisions/{{last_decision_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "admin",
-                "decisions",
-                "{{last_decision_id}}"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/admin/decisions/{{last_decision_id}}",
             "description": ""
           },
           "event": [
@@ -1764,25 +1583,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/admin/events?limit=10",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "admin",
-                "events"
-              ],
-              "query": [
-                {
-                  "key": "limit",
-                  "value": "10"
-                }
-              ]
-            },
+            "url": "{{service_url}}/api/v1/admin/events?limit=10",
             "description": "Every decision.recorded event with its envelope and the delivery state per consumer: the relay pushes it to Server Moderation Session Service's POST /api/v1/events through the Gateway (2xx = delivered, 422 = parked, anything else retried with backoff)."
           },
           "event": [
@@ -1841,20 +1642,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "events"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/mock/events",
             "description": "Only meaningful while SESSION_URL is empty (mock Session). With the real Session, check its own session object instead."
           },
           "response": []
@@ -1887,20 +1675,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/mock/sessions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "mock",
-                "sessions"
-              ]
-            }
+            "url": "{{service_url}}/api/v1/dev/mock/sessions"
           },
           "response": []
         },
@@ -1933,25 +1708,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/admin/events?limit=100",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "admin",
-                "events"
-              ],
-              "query": [
-                {
-                  "key": "limit",
-                  "value": "100"
-                }
-              ]
-            }
+            "url": "{{service_url}}/api/v1/admin/events?limit=100"
           },
           "response": []
         }
@@ -1974,19 +1731,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/admin/bans",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "admin",
-                "bans"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/admin/bans",
             "description": "",
             "body": {
               "mode": "raw",
@@ -2025,20 +1770,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/admin/bans/{{ban_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "admin",
-                "bans",
-                "{{ban_id}}"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/admin/bans/{{ban_id}}",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"name\": \"Manual Ban Edited\",\n  \"student_id\": \"FAF20102\"\n}",
@@ -2078,20 +1810,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/admin/bans/{{ban_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "admin",
-                "bans",
-                "{{ban_id}}"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/admin/bans/{{ban_id}}",
             "description": ""
           },
           "event": [
@@ -2120,20 +1839,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/admin/decisions/{{last_decision_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "admin",
-                "decisions",
-                "{{last_decision_id}}"
-              ]
-            },
+            "url": "{{service_url}}/api/v1/admin/decisions/{{last_decision_id}}",
             "description": ""
           },
           "event": [
@@ -2179,25 +1885,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/slow?ms=200",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "slow"
-              ],
-              "query": [
-                {
-                  "key": "ms",
-                  "value": "200"
-                }
-              ]
-            }
+            "url": "{{service_url}}/api/v1/dev/slow?ms=200"
           },
           "response": []
         },
@@ -2228,25 +1916,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/slow?ms=7000",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "slow"
-              ],
-              "query": [
-                {
-                  "key": "ms",
-                  "value": "7000"
-                }
-              ]
-            },
+            "url": "{{service_url}}/api/v1/dev/slow?ms=7000",
             "description": "The Gateway allows 10 s, the service 5 s: the service gives up first and the Gateway passes its 408 through unchanged."
           },
           "response": []
@@ -2261,14 +1931,14 @@
                 "exec": [
                   "// Fill every slot with slow tasks, then send the request above the limit and keep its answer for the tests.",
                   "const n = Number(pm.variables.get('max_concurrent_tasks'));",
-                  "const slow = pm.variables.get('base_url') + '/api/v1/moderation/dev/slow?ms=3000';",
+                  "const slow = pm.variables.get('service_url') + '/api/v1/dev/slow?ms=3000';",
                   "const headers = [{ key: 'X-Service-Token', value: pm.variables.get('service_token') }];",
                   "pm.variables.set('overflow', '');",
                   "for (let i = 0; i < n; i++) pm.sendRequest({ url: slow, method: 'GET', header: headers }, () => {});",
                   "// A moment for the burst to reach the service, then the one request too many.",
                   "setTimeout(() => {",
                   "  const started = Date.now();",
-                  "  pm.sendRequest({ url: pm.variables.get('base_url') + '/api/v1/moderation/dev/slow?ms=100', method: 'GET', header: headers }, (err, res) => {",
+                  "  pm.sendRequest({ url: pm.variables.get('service_url') + '/api/v1/dev/slow?ms=100', method: 'GET', header: headers }, (err, res) => {",
                   "    let body = null; try { body = res.json(); } catch (e) {}",
                   "    pm.variables.set('overflow', JSON.stringify({ error: err ? String(err) : null, status: res && res.code, retryAfter: res && res.headers.get('Retry-After'), body, ms: Date.now() - started }));",
                   "  });",
@@ -2343,27 +2013,206 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/dev/slow?ms=50",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "dev",
-                "slow"
-              ],
-              "query": [
-                {
-                  "key": "ms",
-                  "value": "50"
-                }
-              ]
-            }
+            "url": "{{service_url}}/api/v1/dev/slow?ms=50"
           },
           "response": []
+        }
+      ]
+    },
+    {
+      "name": "7. Lab 4: logs, metrics and the direct routes",
+      "description": "Direct to one instance ({{service_url}}), as Service Discovery and Prometheus call it. /admin and /dev are not Gateway routes from Lab 4 on (#110): this service checks their X-Service-Token itself.",
+      "item": [
+        {
+          "name": "GET /metrics (Prometheus, no credential)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.text();",
+                  "['http_requests_total', 'http_request_duration_seconds', 'tasks_in_flight', 'outbox_pending', 'outbox_parked'].forEach(n =>",
+                  "  pm.test(n, () => pm.expect(body).to.include(n)));",
+                  "pm.test('breaker_state of the broker and the five peers, unless in the mock mode', () => { if (body.includes('breaker_state')) ['message-broker', 'session', 'applicant', 'credential', 'university-record', 'server-rules'].forEach(t => pm.expect(body).to.include(`breaker_state{target=\"${t}\"}`)); });",
+                  "pm.test('route is a template, never a raw id', () => pm.expect(body).to.not.match(/route=\"[^\"]*[0-9a-f]{8}-[0-9a-f]{4}/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{service_url}}/metrics"
+          }
+        },
+        {
+          "name": "GET /logs (this instance's lines, ndjson)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "pm.test('an attachment named after the instance', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\"moderation-.+-20200101T000000Z\\.jsonl\"$/));",
+                  "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
+                  "pm.test('info and above, in file order (a line may land a few ms out of time order)', () => rows.forEach((r, i) => { pm.expect(r.level).to.not.eql('debug'); pm.expect(r.time).to.be.a('string'); if (i) pm.expect(Date.parse(r.time) - Date.parse(rows[i - 1].time)).to.be.at.least(-2000); }));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{service_url}}/logs?since=2020-01-01T00:00:00Z&level=info"
+          }
+        },
+        {
+          "name": "GET /logs without the token: 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{service_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs with a time without its zone: 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('since'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{service_url}}/logs?since=2026-11-05T10:00:00"
+          }
+        },
+        {
+          "name": "GET /api/v1/admin/events without the token: 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{service_url}}/api/v1/admin/events?limit=1"
+          }
+        },
+        {
+          "name": "GET /api/v1/admin/events with a wrong token: 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/admin/events?limit=1"
+          }
+        },
+        {
+          "name": "GET /api/v1/admin/events: the newest event has one delivery row, to the broker",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const items = pm.response.json().items || [];",
+                  "const newest = items.reduce((a, e) => (!a || e.created_at > a.created_at ? e : a), null);",
+                  "pm.test('one delivery, consumer message-broker (Lab 4); nothing to check before the first decision', () => {",
+                  "  if (newest) { pm.expect(newest.deliveries.length).to.eql(1); pm.expect(newest.deliveries[0].consumer).to.eql('message-broker'); } });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/admin/events?limit=100"
+          }
+        },
+        {
+          "name": "GET /health/ready names the broker connection",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('message_broker is READY or mock', () => pm.expect(['READY', 'IDLE', 'mock']).to.include(pm.response.json().checks.message_broker));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{service_url}}/health/ready"
+          }
         }
       ]
     }

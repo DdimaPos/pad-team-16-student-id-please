@@ -1,7 +1,8 @@
 # Team-wide compose - references PUBLISHED Docker Hub images only, never `build:`. Any
 # teammate can run this without cloning anyone's (private) service repository. It covers
-# the Gateway and all 8 services. There is no message broker: services call each other and
-# push events over HTTP through the Gateway (`gateway-service`, README "Event delivery").
+# the Gateway, all 8 services, Service Discovery, the Message Broker and the monitoring (Lab 4, #113):
+# Prometheus, Loki, Alloy and Grafana. Clients reach the system through the Gateway; from Lab 4 every request and
+# event between the components travels through the Message Broker (README "Message Broker", "Event delivery").
 # New blocks follow the same pattern, referencing a published image and joining the same
 # `student-id-net` network.
 #
@@ -19,14 +20,14 @@ name: student-id-please
 x-reference-year: &reference_year "2026"
 
 services:
-  # Service Discovery (README "Service Discovery"): the registry every instance registers with and the
-  # Gateway reads its routing table from. One copy, registry in memory; after a restart every instance is
+  # Service Discovery (README "Service Discovery"): the registry every instance and the broker register with, the
+  # broker routes from and Prometheus reads its targets from. One copy, registry in memory; after a restart every instance is
   # back within one heartbeat (5 s). Host port 8090 is published for the demo (the registry and /status);
-  # the services and the Gateway reach it at http://service-discovery-service:8090 inside the network.
+  # the services and the broker reach it at http://service-discovery-service:8090 inside the network.
   # Health polling of every instance's /status every 10 s, alerts in the log and, with TELEGRAM_BOT_TOKEN
   # and TELEGRAM_CHAT_ID set in .env, in the team's Telegram group.
   service-discovery-service:
-    image: d1vinexd/service-discovery-service:3.0.0
+    image: d1vinexd/service-discovery-service:4.0.0
     restart: unless-stopped
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
@@ -34,6 +35,12 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID:-}
       NOTIFY_COOLDOWN_SECONDS: ${NOTIFY_COOLDOWN_SECONDS:-300}
+      # Lab 4 (4.0.0): GET /logs reads this file. It stays inside the container: never a shared volume.
+      LOG_FILE: /var/log/service-discovery/service-discovery.jsonl
+      # GET /api/v1/logs (the whole system's logs in one zip) also fetches the Gateway, which does not register,
+      # through LOGS_STATIC_TARGETS. Its default, gateway=http://gateway-service:8080, is the Gateway of this file,
+      # so it is not set here; a Gateway without GET /logs is named in the zip's manifest under "failed".
+      # Prometheus (#113) reads its targets from GET /api/v1/instances/prometheus and scrapes GET /metrics.
     ports:
       - "8090:8090"
     healthcheck:
@@ -44,28 +51,60 @@ services:
     networks:
       - student-id-net
 
-  gateway-service:
-    image: stewdh/gateway-service:3.1.0
+  # Message Broker (Lab 4, README "Message Broker"): every request and event between the components. One copy.
+  # gRPC on 8071 (MESSAGE_BROKER_URL=message-broker-service:8071 in the Gateway and every service), HTTP on 8070
+  # (/status, /logs, /metrics, the topics and dead letter listings with the service token). Messages, subscriptions
+  # and dead letters are in SQLite on the broker_data volume, so they survive a restart and a new container.
+  message-broker-service:
+    image: d1vinexd/message-broker-service:4.0.0
     restart: unless-stopped
     depends_on:
       service-discovery-service:
         condition: service_healthy
     environment:
-      # Verifies the player JWT signed by Player Service (same value) and the one service token.
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      # Registration as message-broker, the instance list and loads it routes on, the mark-down after a breaker
+      # trip and one alert per dead letter.
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
+      LOG_LEVEL: ${MESSAGE_BROKER_LOG_LEVEL:-info}
+      MESSAGE_STORE_PATH: /data/broker.db
+      MESSAGE_ACK_TIMEOUT_SECONDS: ${MESSAGE_ACK_TIMEOUT_SECONDS:-5}
+      MESSAGE_MAX_ATTEMPTS: ${MESSAGE_MAX_ATTEMPTS:-3}
+      MESSAGE_RETENTION_HOURS: ${MESSAGE_RETENTION_HOURS:-24}
+      # GET /logs reads this file. It stays inside the container: never a shared volume.
+      LOG_FILE: /var/log/message-broker/message-broker.jsonl
+    volumes:
+      - broker_data:/data
+    ports:
+      - "8070:8070"
+      - "8071:8071"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8070/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - student-id-net
+
+  gateway-service:
+    image: stewdh/gateway-service:4.0.0
+    restart: unless-stopped
+    depends_on:
+      message-broker-service:
+        condition: service_healthy
+    environment:
+      # Verifies the player JWT signed by Player Service (same value). SERVICE_TOKEN is the gRPC metadata of its
+      # calls to the broker and the credential of its own GET /logs.
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
-      # Above the services' 5s, so the outer layer never gives up first.
+      # Above the services' 5s, so the outer layer never gives up first; x 3.5 = its breaker window on the broker.
       HTTP_REQUEST_TIMEOUT: 10s
       MAX_CONCURRENT_TASKS: "64"
-      # Lab 3: with a Service Discovery URL the instances of every service are read from it at startup
-      # and every 5s, and each service's requests go to its instances round-robin; an instance that
-      # fails 3 times within 35s is skipped and marked down there (circuit breaker). The default is the
-      # Service Discovery of this file; set GATEWAY_SERVICE_DISCOVERY_URL= (empty) in .env for static mode,
-      # one instance per service at the fixed URLs below, with the breaker but no mark-down.
-      SERVICE_DISCOVERY_URL: ${GATEWAY_SERVICE_DISCOVERY_URL-http://service-discovery-service:8090}
-      # Static mode only. Peer base URLs default to the container names in this file (PLAYER_URL,
-      # SESSION_URL, ...); Discord DMs serves its REST API on 8096 (its published 8086 is the WebSocket only).
-      DISCORD_DMS_URL: http://discord-dms-service:8096
+      # Lab 4 (4.0.0): only the client routes (README "Gateway"), each request sent through the broker to the
+      # service's requests.<prefix> queue. It no longer reads Service Discovery and does not register with it:
+      # Prometheus scrapes it and Service Discovery fetches its GET /logs as static targets.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
+      LOG_FILE: /var/log/gateway/gateway.jsonl
     ports:
       - "8080:8080"
     networks:
@@ -91,7 +130,7 @@ services:
       - student-id-net
 
   server-rules-service:
-    image: d1vinexd/server-rules-service:3.0.1
+    image: d1vinexd/server-rules-service:4.0.1
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
@@ -99,19 +138,28 @@ services:
     depends_on:
       service-discovery-service:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
       rules-postgres:
         condition: service_healthy
     environment:
       ConnectionStrings__RulesDb: "Host=rules-postgres;Port=5432;Database=${RULES_POSTGRES_DB:-rules_db};Username=${RULES_POSTGRES_USER:-rules_user};Password=${RULES_POSTGRES_PASSWORD:?set RULES_POSTGRES_PASSWORD}"
       Dev__EnableTestEndpoints: ${RULES_ENABLE_DEV_ENDPOINTS:-true}
       # Task timeout and concurrent task limit (README "Task timeout and concurrent task limit"). Dev__EnableTestEndpoints
-      # mounts GET /api/v1/dev/slow?ms=, which demonstrates both. The service checks no token: the Gateway does.
+      # mounts GET /api/v1/dev/slow?ms=, which demonstrates both. The broker checks the service token of every call;
+      # the service itself checks X-Service-Token on GET /logs and, from 4.0.1, on /admin/* and /dev/* (called directly
+      # only: through the broker, which never passes the token on, they are refused).
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
       # Lab 3: each copy registers with Service Discovery directly (not through the Gateway) and
       # heartbeats every 5s, with the service token below.
       SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers the requests of
+      # requests.server-rules (no topic: the service consumes no event). The REST port still serves every route.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
+      # GET /logs reads this file. It stays inside each container: copies must never share one.
+      LOG_FILE: /var/log/server-rules/server-rules.jsonl
     networks:
       - student-id-net
 
@@ -135,7 +183,7 @@ services:
       - student-id-net
 
   university-record-service:
-    image: d1vinexd/university-record-service:3.0.1
+    image: d1vinexd/university-record-service:4.0.1
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
@@ -143,16 +191,24 @@ services:
     depends_on:
       service-discovery-service:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
       university-record-postgres:
         condition: service_healthy
     environment:
       ConnectionStrings__UniversityRecordDb: "Host=university-record-postgres;Port=5432;Database=${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db};Username=${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user};Password=${UNIVERSITY_RECORD_POSTGRES_PASSWORD:?set UNIVERSITY_RECORD_POSTGRES_PASSWORD}"
       REFERENCE_YEAR: *reference_year
-      # The service checks no incoming token; SERVICE_TOKEN is what it sends with its own events.
+      # The gRPC metadata x-service-token of every broker call and X-Service-Token to Service Discovery; incoming, it is
+      # checked on GET /logs and, from 4.0.1, on /admin/* and /dev/* (called directly only, never through the broker).
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
-      # Consumers of applicant.initialized: the Gateway plus the consumer's prefix.
-      APPLICANT_URL: ${UNIVERSITY_RECORD_APPLICANT_URL:-http://gateway-service:8080/api/v1/applicant}
-      CREDENTIAL_URL: ${UNIVERSITY_RECORD_CREDENTIAL_URL:-http://gateway-service:8080/api/v1/credential}
+      # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers applicant.initialized,
+      # session.started and session.ended (topics events.<event_type>) and the requests of requests.university-record;
+      # its own applicant.initialized is published once to events.applicant.initialized. POST /api/v1/events,
+      # APPLICANT_URL and CREDENTIAL_URL are gone. While the broker is unreachable the instance retries the subscription
+      # with backoff (broker.subscribe_failed), its events wait in the outbox, and it keeps serving /health and /status.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
+      # GET /logs reads this file. It stays inside each container: copies must never share one.
+      LOG_FILE: /var/log/university-record/university-record.jsonl
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
       # Lab 3: each copy registers with Service Discovery directly (not through the Gateway) and
@@ -182,13 +238,15 @@ services:
       - student-id-net
 
   moderation-service:
-    image: dmracovit/moderation-service:3.0.0
+    image: dmracovit/moderation-service:4.0.0
     restart: unless-stopped
-    # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
+    # Two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
       replicas: 2
     depends_on:
       service-discovery-service:
+        condition: service_healthy
+      message-broker-service:
         condition: service_healthy
       moderation-postgres:
         condition: service_healthy
@@ -198,19 +256,15 @@ services:
       # registration is off only when the container's own environment has an empty SERVICE_DISCOVERY_URL.
       SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
-      # The stack's one X-Service-Token, sent on every call to a peer and on every event push.
+      # The stack's one X-Service-Token: the metadata of every call to the broker; checked here on /logs, /admin and /dev.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       DEV_ENDPOINTS: ${MODERATION_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
       REFERENCE_YEAR: *reference_year
-      # Each peer is reached through the Gateway (README "Deployments"): the Gateway's address plus the
-      # peer's prefix. Clearing a variable in .env (MODERATION_SESSION_URL=) selects the built-in mock
-      # of that peer.
-      SESSION_URL: ${MODERATION_SESSION_URL-http://gateway-service:8080/api/v1/session}
-      APPLICANT_URL: ${MODERATION_APPLICANT_URL-http://gateway-service:8080/api/v1/applicant}
-      CREDENTIAL_URL: ${MODERATION_CREDENTIAL_URL-http://gateway-service:8080/api/v1/credential}
-      UNIVERSITY_RECORD_URL: ${MODERATION_UNIVERSITY_RECORD_URL-http://gateway-service:8080/api/v1/university-record}
-      RULES_URL: ${MODERATION_RULES_URL-http://gateway-service:8080/api/v1/server-rules}
+      # Lab 4 (README "Message Broker"): the five peers are called as requests through the broker (requests.session,
+      # requests.applicant, ...), decision.recorded is published to events.decision.recorded, and the service's own
+      # requests arrive from requests.moderation. The same variable and default as the Gateway and every service.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
     networks:
       - student-id-net
 
@@ -246,15 +300,17 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:3.0.0
+    image: dmracovit/discord-dms-service:4.0.0
     restart: unless-stopped
-    # Lab 3: two copies, none publishing a port. The one chat port of the stack, 8086, is answered by dms-ws-proxy
+    # Two copies, none publishing a port. The one chat port of the stack, 8086, is answered by dms-ws-proxy
     # below, which hands each WebSocket connection to one of the copies; the Redis fan-out makes every copy deliver
     # every message, so the copy does not matter. More copies: --scale discord-dms-service=3.
     deploy:
       replicas: 2
     depends_on:
       service-discovery-service:
+        condition: service_healthy
+      message-broker-service:
         condition: service_healthy
       dms-mongo:
         condition: service_healthy
@@ -270,9 +326,13 @@ services:
       # negotiated through the Gateway (POST /api/v1/discord-dms/ws-tickets) and connected to the proxy directly.
       WS_PUBLIC_URL: ${DMS_WS_PUBLIC_URL:-ws://localhost:8086}
       # Two listeners: 8086 serves the WebSocket only (reached through dms-ws-proxy); the REST API listens on 8096,
-      # never published, which is what every copy registers with Service Discovery and where the Gateway reaches it.
+      # never published, which is what every copy registers with Service Discovery and where it and Prometheus poll it.
       SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
+      # The stack's one X-Service-Token: the metadata of the broker stream; checked here on /logs, /admin and /dev.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      # Lab 4 (README "Message Broker"): every copy's stream brings the Gateway's requests (requests.discord-dms) and
+      # the events of events.session.started and events.session.ended. The chat path is unchanged.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
     networks:
       - student-id-net
 
@@ -308,7 +368,7 @@ services:
       - student-id-net
 
   player-service:
-    image: dimapos/player-service:3.0.0
+    image: dimapos/player-service:4.0.0
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
@@ -317,6 +377,8 @@ services:
       service-discovery-service:
         condition: service_healthy
       player-postgres:
+        condition: service_healthy
+      message-broker-service:
         condition: service_healthy
     environment:
       APP_ENV: docker
@@ -340,6 +402,12 @@ services:
       # SERVICE_TOKEN is required with it.
       SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers session.ended
+      # (topic events.session.ended) and the requests of requests.player. POST /api/v1/events is
+      # gone.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
+      # GET /logs reads this file. It stays inside each container: copies must never share one.
+      LOG_FILE: /var/log/player/player.jsonl
     networks:
       - student-id-net
 
@@ -363,13 +431,15 @@ services:
       - student-id-net
 
   session-service:
-    image: dimapos/server-moderation-session-service:3.0.0
+    image: dimapos/server-moderation-session-service:4.0.0
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
       replicas: 2
     depends_on:
       service-discovery-service:
+        condition: service_healthy
+      message-broker-service:
         condition: service_healthy
       session-postgres:
         condition: service_healthy
@@ -380,15 +450,16 @@ services:
       POSTGRES_USER: ${SESSION_POSTGRES_USER:-session_user}
       POSTGRES_PASSWORD: ${SESSION_POSTGRES_PASSWORD:?set SESSION_POSTGRES_PASSWORD}
       POSTGRES_DB: ${SESSION_POSTGRES_DB:-session_db}
-      # Every peer is reached through the Gateway, with the service token. An
-      # empty url selects a built-in stub instead (an event consumer's
-      # deliveries wait); GET /health/ready says which are real.
-      PLAYER_SERVICE_URL: http://gateway-service:8080/api/v1/player
-      RULES_SERVICE_URL: http://gateway-service:8080/api/v1/server-rules
-      APPLICANT_SERVICE_URL: http://gateway-service:8080/api/v1/applicant
-      UNIVERSITY_RECORD_SERVICE_URL: http://gateway-service:8080/api/v1/university-record
-      DISCORD_DMS_SERVICE_URL: http://gateway-service:8080/api/v1/discord-dms
+      # Lab 4 (4.0.0): one gRPC connection to the Message Broker carries the calls to Player,
+      # Server Rules and Applicant (requests.<service>), the publishes of session.started and
+      # session.ended, and the subscription that delivers decision.recorded and the requests of
+      # requests.session. It replaces the five *_SERVICE_URL of Lab 3; POST /api/v1/events is gone.
+      # The same variable and default as the Gateway and every service; empty selects the built-in
+      # stubs. GET /health/ready says what is wired.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      # GET /logs reads this file. It stays inside each container: copies must never share one.
+      LOG_FILE: /var/log/session/session.jsonl
       HTTP_REQUEST_TIMEOUT: ${SESSION_HTTP_REQUEST_TIMEOUT:-5s}
       MAX_CONCURRENT_TASKS: ${SESSION_MAX_CONCURRENT_TASKS:-50}
       # Seeds three sessions on an empty database - one in each state - so every
@@ -423,9 +494,9 @@ services:
       - student-id-net
 
   applicant-service:
-    image: stewdh/applicant-service:3.0.0
+    image: stewdh/applicant-service:4.0.0
     restart: unless-stopped
-    # Lab 3: two copies share applicant-postgres (no container_name, no host port);
+    # Two copies share applicant-postgres (no container_name, no host port);
     # `docker compose up -d --scale applicant-service=3` adds a third.
     deploy:
       replicas: 2
@@ -434,11 +505,13 @@ services:
         condition: service_healthy
       applicant-postgres:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
     environment:
       APP_ENV: docker
       APP_PORT: "8081"
       LOG_LEVEL: info
-      SERVICE_VERSION: "3.0.0"
+      SERVICE_VERSION: "4.0.0"
       TZ: UTC
       # Task timeout (408) and concurrent task limit (429) - README "Task timeout and concurrent
       # task limit". DEV_ENDPOINTS mounts GET /api/v1/dev/slow?ms=, which demonstrates both.
@@ -447,12 +520,11 @@ services:
       DEV_ENDPOINTS: ${APPLICANT_DEV_ENDPOINTS:-true}
       DATABASE_URL: "postgres://${APPLICANT_POSTGRES_USER:-applicant_user}:${APPLICANT_POSTGRES_PASSWORD:?set APPLICANT_POSTGRES_PASSWORD}@applicant-postgres:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
       MIGRATE_ON_START: "true"
-      # Event delivery (README "Event delivery"): applicant.initialized is pushed from the
-      # outbox to each consumer's POST /api/v1/events through the Gateway, with the one
-      # service token. Through the Gateway, never a peer's own address.
+      # Lab 4 (README "Event delivery"): requests arrive on the broker's requests.applicant
+      # queue and applicant.initialized is published to events.applicant.initialized, over
+      # gRPC, with the one service token as metadata. The broker's address, never a peer's.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
-      CREDENTIAL_URL: http://gateway-service:8080/api/v1/credential
-      UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       # Each copy registers itself here directly (not through the Gateway) as
       # applicant-<container id>, with the same service token, and heartbeats every 5s.
       SERVICE_DISCOVERY_URL: http://service-discovery-service:8090
@@ -486,9 +558,9 @@ services:
       - student-id-net
 
   credential-service:
-    image: stewdh/credential-service:3.0.0
+    image: stewdh/credential-service:4.0.0
     restart: unless-stopped
-    # Lab 3: two copies share credential-mongo (no container_name, no host port);
+    # Two copies share credential-mongo (no container_name, no host port);
     # `docker compose up -d --scale credential-service=3` adds a third.
     deploy:
       replicas: 2
@@ -497,11 +569,13 @@ services:
         condition: service_healthy
       credential-mongo:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
     environment:
       APP_ENV: docker
       APP_PORT: "8082"
       LOG_LEVEL: info
-      SERVICE_VERSION: "3.0.0"
+      SERVICE_VERSION: "4.0.0"
       TZ: UTC
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
@@ -509,10 +583,10 @@ services:
       MONGODB_URI: "mongodb://${CREDENTIAL_MONGO_USER:-credential_user}:${CREDENTIAL_MONGO_PASSWORD:?set CREDENTIAL_MONGO_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
       MONGODB_DATABASE: credential_db
       ENSURE_INDEXES_ON_START: "true"
-      # Event delivery, as for Applicant above.
+      # Lab 4: requests on requests.credential and events.applicant.initialized through the
+      # broker, as for Applicant above.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
-      APPLICANT_URL: http://gateway-service:8080/api/v1/applicant
-      UNIVERSITY_RECORD_URL: http://gateway-service:8080/api/v1/university-record
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       # Each copy registers itself here directly (not through the Gateway) as
       # credential-<container id>, with the same service token, and heartbeats every 5s.
       SERVICE_DISCOVERY_URL: http://service-discovery-service:8090
@@ -525,6 +599,79 @@ services:
       start_period: 15s
     networks:
       - student-id-net
+
+  # Monitoring (Lab 4, #113; README "Deployments", "Monitoring stack"). Prometheus reads the scrape targets from
+  # Service Discovery (every up instance and the broker) plus the Gateway and Service Discovery as static targets,
+  # and scrapes their GET /metrics every 5 s. Alloy reads every container's stdout (the JSON log lines) through
+  # the Docker API and ships it to Loki. Grafana shows both: the dashboards "System" and "Broker" are provisioned
+  # from monitoring/grafana. Configuration lives in monitoring/.
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    depends_on:
+      service-discovery-service:
+        condition: service_healthy
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    configs:
+      # The token of GET /api/v1/instances/prometheus, read from a file so it stays out of prometheus.yml.
+      - source: prometheus_service_token
+        target: /etc/prometheus/service_token
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - student-id-net
+
+  loki:
+    image: grafana/loki:3.7.9
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - loki_data:/loki
+    networks:
+      - student-id-net
+
+  # The Docker socket is mounted read-only, only to list this project's containers and read their logs.
+  alloy:
+    image: grafana/alloy:v1.21.0
+    restart: unless-stopped
+    depends_on:
+      - loki
+    command: ["run", "--storage.path=/var/lib/alloy/data", "/etc/alloy/config.alloy"]
+    volumes:
+      - ./monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - student-id-net
+
+  grafana:
+    image: grafana/grafana:12.4.14
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+      - loki
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    networks:
+      - student-id-net
+
+configs:
+  prometheus_service_token:
+    content: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
 
 networks:
   student-id-net:
@@ -540,3 +687,7 @@ volumes:
   session_pgdata:
   applicant_pgdata:
   credential_mongodata:
+  broker_data:
+  prometheus_data:
+  loki_data:
+  grafana_data:

@@ -20,6 +20,7 @@
 10. [Gateway requirements](#10-gateway-requirements)
 11. [Testing recipes](#11-testing-recipes)
 12. [Several instances (Lab 3)](#12-several-instances-lab-3)
+13. [Message Broker, logs and metrics (Lab 4)](#13-message-broker-logs-and-metrics-lab-4)
 
 ---
 
@@ -41,10 +42,12 @@ one event.
   Applicant, Credential and University Record. It does not own session state either: which players
   are in a shift, their roles and their record scopes all belong to Server Moderation Session
   Service.
-- **Calls:** nothing. No outbound HTTP client exists in the binary.
+- **Calls:** no other service. Its only outbound connections are the registration with Service
+  Discovery and, from `4.0.0`, one subscription stream to the Message Broker.
 - **Is called by:** the client (login, its own account) and Server Moderation Session Service
   (`GET /players/{player_id}` when a player creates or joins a session, to check they exist and read
-  their level; `POST /events` to push `session.ended`) - always through the Gateway.
+  their level). From `4.0.0` these requests arrive from the broker's queue `requests.player`, and
+  `session.ended` arrives on the broker topic `events.session.ended` - see [§13](#13-message-broker-logs-and-metrics-lab-4).
 
 ---
 
@@ -55,19 +58,21 @@ one event.
 | **Language / framework** | Go 1.26 / Gin |
 | **Container port** | `8080` |
 | **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/player/...` |
-| **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres). Through the Gateway: `/api/v1/player/health` (public) and `/api/v1/player/health/ready` (service token). `GET /status` for Service Discovery, called directly - see [§12](#12-several-instances-lab-3) |
+| **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres and, from `4.0.0`, the broker). Through the Gateway only `/api/v1/player/health` (public); `/health/ready` is not a Lab 4 Gateway route (`404`) and is called on the instance directly, like `GET /status` for Service Discovery - see [§12](#12-several-instances-lab-3) |
 | **Database** | PostgreSQL 17, `player_db` (own container). Schema applied at startup by GORM `AutoMigrate`, under a PostgreSQL advisory lock together with the seed |
 | **Service Discovery** | Registers as `player`, instance id `player-<hostname>`, port `8080`; heartbeat every 5 s, `DELETE` on graceful shutdown - see [§12](#12-several-instances-lab-3) |
-| **Logs** | One JSON object per line on stdout in the format of CPR README "Logging" |
+| **Logs** | One JSON object per line on stdout in the format of CPR README "Logging", and the same lines in the rotating `LOG_FILE`, read back by `GET /logs` (`4.0.0`) |
+| **Metrics** | `GET /metrics`, Prometheus text format, no credential (`4.0.0`) |
+| **Message Broker** | One gRPC `Subscribe` stream to `MESSAGE_BROKER_URL` as service `player`: topic `events.session.ended` and the queue `requests.player` (`4.0.0`) - see [§13](#13-message-broker-logs-and-metrics-lab-4) |
 | **Circuit breaker** | None: the service makes no outbound business call (the only outbound calls are the registration ones) |
-| **Events** | Receives `session.ended` on `POST /api/v1/events` - see [§6](#6-events). Produces none |
+| **Events** | Receives `session.ended` from the broker topic `events.session.ended`, settled with `Ack` - see [§6](#6-events). Produces none. `POST /api/v1/events` is removed in `4.0.0` |
 | **Authentication** | Checked by the Gateway, not here: the service reads the calling player from `X-Player-Id` and validates no token. It **issues** the player JWT (`POST /api/v1/auth/login`, HS256 with `JWT_SECRET`) |
 | **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health`, `/health/ready` and `/status` are exempt |
-| **Docker image** | `dimapos/player-service:3.0.0` (also `:latest`), `linux/amd64` and `linux/arm64`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `dimapos/player-service:4.0.0` (also `:latest`), `linux/amd64` and `linux/arm64`, published by GitHub Actions on merge to `main` |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`; `details` is always an object, never `null` |
 | **Timestamps** | ISO-8601, UTC |
 | **Identifiers** | UUID v4 strings |
-| **Architecture** | Layered: `domain` (entities, the XP curve, sentinel errors, event wire types), `repository` (interfaces; `postgres` on GORM, `memory` fake for tests), `service` (use cases), `auth` (token issuer), `httpapi` (router, middleware, handlers), `seed`, `logging` |
+| **Architecture** | Layered: `domain` (entities, the XP curve, sentinel errors, event wire types), `repository` (interfaces; `postgres` on GORM, `memory` fake for tests), `service` (use cases), `auth` (token issuer), `httpapi` (router, middleware, handlers), `seed`, `logging` (also the log file and its reader), `broker` (the subscription), `brokerpb` (the broker's proto and stubs), `metrics` |
 
 ---
 
@@ -75,9 +80,11 @@ one event.
 
 ### In the team stack (recommended)
 
-The CPR `docker-compose.yml` runs `dimapos/player-service:3.0.0` next to its database and the
+The CPR `docker-compose.yml` runs `dimapos/player-service:4.0.0` next to its database and the
 Gateway. Set `PLAYER_POSTGRES_PASSWORD` and `JWT_SECRET` in `.env` (the same `JWT_SECRET` the Gateway
-reads), then `docker compose up -d`. Every call goes to the Gateway on `http://localhost:8080`.
+reads), then `docker compose up -d`. The client routes go to the Gateway on `http://localhost:8080`;
+the rest (`/health/ready`, `/status`, `/logs`, `/metrics`, `/api/v1/dev/slow`) only to an instance
+directly - see [§10](#10-gateway-requirements).
 
 ### From the published image alone
 
@@ -87,7 +94,7 @@ docker run -d --name player-service --network student-id-net \
   -e POSTGRES_HOST=<postgres-host> \
   -e POSTGRES_PASSWORD=<password> \
   -e JWT_SECRET=<the Gateway's JWT_SECRET> \
-  dimapos/player-service:3.0.0
+  dimapos/player-service:4.0.0
 ```
 
 Every other variable has a working default.
@@ -136,7 +143,10 @@ safe to leave enabled.
 | `ENABLE_DEV_ENDPOINTS` | `true` | no | Mounts `GET /api/v1/dev/slow` |
 | `BCRYPT_COST` | `10` | no | Password hashing work factor |
 | `SERVICE_DISCOVERY_URL` | *empty* | no | Service Discovery to register with, directly (team stack: `http://service-discovery-service:8090`). Empty = no registration and one warning line at startup |
-| `SERVICE_TOKEN` | *empty* | with the URL | `X-Service-Token` for Service Discovery; the boot fails when the URL is set without it |
+| `SERVICE_TOKEN` | *empty* | with either URL | The stack's `X-Service-Token`: sent to Service Discovery and to the broker (as the gRPC metadata `x-service-token`), and the token `GET /logs` accepts. The boot fails when `SERVICE_DISCOVERY_URL` or `MESSAGE_BROKER_URL` is set without it |
+| `MESSAGE_BROKER_URL` | *empty* | no | The broker's gRPC address, `host:port` with no scheme (team stack: `message-broker-service:8071`). Empty = no subscription and one `broker.disabled` warning: no event and no request reaches the instance through the broker |
+| `LOG_FILE` | `/var/log/player/player.jsonl` | no | The copy of the log lines `GET /logs` reads; the image creates the directory for its non-root user. Empty = stdout only, `GET /logs` answers `503` |
+| `LOG_FILE_MAX_MB` / `LOG_FILE_KEEP` | `50` / `5` | no | The file rotates at this size; this many rotated files are kept |
 | `INSTANCE_ID` | `player-<hostname>` | no | This instance's id in the registry, `/status` and every log line |
 | `INSTANCE_HOST` | *empty* | no | Sent as `host` at registration, for a run outside Docker; otherwise Service Discovery uses the request's source address |
 
@@ -147,18 +157,21 @@ silently reverting to a default.
 
 ## 5. HTTP API
 
-Every caller reaches this service through the Gateway (`{gateway}/api/v1/player/...`), which checks
-the credential, removes it, and forwards only `X-Player-Id` for a player. The service itself
-validates no token. The **Gateway** column below is the credential the Gateway accepts for each
-route; the **Service** column is what the service itself checks.
+A client reaches this service through the Gateway (`{gateway}/api/v1/player/...`). From Lab 4
+(#110) the Gateway serves only the client routes: it checks the player token, removes it, and sends
+the request through the broker's queue `requests.player` with only `X-Player-Id`. Session Service's
+`GET /players/{player_id}` arrives through the same queue without the Gateway (see
+[§13](#13-message-broker-logs-and-metrics-lab-4)). The service itself validates no token. The
+**Gateway** column below is the credential the Lab 4 Gateway accepts for each route (*not routed*:
+the Gateway answers `404 NOT_FOUND` and the route is reached on an instance directly); the
+**Service** column is what the service itself checks.
 
 ### 5.1 Contract endpoints
 
 | Method | Path | Consumed by | Gateway | Service |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/auth/login` | the client | public | - |
-| `GET` | `/api/v1/players/{player_id}` | Server Moderation Session Service, the client | player or service | - |
-| `POST` | `/api/v1/events` | Server Moderation Session Service (`session.ended`) | service | - |
+| `GET` | `/api/v1/players/{player_id}` | Server Moderation Session Service (through the broker), the client | player | - |
 
 **`POST /api/v1/auth/login`.** `{ "username", "password" }` →
 `200 { "access_token", "token_type": "Bearer", "expires_in" }`. The token is HS256 with
@@ -184,16 +197,16 @@ disciplinary log are never returned here; a test asserts the field *set*, not on
 an accidental addition fails the build. `404 PLAYER_NOT_FOUND` if no player has that id - Session
 Service propagates that code verbatim as its own `404 PLAYER_NOT_FOUND` on `POST /sessions`.
 
-**`POST /api/v1/events`** - see [§6](#6-events).
-
 Also mandatory for every service, outside the versioned base path:
 
 | Method | Path | Gateway | Notes |
 | --- | --- | --- | --- |
 | `GET` | `/health` | public | Liveness. Never consults a dependency, so a database outage does not make an orchestrator restart a healthy container |
-| `GET` | `/health/ready` | service | Readiness. `{"status":"ok","dependencies":{"postgres":{"status":"ok"}}}`; `503` with `"status":"degraded"` and a per-dependency `error` if any is down |
+| `GET` | `/health/ready` | not routed | Readiness. `{"status":"ok","dependencies":{"postgres":{"status":"ok"},"broker":{"status":"ok"}}}` (`broker` only when `MESSAGE_BROKER_URL` is set); `503` with `"status":"degraded"` and a per-dependency `error` if any is down |
+| `GET` | `/logs` | not routed | `4.0.0`. This instance's log lines, `X-Service-Token` checked by the service - see [§13](#13-message-broker-logs-and-metrics-lab-4) |
+| `GET` | `/metrics` | not routed | `4.0.0`. Prometheus scrapes it directly - see [§13](#13-message-broker-logs-and-metrics-lab-4) |
 
-Neither counts against the concurrent task limit.
+None counts against the concurrent task limit.
 
 ### 5.2 Extension endpoints (beyond contract)
 
@@ -211,7 +224,7 @@ Their shapes are this service's own design.
 | `GET` | `/api/v1/players/{player_id}/friends` | player | - | Paginated. Returns **public** projections - a friend's fields are no more visible than anyone else's |
 | `POST` | `/api/v1/players/{player_id}/friends` | player | owner | `201`. Body: `{ "friend_id": "<uuid>" }`. Symmetric |
 | `DELETE` | `/api/v1/players/{player_id}/friends/{friend_id}` | player | owner | `204`. Removes both directions |
-| `GET` | `/api/v1/dev/slow?ms=` | service | - | Waits `ms` milliseconds (at most `60000`), then `200 { "waited_ms" }`. Demonstrates `408` (`ms` above `HTTP_REQUEST_TIMEOUT`) and `429` (enough parallel calls). Mounted only when `ENABLE_DEV_ENDPOINTS` is true |
+| `GET` | `/api/v1/dev/slow?ms=` | not routed | - | Waits `ms` milliseconds (at most `60000`), then `200 { "waited_ms" }`. Demonstrates `408` (`ms` above `HTTP_REQUEST_TIMEOUT`) and `429` (enough parallel calls). Mounted only when `ENABLE_DEV_ENDPOINTS` is true |
 
 **Owner** means the route needs a calling player and that player must be the one in the path: no
 `X-Player-Id` is `401 UNAUTHENTICATED`, a different player is `403 NOT_ACCOUNT_OWNER`. Through the
@@ -237,9 +250,13 @@ Request and response bodies are `snake_case`. `items` is always an array, never 
 | `EMAIL_TAKEN` | 409 | |
 | `ALREADY_FRIENDS` | 409 | In either direction - it is one friendship |
 | `CANNOT_FRIEND_SELF` | 422 | `friend_id` equals the player in the path |
-| `INVALID_EVENT` | 422 | `POST /events` only - see [§6](#6-events) |
 | `TOO_MANY_REQUESTS` | 429 | `MAX_CONCURRENT_TASKS` requests are in progress; nothing was done. Comes with `Retry-After` |
 | `INTERNAL_ERROR` | 500 | Anything unexpected, including the database failing. The detail is logged with the request id, never returned |
+| `SERVICE_TOKEN_REQUIRED` / `INVALID_SERVICE_TOKEN` | 403 / 401 | `GET /logs` only: no `X-Service-Token` / a wrong one |
+| `LOGS_UNAVAILABLE` | 503 | `GET /logs` only: no log file |
+
+`INVALID_EVENT` (`422`) is gone with `POST /api/v1/events` in `4.0.0`; its cases are now the
+`PERMANENT` outcome of [§6](#6-events).
 
 Validation rules worth knowing before you call `POST /players`: username 3-32 characters of
 `[A-Za-z0-9_]` only; password 8-72 bytes (72 is bcrypt's own limit, past which it ignores input);
@@ -250,20 +267,20 @@ Validation rules worth knowing before you call `POST /players`: username 3-32 ch
 
 ## 6. Events
 
-**Produced:** none. **Received:** `session.ended` only, pushed by Server Moderation Session Service's
-outbox relay as `POST {gateway}/api/v1/player/events` with `X-Service-Token`, as the CPR's "Event
-delivery" section defines it.
+**Produced:** none. **Received:** `session.ended` only. From `4.0.0` it arrives from the Message
+Broker: every instance subscribes to the topic `events.session.ended` (queue
+`events.session.ended.player`, shared by the instances, so one of them gets each event), and settles
+each delivery with `Ack`. `POST /api/v1/events` is removed, and the Lab 4 Gateway does not route it
+either: Session `4.0.0` publishes `session.ended` to the broker.
 
-### `POST /api/v1/events`
-
-| Situation | Answer | The producer |
+| Situation | `Ack` | The broker |
 | --- | --- | --- |
-| Applied | `200 { "event_id", "duplicate": false }` | marks it delivered |
-| An `event_id` already applied | `200 { "event_id", "duplicate": true }`, nothing changes | marks it delivered |
-| A `player_id` with no account here | `200`; the id is skipped and logged at warn, the rest of the event still applies | marks it delivered |
-| Unparseable envelope, missing `event_id` or `event_type`, an `event_type` other than `session.ended`, a `version` other than `1`, a payload that is not valid JSON or has no `session_id` | `422 INVALID_EVENT`, `details.reason` says which | parks it - a retry cannot succeed |
-| The database fails | `500 INTERNAL_ERROR` | retries with backoff |
-| The task timeout is reached | `408 REQUEST_TIMEOUT`, the transaction is rolled back | retries with backoff |
+| Applied | `OK` | done |
+| An `event_id` already applied | `OK`, nothing changes | done |
+| A `player_id` with no account here | `OK`; the id is skipped and logged at warn, the rest of the event still applies | done |
+| Unparseable envelope, missing `event_id` or `event_type`, an `event_type` other than `session.ended`, a `version` other than `1`, a payload that is not valid JSON or has no `session_id` (the old `422 INVALID_EVENT`) | `PERMANENT`, the reason (at most 200 characters, never the body) | dead-letters it - a retry cannot succeed |
+| The database fails, or the task timeout (`HTTP_REQUEST_TIMEOUT`) is reached | `RETRY` | delivers it again later |
+| The instance dies before acking | none | delivers it again after its ack timeout, to another instance |
 
 The third row matters for Session Service: **this service will not reject an event because it does
 not recognise a player.** Session decides who was in a shift, and one unknown id must not cost the
@@ -274,7 +291,7 @@ other players their XP. Ordering is not required.
 For every entry in `players[]`: add `xp_delta` to the player's XP, record the shift in their
 history, and append any `disciplinary_actions` to their log. The level needs no separate
 recalculation - it is derived from XP ([§7](#7-the-xp-curve-and-the-level)). All of it happens in
-one transaction together with the `event_id` marker, and the `200` is sent only after it commits.
+one transaction together with the `event_id` marker, and the `Ack` is sent only after it commits.
 
 `role` (`moderator` / `junior_moderator`) is stored on the shift row for the history view. It is
 part of the contract's `session.ended` payload, but is still read leniently - an event without it
@@ -322,9 +339,11 @@ a level of 0 would distort the average Session divides by.
 
 ## 8. Divergences from the CPR contract
 
-`3.0.0` implements the whole contract slice of this service: login, `GET /players/{player_id}`,
+`3.0.0` implemented the whole Lab 3 contract slice of this service: login, `GET /players/{player_id}`,
 `POST /events`, `X-Player-Id`, the shared error codes, the task timeout and the concurrent task
-limit. What remains is beyond the contract rather than against it:
+limit. `4.0.0` implements the Lab 4 contract (#105): the broker subscription, the queue
+`requests.player`, `GET /logs` and `GET /metrics`. Item 9 is where it differs from the README; the
+rest is beyond the contract rather than against it:
 
 1. **Ten endpoints beyond the contract** (register, list, profile, edit, delete, shifts,
    disciplinary actions, friends) and `GET /dev/slow`.
@@ -363,6 +382,15 @@ limit. What remains is beyond the contract rather than against it:
 8. **The reads of another player's profile, history and friends are open to any logged-in player.**
    Only changes are restricted to the owner. No endpoint returns `email`, so there is nothing
    private to hide on those reads.
+
+9. **Log event names (Lab 4).** README "Logging" names a request delivered by the broker
+   `request.received` and its `Reply` `request.replied`, and puts the `Ack` outcome on
+   `event.received`. `4.0.0` logs one `broker.request` line per request (`broker.reply_failed`, `warn`,
+   when the `Reply` cannot be sent) and has no outcome field on `event.received`: a `RETRY` is logged
+   as `event.retry`, a `PERMANENT` as `event.rejected` ([§12](#logging)). A rename needs a new image;
+   until then it is recorded here and in the README.
+   *Who this affects:* anyone filtering the logs in Grafana by `event`, where Player's requests do not
+   appear under `request.received` / `request.replied`.
 
 ---
 
@@ -409,17 +437,23 @@ limit. What remains is beyond the contract rather than against it:
 
 What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) does for this service, prefix `player`:
 
-- **Contract surface:** `POST /api/v1/auth/login`, `GET /api/v1/players/{player_id}` and
-  `POST /api/v1/events`. Everything else may change without a CPR amendment.
+- **Contract surface:** `POST /api/v1/auth/login` and `GET /api/v1/players/{player_id}`.
+  `POST /api/v1/events` is removed in `4.0.0` (events come from the broker). Everything else may
+  change without a CPR amendment.
 - **Public routes:** `POST /api/v1/auth/login`, `POST /api/v1/players` (registration) and
   `GET /health`.
-- **Service token only:** `POST /api/v1/events`, `/api/v1/dev/*` and `GET /health/ready`.
-- **Player or service:** `GET /api/v1/players/{player_id}`. Every other route needs a player token.
+- **Player token:** every other client route, `GET /api/v1/players/{player_id}` included.
+- **Not Gateway routes (Lab 4, #110):** `/api/v1/dev/*`, `GET /health/ready`, `GET /status`,
+  `GET /logs`, `GET /metrics` and the removed `POST /api/v1/events`. The Gateway answers `404 NOT_FOUND`
+  to them before any credential check, and to a known path with a method it does not take; they are
+  reached on an instance directly. The Gateway takes no service token.
+- **Lab 4 (#110):** the Gateway hands client requests to the broker's `requests.player`; Session's
+  `GET /players/{player_id}` reaches this service through the broker, not the Gateway.
 - **`JWT_SECRET` is shared** between this service (signs) and the Gateway (verifies). The Gateway
   requires it to be at least 32 characters.
 - **The Gateway strips any client-sent `X-Player-Id`** and sets its own from the token, which is
-  what the owner check relies on. This service's port is not published, so nothing but the Gateway
-  can reach it.
+  what the owner check relies on. This service's port is not published, so a request with
+  `X-Player-Id` comes from the Gateway through the broker, or from inside `student-id-net`.
 - **`email` is never in a response**, so there is nothing to redact.
 - `X-Request-Id` is read from the request when present (a uuid4 is generated otherwise), echoed on
   every response, including errors, and printed as `request_id` on every log line of the request. Pass yours through and one player action can be followed across every service's logs.
@@ -431,7 +465,12 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) does for this service, prefix
 
 ## 11. Testing recipes
 
-The recipes go through the Gateway on `http://localhost:8080`, with `SERVICE_TOKEN` from `.env`.
+The first recipe goes through the Gateway on `http://localhost:8080`. The routes the Lab 4 Gateway
+does not serve (`/api/v1/dev/slow`, `/health/ready`) are called on an instance directly, by the
+instance's own path (no `player` prefix) and with no token: `$PLAYER` below is
+`http://player-service:8080` from a shell inside `student-id-net`
+(`docker run --rm -it --network student-id-net --entrypoint sh curlimages/curl`), or the host port of
+the service's own compose.
 
 ### Recipe: log in and read the contract endpoint against the seeded example
 
@@ -448,57 +487,43 @@ curl -s localhost:8080/api/v1/player/players/8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f1
 Those are the numbers the CPR README publishes as its example, seeded deliberately so the
 documentation is checkable rather than decorative.
 
-### Recipe: apply a shift result, then prove it is applied only once
+### Recipe: apply a shift result through the broker, then prove it is applied only once
+
+With the broker's command-line client (`scripts/smoke.py` in `message-broker-service`, run where it
+reaches the broker's gRPC port, with `SERVICE_TOKEN` set):
 
 ```bash
-EVENT='{
-  "event_id": "4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23",
-  "event_type": "session.ended",
-  "occurred_at": "2026-09-10T18:45:00Z",
-  "producer": "server-moderation-session-service",
-  "version": 1,
-  "payload": {
-    "session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-    "score": 40, "penalties": 10, "applications_processed": 6,
-    "players": [
-      { "player_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11", "role": "moderator", "xp_delta": 30,
-        "disciplinary_actions": [
-          { "type": "warning", "reason": "Accepted an applicant with a forged student ID" } ] },
-      { "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "role": "junior_moderator",
-        "xp_delta": 40, "disciplinary_actions": [] }
-    ],
-    "ended_at": "2026-09-10T18:45:00Z"
-  }
-}'
+P='{"session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e", "players": [
+  {"player_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11", "role": "moderator", "xp_delta": 30, "disciplinary_actions": []}]}'
 
-curl -s -X POST localhost:8080/api/v1/player/events \
-  -H "X-Service-Token: $SERVICE_TOKEN" -H 'Content-Type: application/json' -d "$EVENT"
-# {"duplicate":false,"event_id":"4f0c2a8e-..."}
+python -m scripts.smoke publish --topic events.session.ended --event-id 4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23 --payload "$P"
+# the instance logs event.received, duplicate false; the broker logs broker.acked
+# GET /players/8c1f...0f11: xp 1280, completed_shifts 13, still level 4
 
-curl -s localhost:8080/api/v1/player/players/8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11 \
-  -H "X-Service-Token: $SERVICE_TOKEN"
-# xp 1280, completed_shifts 13, still level 4
+python -m scripts.smoke publish --topic events.session.ended --event-id 4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23 --payload "$P"
+# event.received, duplicate true, acked - and the player is unchanged
 
-curl -s -X POST localhost:8080/api/v1/player/events \
-  -H "X-Service-Token: $SERVICE_TOKEN" -H 'Content-Type: application/json' -d "$EVENT"
-# {"duplicate":true,"event_id":"4f0c2a8e-..."} - and the player is unchanged
+python -m scripts.smoke publish --topic events.session.ended --payload '{}'
+# event.rejected (no session_id), Ack PERMANENT, the broker logs broker.dead_lettered
 ```
 
 ### Recipe: the task timeout and the concurrent task limit
 
 ```bash
-# 408: the service stops the task at 5s, before the Gateway's 10s.
-curl -s "localhost:8080/api/v1/player/dev/slow?ms=7000" -H "X-Service-Token: $SERVICE_TOKEN"
+PLAYER=http://player-service:8080
+
+# 408: the service stops the task at 5s.
+curl -s "$PLAYER/api/v1/dev/slow?ms=7000"
 # {"error":{"code":"REQUEST_TIMEOUT",...}}
 
 # 429: start the service with MAX_CONCURRENT_TASKS=1 (PLAYER_MAX_CONCURRENT_TASKS in the CPR .env),
-# hold the slot, then call again.
-curl -s "localhost:8080/api/v1/player/dev/slow?ms=3000" -H "X-Service-Token: $SERVICE_TOKEN" &
+# hold the slot, then call the same instance again. With two copies, set PLAYER to one copy's own
+# address (its container IP from docker inspect), since the service name resolves to either.
+curl -s "$PLAYER/api/v1/dev/slow?ms=3000" &
 sleep 0.5
-curl -si "localhost:8080/api/v1/player/players/8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11" \
-  -H "X-Service-Token: $SERVICE_TOKEN"
+curl -si "$PLAYER/api/v1/players/8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
 # HTTP/1.1 429, Retry-After: 1, {"error":{"code":"TOO_MANY_REQUESTS",...}}
-curl -s localhost:8080/api/v1/player/health     # still 200 while the slot is held
+curl -s "$PLAYER/health"     # still 200 while the slot is held
 ```
 
 ### Recipe: what a teammate can assume about the seeded players
@@ -521,9 +546,12 @@ Every seeded account logs in with the password `seed-password`.
 ### Postman
 
 [`postman/player-service.postman_collection.json`](../postman/player-service.postman_collection.json)
-goes through the Gateway: one `base_url` variable (`http://localhost:8080/api/v1/player`) and a
-`service_token` variable that must equal `SERVICE_TOKEN` in `.env`. `GET /status` is the one request
-sent to the instance directly, through `player_direct_url`, because the Gateway does not route it. Its first folder logs in as the
+sends the client routes through the Gateway, `base_url` (`http://localhost:8080/api/v1/player`), with
+a player token. Every request on a route the Lab 4 Gateway does not serve goes to one instance
+directly through `player_direct_url` (`http://player-service:8080` inside `student-id-net`), by the
+instance's own path: `GET /health/ready`, `GET /status`, `GET /logs`, `GET /metrics`,
+`GET /api/v1/dev/slow` and the `PUT` that shows `405`. Only `GET /logs` sends `service_token`, which
+must equal `SERVICE_TOKEN` in `.env`. Its first folder logs in as the
 seeded players and stores their tokens. Folders run top to bottom against a freshly seeded
 database; requests whose names begin with a number belong to a sequence. The last folder is
 destructive - drop the `player_db` volume to restore the seed. Every request name states the status
@@ -546,8 +574,8 @@ of the database rather than of Go code. Those tests skip when `TEST_POSTGRES_DSN
 
 ## 12. Several instances (Lab 3)
 
-From `3.0.0` the service runs as 2-3 copies behind the Gateway's round-robin, one database shared by
-all of them.
+From `3.0.0` the service runs as 2-3 copies, one database shared by all of them; in Lab 3 the
+Gateway chose the copy, from `4.0.0` the broker does.
 
 ### `GET /status`
 
@@ -566,8 +594,9 @@ logs and the registration.
 ### Registration with Service Discovery
 
 - `PUT {SERVICE_DISCOVERY_URL}/api/v1/instances/{instance_id}` with `X-Service-Token` and
-  `{"service_name": "player", "port": 8080, "version": "3.0.0"}` (`host` added when `INSTANCE_HOST`
-  is set), sent right after the HTTP listener is up and then every 5 s as the heartbeat.
+  `{"service_name": "player", "port": 8080, "version": "4.0.0", "topics": {"publishes": [], "subscribes": ["events.session.ended"]}}`
+  (`host` added when `INSTANCE_HOST` is set; `topics` from `4.0.0`), sent right after the HTTP
+  listener is up and then every 5 s as the heartbeat.
 - `sd.registered` is logged on the first success; a failure logs `sd.heartbeat_failed` (`warn`) and
   is retried on the next tick. The instance keeps serving either way.
 - On SIGTERM/SIGINT: `DELETE` the same path (2 s timeout, `sd.deregistered`), then the HTTP server
@@ -582,14 +611,19 @@ handling a request add `request_id`.
 
 | `event` | Level | Extra fields |
 | --- | --- | --- |
-| `http.request` | `info`; `debug` for `/health*` and `/status` | `method`, `path`, `status`, `duration_ms` (integer), `client_ip`, `player_id` when `X-Player-Id` is set |
+| `http.request` | `info`; `debug` for `/health*`, `/status`, `/logs` and `/metrics` | `method`, `path`, `status`, `duration_ms` (integer), `client_ip`, `player_id` when `X-Player-Id` is set |
 | `http.error` | `info`; `error` with `stack` for a panic or an unexpected `500` (logged once) | `status`, `code`, `error` |
 | `player.login` / `player.login_failed` | `info` | `player_id` / `username` (never the password) |
 | `player.registered` | `info` | `player_id` |
-| `event.received` | `info` | `event_id`, `event_type`, `producer`, `duplicate`, `players_updated` |
+| `event.received` | `info` | `event_id`, `event_type`, `producer`, `duplicate`, `players_updated`; from `4.0.0` also `message_id`, `queue`, `attempt` |
+| `event.unknown_players` / `event.retry` / `event.rejected` | `warn` | as `event.received`, plus `unknown_players` or `reason` (`4.0.0`) |
+| `broker.subscribed` / `broker.subscribe_failed` / `broker.stream_ended` / `broker.disabled` | `info` / `warn` | `topics`, `max_concurrent_tasks`; `error`, `retry_in_ms` when failed (`4.0.0`) |
+| `broker.request` | `info`; `warn` as `broker.reply_failed` | `message_id`, `correlation_id`, `method`, `path` (no query), `caller`, `status`, `duration_ms` (`4.0.0`; README "Logging" names these `request.received` / `request.replied` - [§8](#8-divergences-from-the-cpr-contract) item 9) |
+| `broker.ack_failed` | `warn` | `message_id`, `error` (`4.0.0`) |
+| `logs.file_unavailable` | `warn` | `path`, `error`, once at startup (`4.0.0`) |
 | `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` / `sd.disabled` | `info` / `warn` | `error` when failed |
 | `db.migrated`, `seed.applied`, `seed.skipped` | `info` | counts |
-| `startup` / `shutdown` | `info` | address, port, log level, limits, pool size, Service Discovery URL - no secrets |
+| `startup` / `shutdown` | `info` | address, port, log level, limits, pool size, Service Discovery URL, broker URL, log file - no secrets |
 
 Never logged: `Authorization`, `X-Service-Token`, `JWT_SECRET`, passwords, request or response bodies.
 
@@ -610,3 +644,68 @@ Never logged: `Authorization`, `X-Service-Token`, `JWT_SECRET`, passwords, reque
 - **Connection budget.** `DB_MAX_OPEN_CONNS` is `25` per copy: 3 copies use at most 75 of
   PostgreSQL's default 100 `max_connections`.
 
+---
+
+## 13. Message Broker, logs and metrics (Lab 4)
+
+From `4.0.0`.
+
+### The subscription
+
+- One gRPC `Subscribe` stream per instance to `MESSAGE_BROKER_URL`: `service: "player"`,
+  `instance_id: INSTANCE_ID`, `topics: ["events.session.ended"]`, `max_concurrent_tasks:
+  MAX_CONCURRENT_TASKS`. The broker attaches the queue `requests.player` to the same stream. Every
+  call carries the metadata `x-service-token: SERVICE_TOKEN`.
+- A stream that cannot be opened or ends is opened again with backoff (0.5 s doubling to 10 s,
+  ±20%); what was not settled is redelivered by the broker, and the `event_id` dedup makes a repeat
+  harmless.
+- `/health/ready` reports `broker`; `GET /status` does not, so Service Discovery does not mark an
+  instance down while only its broker is away.
+- Shutdown: the stream closes first and the deliveries already received are settled, then the
+  instance deregisters and drains its REST port.
+- The contract is `internal/brokerpb/broker.proto`, a copy of the CPR's `shared/broker.proto` (by way
+  of the broker repository's), with checked-in Go stubs; CI regenerates them and fails on a
+  difference.
+
+### Requests from `requests.player`
+
+A delivered request (`method`, `path` with its query, `headers`, `body`) runs through the same Gin
+engine as the REST port, so it meets the same concurrent task limit (`429`), task timeout (`408`),
+access log and error envelope, and counts in `in_flight`, the load the broker routes by. The answer
+goes back with `Reply`: the status, the headers, the body, the request's `correlation_id` and this
+instance's id - a `4xx` or `5xx` too, unchanged. `X-Request-ID` comes from the delivery;
+`X-Service-Token` and `Authorization` are dropped if they ever arrive. A request without
+`X-Player-Id` is a service call (Session reading a player).
+
+### `GET /logs?since=&until=&level=`
+
+As CPR README "Logs download" defines it: the instance's own lines from `LOG_FILE` and its rotated
+files, oldest first, `since <= time < until` (RFC 3339 with a zone), `level` and above.
+
+| Answer | When |
+| --- | --- |
+| `200 application/x-ndjson`, `Content-Disposition: attachment; filename="<instance_id>-<since as 20261105T112700Z, or start>.jsonl"` | the lines, possibly none; headers sent before the files are read |
+| `403 SERVICE_TOKEN_REQUIRED` / `401 INVALID_SERVICE_TOKEN` | no `X-Service-Token` / a wrong one |
+| `400 VALIDATION_ERROR`, `details.errors: [{field, message}]` | a time that is not RFC 3339 or has no zone, `until <= since`, an unknown `level` |
+| `503 LOGS_UNAVAILABLE` | `LOG_FILE` empty or not writable at startup |
+
+Every file is opened before any is read, the current one only up to its size at the start; a last
+line without its newline and any line that is not one JSON object are left out. With `APP_ENV=local`
+the lines are text, so none is answered. Outside the concurrent task limit and the task timeout.
+
+```bash
+curl -s "http://<instance>:8080/logs?since=2026-11-07T17:00:00Z&level=warn" -H "X-Service-Token: $SERVICE_TOKEN"
+```
+
+### `GET /metrics`
+
+| Series | Labels |
+| --- | --- |
+| `http_requests_total` | `method`, `route` (the template, `unmatched` for an unknown path), `status`; `/health*`, `/status`, `/logs`, `/metrics` not counted |
+| `http_request_duration_seconds` (histogram) | `method`, `route` |
+| `tasks_in_flight`, `max_concurrent_tasks` | - |
+| `broker_connected` | - (1 while the stream is open) |
+| `events_consumed_total` | `event_type` (`session.ended` or `other`), `outcome` (`ok`, `duplicate`, `retry`, `permanent`) |
+| `go_*`, `process_*` | the Go runtime and process collectors |
+
+A method outside the standard ones is `OTHER`, so no caller can grow the number of series.

@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "University Record Service",
-    "description": "University Record through the Gateway: base_url is {{gateway}}/api/v1/university-record. A player's request names the player in X-Player-Id, which the collection pre-request script turns into a signed Bearer JWT; a service's request carries X-Service-Token. Events are pushed to POST /api/v1/events, so the collection demonstrates the full ingest -> search -> Moderation-view loop without any producer running. Run the 'scenario' folder top to bottom.",
+    "description": "University Record through the Gateway where the Gateway serves it, otherwise on the instance itself. base_url is {{gateway}}/api/v1/university-record: since the Gateway's 4.0.0 (#110) it serves only the player route GET /records/{category} and the public GET /health of this service, and answers 404 on every other one. A player's request names the player in X-Player-Id, which the collection pre-request script turns into a signed Bearer JWT on a Gateway request. Run the 'scenario' folder top to bottom.\n\nLAB 4 (4.0.0). applicant.initialized, session.started and session.ended arrive from the Message Broker (topics events.<event_type>), not on POST /events, which is removed; this service's own applicant.initialized is published to events.applicant.initialized. Postman cannot send the broker's gRPC calls: the events of the scenario have to be published to the broker with the full envelope first (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711), and the session's scopes are set with the session-service mock (POST /admin/sessions/{id}/scopes).\n\nDIRECT CALLS. Every request whose route is not a Gateway route goes to one instance directly through {{university_record_direct_url}}, with the service's own path (/api/v1/..., /health/ready, /status, /logs, /metrics; no /university-record prefix): /health/ready, /status, /logs, /metrics, the scenario's step 4 (POST /admin/sessions/{id}/scopes) and step 9 (GET /applicants/{id}/records), POST /events, POST /applicants/next, every /admin/* request and the player-id-on-a-service-only-route edge case. The contract routes validate no token; GET /logs and, from 4.0.1 (#151), /admin/* and /dev/* check X-Service-Token themselves, so every direct request to them sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong; the auth edge cases have both on an admin route). Through the broker /admin/* and /dev/* cannot be reached, since the broker never passes the token on. A direct service call on a contract route carries no X-Service-Token and no X-Player-Id, and a direct request that plays a player sends X-Player-Id as it is (the pre-request script signs no JWT and changes no header of a direct request). Direct and Gateway requests must reach the same database: in the team stack forward an instance's port (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -10,8 +10,14 @@
       "value": "http://localhost:8080/api/v1/university-record"
     },
     {
+      "key": "university_record_direct_url",
+      "value": "http://localhost:8084",
+      "description": "The instance itself, not the Gateway: its port is not published in the team stack, so forward one instance there (docker run --rm -d --name university-record-direct --network student-id-net -p 127.0.0.1:8084:8080 alpine/socat TCP-LISTEN:8080,fork,reuseaddr TCP:university-record-service:8080), bound to this machine only and stopped after the demo, since the instance trusts X-Player-Id as it comes; it shares the stack's database with the Gateway requests, or run the service's own compose (APP_HOST_PORT, 8084 by default) for the direct requests alone."
+    },
+    {
       "key": "service_token",
-      "value": "change_me_too"
+      "value": "change_me_too",
+      "description": "The stack's SERVICE_TOKEN; sent as X-Service-Token on the direct GET /logs and, from 4.0.1, /admin/* and /dev/* requests, the routes the instance checks it on. The contract routes check no token"
     },
     {
       "key": "jwt_secret",
@@ -36,14 +42,6 @@
     {
       "key": "player_b_id",
       "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21"
-    },
-    {
-      "key": "dup_event_id",
-      "value": ""
-    },
-    {
-      "key": "dup_applicant_id",
-      "value": ""
     }
   ],
   "event": [
@@ -57,9 +55,14 @@
           "// its own from the token's sub. This script signs the token itself: every request that names a",
           "// player in X-Player-Id gets Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id",
           "// header is dropped.",
+          "// A direct request ({{university_record_direct_url}}) reaches the instance itself, which reads",
+          "// X-Player-Id as it is and no JWT: it keeps the header and gets no token.",
           "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
+          "const url = pm.request.url.toString();",
+          "const directUrl = pm.variables.get('university_record_direct_url');",
+          "const direct = url.includes('{{university_record_direct_url}}') || (!!directUrl && url.startsWith(directUrl));",
           "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
-          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
+          "if (!direct && playerHeader && !pm.request.headers.has('Authorization')) {",
           "  const CryptoJS = require('crypto-js');",
           "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
           "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
@@ -77,6 +80,7 @@
   "item": [
     {
       "name": "health",
+      "description": "GET /health goes through the Gateway, a public route of every prefix. The rest goes to the instance directly ({{university_record_direct_url}}): /health/ready and /status are probes of Service Discovery and the orchestrator, /logs is Service Discovery's (it carries {{service_token}}, as /admin/* does from 4.0.1), /metrics is Prometheus'; the Gateway's 4.0.0 answers 404 on all of them.",
       "item": [
         {
           "name": "GET /health (liveness)",
@@ -86,10 +90,43 @@
           }
         },
         {
-          "name": "GET /health/ready (readiness)",
+          "name": "GET /health/ready (readiness - called directly, no credential)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/health/ready",
+            "url": "{{university_record_direct_url}}/health/ready"
+          }
+        },
+        {
+          "name": "GET /status (Service Discovery, outside the limiter - called directly, no credential)",
+          "description": "Shaped { service, instance_id, version, status, in_flight, max_concurrent_tasks }. Service Discovery calls it on the instance itself; it is not a Gateway route.",
+          "request": { "method": "GET", "url": "{{university_record_direct_url}}/status" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('status answers 200 with the agreed shape', function () {",
+            "  pm.response.to.have.status(200);",
+            "  pm.expect(pm.response.json()).to.have.all.keys('service', 'instance_id', 'version', 'status', 'in_flight', 'max_concurrent_tasks');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /logs - warn and above (200, application/x-ndjson - called directly, service token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "pm.test('attachment named after the instance', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\"university-record-.+-start\\.jsonl\"$/));",
+                  "const lines = pm.response.text().split('\\n').filter(l => l);",
+                  "pm.test('one JSON object per line, warn or error', () => lines.forEach(l => pm.expect(['warn','error']).to.include(JSON.parse(l).level)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/logs?level=warn",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -99,47 +136,192 @@
           }
         },
         {
-          "name": "GET /status (Service Discovery, outside the limiter)",
-          "description": "Shaped { service, instance_id, version, status, in_flight, max_concurrent_tasks }. Service Discovery calls it on the instance itself; through the Gateway it answers once the Gateway forwards /status, otherwise point base_url at the service port.",
-          "request": { "method": "GET", "url": "{{base_url}}/status" },
-          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
-            "pm.test('status answers 200 with the agreed shape', function () {",
-            "  pm.response.to.have.status(200);",
-            "  pm.expect(pm.response.json()).to.have.all.keys('service', 'instance_id', 'version', 'status', 'in_flight', 'max_concurrent_tasks');",
-            "});"
-          ] } }]
+          "name": "GET /logs - a window (200, application/x-ndjson)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('attachment named after since, in UTC', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.include('-20260101T000000Z.jsonl'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/logs?since=2026-01-01T00:00:00Z&until=2099-01-01T00:00:00%2B02:00",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - no service token (403 SERVICE_TOKEN_REQUIRED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs - wrong service token (401 INVALID_SERVICE_TOKEN)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/logs",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong-token"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - a time without its zone (400 VALIDATION_ERROR)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('details.errors names since', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('since'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/logs?since=2026-11-07T10:00:00",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - until before since (400 VALIDATION_ERROR)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('details.errors names until', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('until'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/logs?since=2026-11-07T10:00:00Z&until=2026-11-07T09:00:00Z",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /logs - unknown level (400 VALIDATION_ERROR)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('details.errors names level', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('level'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/logs?level=verbose",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "GET /metrics (200, Prometheus text format - called directly, no credential)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const t = pm.response.text();",
+                  "['http_requests_total','http_request_duration_seconds','tasks_in_flight','breaker_state{target=\"message-broker\"}','outbox_pending','outbox_parked'].forEach(s =>",
+                  "  pm.test(s, () => pm.expect(t).to.include(s)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/metrics"
+          }
         }
       ]
     },
     {
       "name": "scenario - honest student, identity theft, scopes, session end",
+      "description": "From 4.0.0 the events of this scenario arrive from the Message Broker, which Postman cannot call, so they are not requests here any more. Publish them to the broker with the full envelope (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711) at the missing step numbers: 3 applicant.initialized of the honest FAF student (applicant {{honest_applicant_id}}, actual student_id FAF23117, name Ana Rusu) before step 5; 8 applicant.initialized of an outsider claiming FAF23117 (applicant {{thief_applicant_id}}) before step 9; 10 session.ended of {{session_id}} before step 11. Without them steps 5, 9 and 11 fail their tests. Step 4 sets the scopes with the session-service mock in place of session.started. Steps 4 and 9 are service calls on routes the Gateway's 4.0.0 does not serve (404), so they go to the instance directly ({{university_record_direct_url}}, no X-Player-Id; step 4, an /admin/* route, sends X-Service-Token: {{service_token}} from 4.0.1, step 9 no token); steps 5, 6, 7 and 11 are the player route, through the Gateway with the JWT. Both must reach the same database (forward an instance of the team stack, docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
       "item": [
         {
-          "name": "3. ingest honest FAF student (applicant.initialized)",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
+          "name": "4. scopes - A gets enrollment+courses, B gets email-groups+fcim-logs (session-service mock, in place of session.started - called directly)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
               }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T18:10:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{honest_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"applicant-service\",\n    \"difficulty\": 3,\n    \"claimed\": { \"name\": \"Ana Rusu\", \"student_id\": \"FAF23117\", \"email\": \"ana.rusu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" },\n    \"actual\":  { \"name\": \"Ana Rusu\", \"student_id\": \"FAF23117\", \"email\": \"ana.rusu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" }\n  }\n}"
             }
-          }
-        },
-        {
-          "name": "4. session.started - A gets enrollment+courses, B gets email-groups+fcim-logs",
+          ],
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/events",
+            "url": "{{university_record_direct_url}}/api/v1/admin/sessions/{{session_id}}/scopes",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -152,7 +334,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"junior_moderators\": [\n      { \"player_id\": \"{{player_a_id}}\", \"record_scopes\": [\"enrollment\", \"courses\"] },\n      { \"player_id\": \"{{player_b_id}}\", \"record_scopes\": [\"email-groups\", \"fcim-logs\"] }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\"\n  }\n}"
+              "raw": "{ \"scopes\": [\n  { \"player_id\": \"{{player_a_id}}\", \"category\": \"enrollment\" },\n  { \"player_id\": \"{{player_a_id}}\", \"category\": \"courses\" },\n  { \"player_id\": \"{{player_b_id}}\", \"category\": \"email-groups\" },\n  { \"player_id\": \"{{player_b_id}}\", \"category\": \"fcim-logs\" }\n] }"
             }
           }
         },
@@ -275,28 +457,7 @@
           }
         },
         {
-          "name": "8. ingest an identity thief claiming the victim's student_id",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T18:20:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{thief_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"applicant-service\",\n    \"difficulty\": 4,\n    \"claimed\": { \"name\": \"Ion Popescu\", \"student_id\": \"FAF23117\", \"email\": \"ion.popescu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [], \"role\": \"student\" },\n    \"actual\":  { \"name\": \"Ion Popescu\", \"student_id\": null, \"email\": \"ion.popescu99@gmail.com\", \"major\": null, \"year\": null, \"university_status\": \"outsider\", \"courses\": [], \"role\": \"guest\" }\n  }\n}"
-            }
-          }
-        },
-        {
-          "name": "9. Moderation view of the thief - enrollment shows the VICTIM's name",
+          "name": "9. Moderation view of the thief - enrollment shows the VICTIM's name (called directly, as a service)",
           "event": [
             {
               "listen": "test",
@@ -313,34 +474,7 @@
           ],
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/applicants/{{thief_applicant_id}}/records",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
-          }
-        },
-        {
-          "name": "10. session.ended",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"session.ended\",\n  \"occurred_at\": \"2026-09-10T18:45:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": { \"session_id\": \"{{session_id}}\", \"ended_at\": \"2026-09-10T18:45:00Z\" }\n}"
-            }
+            "url": "{{university_record_direct_url}}/api/v1/applicants/{{thief_applicant_id}}/records"
           }
         },
         {
@@ -388,105 +522,26 @@
       ]
     },
     {
-      "name": "events (POST /api/v1/events)",
+      "name": "events - they come from the broker (Lab 4)",
+      "description": "From 4.0.0 applicant.initialized, session.started and session.ended are delivered by the Message Broker (topics events.<event_type>) and settled with Ack OK / PERMANENT / RETRY; POST /events is removed. The old cases of this folder are now Ack outcomes: a repeated event_id is OK (duplicate); an unknown event_type, an unknown version or a profile nested under a 'profile' key is PERMANENT (the old 422 INVALID_EVENT), and the broker dead-letters it (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a76 and \u00a711). The request below goes to the instance directly, so the 404 is the service's own (the route is removed), not the Gateway's 4.0.0, which answers 404 on it as well.",
       "item": [
         {
-          "name": "the same event twice: first applied, then duplicate: true",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{dup_event_id}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T18:10:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{dup_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"applicant-service\",\n    \"difficulty\": 3,\n    \"claimed\": { \"name\": \"Ana Rusu\", \"student_id\": \"FAF23117\", \"email\": \"ana.rusu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" },\n    \"actual\":  { \"name\": \"Ana Rusu\", \"student_id\": \"FAF23117\", \"email\": \"ana.rusu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" }\n  }\n}"
-            }
-          },
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.collectionVariables.set('dup_event_id', pm.variables.replaceIn('{{$guid}}'));",
-                  "pm.collectionVariables.set('dup_applicant_id', pm.variables.replaceIn('{{$guid}}'));"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.test('applied the first time', () => pm.expect(pm.response.json().duplicate).to.eql(false));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "... and again with the same event_id",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{dup_event_id}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T18:10:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{dup_applicant_id}}\",\n    \"session_id\": \"{{session_id}}\",\n    \"initialized_by\": \"applicant-service\",\n    \"difficulty\": 3,\n    \"claimed\": { \"name\": \"Ana Rusu\", \"student_id\": \"FAF23117\", \"email\": \"ana.rusu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" },\n    \"actual\":  { \"name\": \"Ana Rusu\", \"student_id\": \"FAF23117\", \"email\": \"ana.rusu@isa.utm.md\", \"major\": \"FAF\", \"year\": 3, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" }\n  }\n}"
-            }
-          },
+          "name": "POST /events is gone (404 - called directly)",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.test('duplicate: true', () => pm.expect(pm.response.json().duplicate).to.eql(true));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "unknown event_type (422 INVALID_EVENT)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('422', () => pm.response.to.have.status(422));",
-                  "pm.test('INVALID_EVENT', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
+                  "pm.test('404', () => pm.response.to.have.status(404));"
                 ]
               }
             }
           ],
           "request": {
             "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/events",
             "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -494,98 +549,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{ \"event_id\": \"{{$guid}}\", \"event_type\": \"player.created\", \"occurred_at\": \"2026-09-10T18:10:00Z\", \"producer\": \"player-service\", \"version\": 1, \"payload\": {} }"
-            },
-            "url": {
-              "raw": "{{base_url}}/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "events"
-              ]
-            }
-          }
-        },
-        {
-          "name": "unknown envelope version (422 INVALID_EVENT)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('422', () => pm.response.to.have.status(422));",
-                  "pm.test('INVALID_EVENT', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{ \"event_id\": \"{{$guid}}\", \"event_type\": \"session.ended\", \"occurred_at\": \"2026-09-10T18:10:00Z\", \"producer\": \"server-moderation-session-service\", \"version\": 9, \"payload\": {} }"
-            },
-            "url": {
-              "raw": "{{base_url}}/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "events"
-              ]
-            }
-          }
-        },
-        {
-          "name": "profile nested under a 'profile' key (422 INVALID_EVENT, not 500)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('422', () => pm.response.to.have.status(422));",
-                  "pm.test('INVALID_EVENT', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_EVENT'));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{ \"event_id\": \"{{$guid}}\", \"event_type\": \"applicant.initialized\", \"occurred_at\": \"2026-09-10T18:10:00Z\", \"producer\": \"applicant-service\", \"version\": 1, \"payload\": { \"applicant_id\": \"{{$guid}}\", \"session_id\": \"{{session_id}}\", \"initialized_by\": \"applicant-service\", \"difficulty\": 3, \"claimed\": { \"profile\": { \"name\": \"Ana Rusu\", \"university_status\": \"outsider\" } } } }"
-            },
-            "url": {
-              "raw": "{{base_url}}/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "events"
-              ]
+              "raw": "{}"
             }
           }
         }
@@ -593,28 +557,8 @@
     },
     {
       "name": "courses claim view (exists / registered)",
+      "description": "From 4.0.0 the applicant claiming a real course (PAD) and a fabricated one (QBIT) arrives as applicant.initialized from the Message Broker, which Postman cannot call (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711); GET /applicants/{id}/records then shows exists / registered per claimed course.",
       "item": [
-        {
-          "name": "ingest applicant claiming a real course and a fabricated one",
-          "request": {
-            "method": "POST",
-            "url": "{{base_url}}/events",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{$guid}}\",\n  \"event_type\": \"applicant.initialized\",\n  \"occurred_at\": \"2026-09-10T19:00:00Z\",\n  \"producer\": \"applicant-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"applicant_id\": \"{{$guid}}\",\n    \"session_id\": \"{{$guid}}\",\n    \"initialized_by\": \"applicant-service\",\n    \"difficulty\": 2,\n    \"claimed\": { \"name\": \"Vasile Cojocaru\", \"student_id\": \"FAF22201\", \"email\": \"vasile.cojocaru@isa.utm.md\", \"major\": \"FAF\", \"year\": 4, \"university_status\": \"faf_student\", \"courses\": [\"PAD\", \"QBIT\"], \"role\": \"student\" },\n    \"actual\":  { \"name\": \"Vasile Cojocaru\", \"student_id\": \"FAF22201\", \"email\": \"vasile.cojocaru@isa.utm.md\", \"major\": \"FAF\", \"year\": 4, \"university_status\": \"faf_student\", \"courses\": [\"PAD\"], \"role\": \"student\" }\n  }\n}"
-            }
-          }
-        },
         {
           "name": "search courses catalog for PAD",
           "request": {
@@ -651,17 +595,14 @@
     },
     {
       "name": "applicants/next (this service as generator)",
+      "description": "A service call, sent through the broker in the stack; not a route of the Gateway's 4.0.0 (404). Called on the instance directly, without X-Service-Token or X-Player-Id.",
       "item": [
         {
           "name": "generate a new applicant",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/applicants/next",
+            "url": "{{university_record_direct_url}}/api/v1/applicants/next",
             "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -677,12 +618,8 @@
           "name": "bad difficulty (400 VALIDATION_ERROR)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/applicants/next",
+            "url": "{{university_record_direct_url}}/api/v1/applicants/next",
             "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              },
               {
                 "key": "Content-Type",
                 "value": "application/json"
@@ -698,6 +635,7 @@
     },
     {
       "name": "auth edge cases",
+      "description": "The three requests on GET /records/{category} go through the Gateway: without X-Player-Id the collection signs no JWT and the Gateway answers 401 UNAUTHENTICATED; with 'not-a-uuid' the JWT's sub is not a player id and the Gateway answers 401 UNAUTHENTICATED; an unknown category passes the Gateway (the route matches any category) and the service answers 422. The service-only-route cases go to the instance directly, since the Gateway's 4.0.0 answers 404 on /admin/* before any credential: with X-Player-Id as it is and the right {{service_token}}, the service answers 403 SERVICE_TOKEN_REQUIRED to a player on a service-only route (the token does not make a player's request a service call); from 4.0.1 (#151) without X-Service-Token it answers 403 SERVICE_TOKEN_REQUIRED and with a wrong one 401 INVALID_SERVICE_TOKEN.",
       "item": [
         {
           "name": "no X-Player-Id on the player route (401 UNAUTHENTICATED)",
@@ -782,11 +720,15 @@
           ]
         },
         {
-          "name": "player id on a service-only route (403 SERVICE_TOKEN_REQUIRED)",
+          "name": "player id on a service-only route, with the right service token (403 SERVICE_TOKEN_REQUIRED - called directly)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/courses",
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses",
             "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              },
               {
                 "key": "X-Player-Id",
                 "value": "{{player_a_id}}"
@@ -801,6 +743,50 @@
                 "exec": [
                   "pm.test('403', () => pm.response.to.have.status(403));",
                   "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "service-only route without a service token (403 SERVICE_TOKEN_REQUIRED - called directly)",
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses"
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "service-only route with a wrong service token (401 INVALID_SERVICE_TOKEN - called directly)",
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong-token"
+              }
+            ]
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
                 ]
               }
             }
@@ -841,13 +827,14 @@
       ]
     },
     {
-      "name": "admin (beyond contract, service-token only)",
+      "name": "admin (beyond contract, service calls only)",
+      "description": "/admin/* is for services only and never a route of the Gateway's 4.0.0 (404), nor reachable through the broker, which never passes the token on, so every request here goes to the instance directly ({{university_record_direct_url}}). From 4.0.1 (#151) the service checks X-Service-Token on them: every request sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong, see the auth edge cases). A service call is a request without X-Player-Id, so none carries X-Player-Id.",
       "item": [
         {
           "name": "list catalog courses",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/courses?limit=10",
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses?limit=10",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -860,7 +847,7 @@
           "name": "create a course",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/admin/courses",
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -881,7 +868,7 @@
           "name": "delete a course with no registrations",
           "request": {
             "method": "DELETE",
-            "url": "{{base_url}}/admin/courses/TEST101",
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses/TEST101",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -894,7 +881,7 @@
           "name": "delete PAD - has registrations (409 COURSE_HAS_REGISTRATIONS)",
           "request": {
             "method": "DELETE",
-            "url": "{{base_url}}/admin/courses/PAD",
+            "url": "{{university_record_direct_url}}/api/v1/admin/courses/PAD",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -907,7 +894,7 @@
           "name": "list applicants (reveals actual - service-only)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/applicants?limit=10",
+            "url": "{{university_record_direct_url}}/api/v1/admin/applicants?limit=10",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -920,7 +907,7 @@
           "name": "list sessions",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/sessions?limit=10",
+            "url": "{{university_record_direct_url}}/api/v1/admin/sessions?limit=10",
             "header": [
               {
                 "key": "X-Service-Token",
@@ -933,7 +920,7 @@
           "name": "set scopes manually (session-service mock)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/admin/sessions/{{session_id}}/scopes",
+            "url": "{{university_record_direct_url}}/api/v1/admin/sessions/{{session_id}}/scopes",
             "header": [
               {
                 "key": "X-Service-Token",

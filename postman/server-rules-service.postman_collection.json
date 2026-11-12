@@ -1,13 +1,14 @@
 {
   "info": {
     "name": "Server Rules Service",
-    "description": "Server Rules Service has zero mocked business logic - it calls no service, publishes no event, consumes no event, and stores nothing about applicants. Every input arrives in the request. This collection exercises the real code paths end to end.",
+    "description": "Server Rules Service has zero mocked business logic - it calls no service, publishes no event, consumes no event, and stores nothing about applicants. Every input arrives in the request. This collection exercises the real code paths end to end.\n\nTHROUGH THE GATEWAY ({{base_url}}). Only the routes the Lab 4 Gateway serves for this service: GET /health (public) and GET rulesets/{version} (player JWT, signed by the pre-request script). The Gateway's 4.0.0 (#110, IacovlevMaxim/gateway-service#15, merged into its dev) keeps only these and answers 404 NOT_FOUND to every other path of this service, without forwarding it; Session and Moderation reach the others through the Message Broker's queue requests.server-rules (gRPC), which Postman cannot send.\n\nDIRECT CALLS ({{server_rules_direct_url}}). Every other request goes to one instance directly, by its own path (/api/v1/..., /health/ready, /status, /logs, /metrics, without the Gateway's /server-rules prefix): /health/ready, /status, rulesets/current, the evaluations, /admin/*, /logs and /metrics. The REST port still serves every route, exactly as the broker's requests are served (dispatched to it over loopback). A direct request is a service call: no X-Player-Id. The contract routes check no token; GET /logs and, from 4.0.1 (#150), /admin/* and /dev/* check X-Service-Token themselves, so every direct request to them sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong; the admin folder has both cases). /admin/* also refuses a request carrying X-Player-Id (403 SERVICE_TOKEN_REQUIRED), even with the right token. Through the broker /admin/* and /dev/* are refused, since the broker never passes the token on. The pre-request script never touches a direct request.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
-    { "key": "base_url", "value": "http://localhost:8080/api/v1/server-rules", "description": "The Gateway with the service prefix; the Gateway forwards {{base_url}}/<rest> to the service as /api/v1/<rest> (health as /health)" },
-    { "key": "service_token", "value": "change_me_too", "description": "The stack's SERVICE_TOKEN; the Gateway requires it on /health/ready, rulesets/current, evaluations and /admin/*" },
-    { "key": "jwt_secret", "value": "change_me_to_a_random_string_of_32_chars_or_more", "description": "JWT_SECRET of the Gateway in the stack's .env; the pre-request script signs the player token with it" }
+    { "key": "base_url", "value": "http://localhost:8080/api/v1/server-rules", "description": "The Gateway with the service prefix; the Gateway forwards {{base_url}}/<rest> to the service as /api/v1/<rest> (health as /health). Used only for GET /health and GET rulesets/{version}, the Lab 4 Gateway's routes of this service" },
+    { "key": "service_token", "value": "change_me_too", "description": "The stack's SERVICE_TOKEN; sent as X-Service-Token on the direct GET /logs and, from 4.0.1, /admin/* and /dev/* requests, the routes the instance checks it on. The contract routes check no token" },
+    { "key": "jwt_secret", "value": "change_me_to_a_random_string_of_32_chars_or_more", "description": "JWT_SECRET of the Gateway in the stack's .env; the pre-request script signs the player token with it" },
+    { "key": "server_rules_direct_url", "value": "http://localhost:8083", "description": "The instance itself, not the Gateway: its port is not published in the team stack, so run the service's own compose (host port 8083, APP_HOST_PORT) or the image with -p 8083:8080" }
   ],
   "event": [
     {
@@ -18,11 +19,14 @@
           "// Through the Gateway a player is identified by a JWT (HS256, JWT_SECRET shared with Player Service),",
           "// never by X-Player-Id: the Gateway checks the token, discards any client-sent X-Player-Id and sets",
           "// its own from the token's sub. GET rulesets/{version} is a player route, so this script signs the",
-          "// token itself: every request that names a player in X-Player-Id gets",
+          "// token itself: every request through the Gateway that names a player in X-Player-Id gets",
           "// Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id header is dropped.",
+          "// A request to {{server_rules_direct_url}} (the instance itself) is sent as written: there X-Player-Id",
+          "// is what the instance reads, so /admin/* called with it must keep it (403 SERVICE_TOKEN_REQUIRED).",
           "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
+          "const direct = pm.variables.replaceIn(pm.request.url.toString()).startsWith(pm.variables.replaceIn('{{server_rules_direct_url}}'));",
           "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
-          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
+          "if (!direct && playerHeader && !pm.request.headers.has('Authorization')) {",
           "  const CryptoJS = require('crypto-js');",
           "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
           "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
@@ -46,17 +50,108 @@
           "request": { "method": "GET", "url": "{{base_url}}/health" }
         },
         {
-          "name": "GET /health/ready (readiness)",
-          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }], "url": "{{base_url}}/health/ready" }
+          "name": "GET /health/ready (readiness - called directly, no credential)",
+          "description": "Not a Lab 4 Gateway route (the Gateway answers 404), so called on the instance itself. 503 until the migrations and the seed are done.",
+          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/health/ready" }
         },
         {
-          "name": "GET /status (Service Discovery, outside the limiter)",
-          "description": "Shaped { service, instance_id, version, status, in_flight, max_concurrent_tasks }. Service Discovery calls it on the instance itself; through the Gateway it answers once the Gateway forwards /status, otherwise point base_url at the service port.",
-          "request": { "method": "GET", "url": "{{base_url}}/status" },
+          "name": "GET /status (Service Discovery, outside the limiter - called directly)",
+          "description": "Shaped { service, instance_id, version, status, in_flight, max_concurrent_tasks }. Service Discovery calls it on the instance itself; it is not a Gateway route (the Lab 4 Gateway answers 404).",
+          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/status" },
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
             "pm.test('status answers 200 with the agreed shape', function () {",
             "  pm.response.to.have.status(200);",
             "  pm.expect(pm.response.json()).to.have.all.keys('service', 'instance_id', 'version', 'status', 'in_flight', 'max_concurrent_tasks');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /logs - warn and above (200, application/x-ndjson - called directly, service token)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }], "url": "{{server_rules_direct_url}}/logs?level=warn" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200 ndjson', function () {",
+            "  pm.response.to.have.status(200);",
+            "  pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson');",
+            "});",
+            "pm.test('attachment named after the instance', function () {",
+            "  pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\"server-rules-.+-start\\.jsonl\"$/);",
+            "});",
+            "const lines = pm.response.text().split('\\n').filter(function (l) { return l; });",
+            "pm.test('one JSON object per line, warn or error', function () {",
+            "  lines.forEach(function (l) { pm.expect(['warn', 'error']).to.include(JSON.parse(l).level); });",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /logs - a window (200, file named after since in UTC)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }], "url": "{{server_rules_direct_url}}/logs?since=2026-01-01T00:00:00Z&until=2099-01-01T00:00:00%2B02:00" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200, attachment named after since', function () {",
+            "  pm.response.to.have.status(200);",
+            "  pm.expect(pm.response.headers.get('Content-Disposition')).to.include('-20260101T000000Z.jsonl');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /logs - no service token (403 SERVICE_TOKEN_REQUIRED)",
+          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/logs" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('403 SERVICE_TOKEN_REQUIRED', function () {",
+            "  pm.response.to.have.status(403);",
+            "  pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /logs - wrong service token (401 INVALID_SERVICE_TOKEN)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "wrong-token" }], "url": "{{server_rules_direct_url}}/logs" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('401 INVALID_SERVICE_TOKEN', function () {",
+            "  pm.response.to.have.status(401);",
+            "  pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /logs - a time without its zone (400 VALIDATION_ERROR)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }], "url": "{{server_rules_direct_url}}/logs?since=2026-11-07T10:00:00" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('400 VALIDATION_ERROR naming since', function () {",
+            "  pm.response.to.have.status(400);",
+            "  const error = pm.response.json().error;",
+            "  pm.expect(error.code).to.eql('VALIDATION_ERROR');",
+            "  pm.expect(error.details.errors[0].field).to.eql('since');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /logs - until before since (400 VALIDATION_ERROR)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }], "url": "{{server_rules_direct_url}}/logs?since=2026-11-07T10:00:00Z&until=2026-11-07T09:00:00Z" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('400 VALIDATION_ERROR naming until', function () {",
+            "  pm.response.to.have.status(400);",
+            "  pm.expect(pm.response.json().error.details.errors[0].field).to.eql('until');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /logs - unknown level (400 VALIDATION_ERROR)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }], "url": "{{server_rules_direct_url}}/logs?level=verbose" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('400 VALIDATION_ERROR naming level', function () {",
+            "  pm.response.to.have.status(400);",
+            "  pm.expect(pm.response.json().error.details.errors[0].field).to.eql('level');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "GET /metrics (200, Prometheus text format - called directly, no credential)",
+          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/metrics" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200', function () { pm.response.to.have.status(200); });",
+            "const text = pm.response.text();",
+            "['http_requests_total', 'http_request_duration_seconds', 'tasks_in_flight'].forEach(function (series) {",
+            "  pm.test(series, function () { pm.expect(text).to.include(series); });",
             "});"
           ] } }]
         }
@@ -64,25 +159,24 @@
     },
     {
       "name": "rulesets (contract)",
+      "description": "current is Session's call, which Lab 4 sends through the broker, not the Gateway: these three go to the instance directly, as a service call (no X-Player-Id, no token). by version is the game client's route and stays on the Gateway with a player JWT.",
       "item": [
         {
-          "name": "current - difficulty 3 (contract example ruleset)",
+          "name": "current - difficulty 3 (contract example ruleset - called directly)",
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
-            "url": { "raw": "{{base_url}}/rulesets/current?difficulty=3", "host": ["{{base_url}}"], "path": ["rulesets", "current"], "query": [{ "key": "difficulty", "value": "3" }] }
+            "url": { "raw": "{{server_rules_direct_url}}/api/v1/rulesets/current?difficulty=3", "host": ["{{server_rules_direct_url}}"], "path": ["api", "v1", "rulesets", "current"], "query": [{ "key": "difficulty", "value": "3" }] }
           }
         },
         {
-          "name": "current - missing difficulty (422 INVALID_DIFFICULTY)",
-          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }], "url": "{{base_url}}/rulesets/current" }
+          "name": "current - missing difficulty (422 INVALID_DIFFICULTY - called directly)",
+          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/api/v1/rulesets/current" }
         },
         {
-          "name": "current - difficulty out of range (422 INVALID_DIFFICULTY)",
+          "name": "current - difficulty out of range (422 INVALID_DIFFICULTY - called directly)",
           "request": {
             "method": "GET",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
-            "url": { "raw": "{{base_url}}/rulesets/current?difficulty=9", "host": ["{{base_url}}"], "path": ["rulesets", "current"], "query": [{ "key": "difficulty", "value": "9" }] }
+            "url": { "raw": "{{server_rules_direct_url}}/api/v1/rulesets/current?difficulty=9", "host": ["{{server_rules_direct_url}}"], "path": ["api", "v1", "rulesets", "current"], "query": [{ "key": "difficulty", "value": "9" }] }
           }
         },
         {
@@ -96,7 +190,8 @@
       ]
     },
     {
-      "name": "evaluations (called by Moderation Service)",
+      "name": "evaluations (called by Moderation Service - called directly)",
+      "description": "Moderation's call, which Lab 4 sends through the broker, not the Gateway (the Lab 4 Gateway answers 404): every request goes to the instance directly, as a service call (no X-Player-Id, no token).",
       "item": [
         {
           "name": "evaluate - honest first-year FAF student (contract's own example)",
@@ -115,8 +210,8 @@
           ],
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/rulesets/3/evaluations",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "url": "{{server_rules_direct_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"faf_student\",\n    \"major\": \"FAF\",\n    \"year\": 1,\n    \"years_enrolled\": 1,\n    \"currently_enrolled\": true,\n    \"previously_banned\": false\n  }\n}"
@@ -127,8 +222,8 @@
           "name": "evaluate - previously banned (admission violation, no channels)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/rulesets/3/evaluations",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "url": "{{server_rules_direct_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"faf_student\",\n    \"major\": \"FAF\",\n    \"year\": 3,\n    \"years_enrolled\": 3,\n    \"currently_enrolled\": true,\n    \"previously_banned\": true\n  }\n}"
@@ -139,8 +234,8 @@
           "name": "evaluate - outsider (violates only-faf-or-teachers)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/rulesets/3/evaluations",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "url": "{{server_rules_direct_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"outsider\",\n    \"major\": null,\n    \"year\": null,\n    \"years_enrolled\": 0,\n    \"currently_enrolled\": false,\n    \"previously_banned\": false\n  }\n}"
@@ -151,8 +246,8 @@
           "name": "evaluate - staff (null major/year is legal)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/rulesets/3/evaluations",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "url": "{{server_rules_direct_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": {\n    \"university_status\": \"staff\",\n    \"major\": null,\n    \"year\": null,\n    \"years_enrolled\": 5,\n    \"currently_enrolled\": true,\n    \"previously_banned\": false\n  }\n}"
@@ -163,8 +258,8 @@
           "name": "evaluate - unknown version (404, checked before facts)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/rulesets/999999/evaluations",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "url": "{{server_rules_direct_url}}/api/v1/rulesets/999999/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": { \"university_status\": \"nonsense\" }\n}"
@@ -175,8 +270,8 @@
           "name": "evaluate - bad facts (422 INVALID_FACTS)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/rulesets/3/evaluations",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "url": "{{server_rules_direct_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": {
               "mode": "raw",
               "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"facts\": { \"university_status\": \"wizard\", \"years_enrolled\": 1, \"currently_enrolled\": true, \"previously_banned\": false }\n}"
@@ -187,30 +282,31 @@
           "name": "evaluate - malformed body (400 VALIDATION_ERROR)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/rulesets/3/evaluations",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "url": "{{server_rules_direct_url}}/api/v1/rulesets/3/evaluations",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"applicant_id\": \"not-a-uuid\",\n  \"facts\": {}\n}" }
           }
         }
       ]
     },
     {
-      "name": "admin (beyond contract, service-token only)",
+      "name": "admin (beyond contract, service calls only - called directly)",
+      "description": "Not a Gateway route since Lab 4 (the Gateway answers 404 to /admin/*), and refused through the broker, which never passes the token on: every request goes to the instance directly. From 4.0.1 (#150) the instance checks X-Service-Token here: every request sends {{service_token}}; without it 403 SERVICE_TOKEN_REQUIRED, with a wrong one 401 INVALID_SERVICE_TOKEN. A service call is a request without X-Player-Id: one that carries it is refused first (403 SERVICE_TOKEN_REQUIRED), even with the right token.",
       "item": [
         {
           "name": "list rulesets",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/rulesets?limit=10",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets?limit=10"
           }
         },
         {
           "name": "get ruleset detail (with jsonb conditions)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/admin/rulesets/3",
-            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }]
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets/3"
           }
         },
         {
@@ -223,7 +319,7 @@
           ],
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/admin/rulesets",
+            "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets",
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"difficulty\": 3,\n  \"clone_from_version\": 3,\n  \"notes\": \"Postman clone test\",\n  \"rules\": []\n}" }
           }
@@ -232,7 +328,7 @@
           "name": "patch notes on the cloned version",
           "request": {
             "method": "PATCH",
-            "url": "{{base_url}}/admin/rulesets/{{cloned_version}}",
+            "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets/{{cloned_version}}",
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{ \"notes\": \"renamed via Postman\" }" }
           }
@@ -241,14 +337,40 @@
           "name": "invalid ruleset - channel rule grants nothing (422 INVALID_RULESET)",
           "request": {
             "method": "POST",
-            "url": "{{base_url}}/admin/rulesets",
+            "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets",
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"difficulty\": 2,\n  \"rules\": [{ \"rule_id\": \"noop\", \"kind\": \"channel\", \"description\": \"does nothing\", \"when\": {\"op\":\"always\"}, \"grant\": [], \"deny\": [] }]\n}" }
           }
         },
         {
-          "name": "admin route called with X-Player-Id (403 SERVICE_TOKEN_REQUIRED)",
-          "request": { "method": "GET", "header": [{ "key": "X-Player-Id", "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10" }], "url": "{{base_url}}/admin/rulesets" }
+          "name": "admin route called with X-Player-Id and the right token (403 SERVICE_TOKEN_REQUIRED)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "X-Player-Id", "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10" }], "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('403 SERVICE_TOKEN_REQUIRED', function () {",
+            "  pm.response.to.have.status(403);",
+            "  pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "admin route without a service token (403 SERVICE_TOKEN_REQUIRED)",
+          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('403 SERVICE_TOKEN_REQUIRED', function () {",
+            "  pm.response.to.have.status(403);",
+            "  pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "admin route with a wrong service token (401 INVALID_SERVICE_TOKEN)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "wrong-token" }], "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('401 INVALID_SERVICE_TOKEN', function () {",
+            "  pm.response.to.have.status(401);",
+            "  pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN');",
+            "});"
+          ] } }]
         }
       ]
     }

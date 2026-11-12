@@ -20,6 +20,7 @@
 10. [Gateway requirements](#10-gateway-requirements)
 11. [Mocking strategy (grade 9) and testing recipes](#11-mocking-strategy-grade-9-and-testing-recipes)
 12. [Several instances (Lab 3)](#12-several-instances-lab-3)
+13. [Message Broker, logs and metrics (Lab 4)](#13-message-broker-logs-and-metrics-lab-4)
 
 ---
 
@@ -44,13 +45,14 @@ two, publishes two events and consumes one.
   identity, XP totals or levels either; it snapshots a username and level from Player Service when
   someone joins, and Player Service remains the source of truth.
 - **Calls:** Player Service (`GET /players/{player_id}`), Server Rules Service
-  (`GET /rulesets/current?difficulty={n}`), Applicant Service (`POST /applicants/next`) - all
-  through the Gateway (`/api/v1/player`, `/api/v1/server-rules`, `/api/v1/applicant`), with
-  `X-Service-Token`.
+  (`GET /rulesets/current?difficulty={n}`), Applicant Service (`POST /applicants/next`) - from
+  `4.0.0` as requests through the Message Broker, to `requests.player`, `requests.server-rules`,
+  `requests.applicant`.
 - **Is called by:** Moderation Service (`GET /sessions/{session_id}`, before recording every
-  decision) and the game client - both through the Gateway.
-- **Produces:** `session.started`, `session.ended`, pushed through the Gateway. **Receives:**
-  `decision.recorded`.
+  decision) and the game client - from `4.0.0` delivered by the broker on `requests.session`.
+- **Produces:** `session.started`, `session.ended`, published to the broker topics
+  `events.session.started`, `events.session.ended`. **Receives:** `decision.recorded`, from its
+  subscription to `events.decision.recorded`. See [§13](#13-message-broker-logs-and-metrics-lab-4).
 
 ---
 
@@ -64,17 +66,19 @@ two, publishes two events and consumes one.
 | **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres plus each of the three dependencies as `stub` or `not_probed`, with its circuit breaker state). `GET /status` for Service Discovery, called directly - see [§12](#12-several-instances-lab-3) |
 | **Database** | PostgreSQL 17, `session_db` (own container, host port `5438`). Schema applied at startup by GORM `AutoMigrate`, under a PostgreSQL advisory lock together with the seed. **No Redis** - see [§8](#8-divergences-from-the-cpr-contract) |
 | **Service Discovery** | Registers as `session`, instance id `session-<hostname>`, port `8080`; heartbeat every 5 s, `DELETE` on graceful shutdown - see [§12](#12-several-instances-lab-3) |
-| **Circuit breakers** | Six: `player`, `server-rules`, `applicant` (synchronous calls) and `player`, `university-record`, `discord-dms` (relay) - see [§12](#12-several-instances-lab-3) |
-| **Logs** | One JSON object per line on stdout in the format of CPR README "Logging" |
-| **Events** | Direct HTTP push (contract): produced events are relayed from the outbox to the consumers' `POST /api/v1/events`, tracked per consumer; `decision.recorded` arrives on its own `POST /api/v1/events` - see [§6](#6-events) |
-| **Caller identity** | `X-Player-Id`, set by the Gateway after it validated the player's JWT; the service validates no token. Outbound calls go through the Gateway with `X-Service-Token` |
+| **Circuit breakers** | `4.0.0`: two, both on the broker - `call` (the three synchronous calls) and `relay` (the publishes). Lab 3 had six (three per peer, three per consumer) - see [§12](#12-several-instances-lab-3) |
+| **Message Broker** | `4.0.0`: one gRPC connection to `MESSAGE_BROKER_URL` for the calls, the publishes and the `Subscribe` stream (topic `events.decision.recorded`, queue `requests.session`) - see [§13](#13-message-broker-logs-and-metrics-lab-4) |
+| **Logs** | One JSON object per line on stdout in the format of CPR README "Logging", and the same lines in the rotating `LOG_FILE`, read back by `GET /logs` (`4.0.0`) |
+| **Metrics** | `GET /metrics`, Prometheus text format, no credential (`4.0.0`) |
+| **Events** | `4.0.0`: produced events are published from the outbox to the broker, one delivery row per event; `decision.recorded` arrives on the broker subscription and is settled with `Ack`. `POST /api/v1/events` is removed - see [§6](#6-events) |
+| **Caller identity** | `X-Player-Id`, set by the Gateway after it validated the player's JWT, and carried in the headers of a broker request; the service validates no player token. The service token travels as gRPC metadata to the broker |
 | **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health`, `/health/ready` and `/status` are exempt |
-| **Docker image** | `dimapos/server-moderation-session-service:3.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `dimapos/server-moderation-session-service:4.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64`, published by GitHub Actions on merge to `main` |
 | **Producer name** | `server-moderation-session-service` - the value in the `producer` member of every event it publishes |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`; `details` is always an object, never `null` |
 | **Timestamps** | ISO-8601, UTC |
 | **Identifiers** | UUID v4 strings |
-| **Architecture** | Layered: `domain` (entities, the session rules, sentinel errors, event wire types), `clients` (the three outbound clients + their stubs), `relay` (pushes the outbox to the consumers), `repository` (interfaces; `postgres` on GORM, `memory` fake for tests), `service` (use cases), `httpapi` (router, middleware, handlers), `seed`, `logging` |
+| **Architecture** | Layered: `domain` (entities, the session rules, sentinel errors, event wire types), `clients` (the three outbound clients, through the broker, + their stubs), `broker` (the broker connection: publish, request, subscription), `brokerpb` (the broker's proto and stubs), `relay` (publishes the outbox to the broker), `metrics`, `repository` (interfaces; `postgres` on GORM, `memory` fake for tests), `service` (use cases), `httpapi` (router, middleware, handlers), `seed`, `logging` |
 
 ---
 
@@ -93,27 +97,23 @@ docker run -d --name session-postgres --network student-id-net \
 
 docker run -d --name session-service --network student-id-net -p 8088:8080 \
   -e POSTGRES_HOST=session-postgres -e POSTGRES_PASSWORD=change_me \
-  dimapos/server-moderation-session-service:3.0.0
+  dimapos/server-moderation-session-service:4.0.0
 ```
 
 Simpler: the root [`docker-compose.yml`](../docker-compose.yml) already carries both blocks.
 
 ### Wired to the real Player, Server Rules and Applicant Service
 
-Under the contract every outbound call goes through the Gateway, so each URL is the Gateway plus the
-peer's prefix:
+From `4.0.0` one variable reaches all of them, through the Message Broker:
 
 ```bash
--e PLAYER_SERVICE_URL=http://gateway-service:8080/api/v1/player \
--e RULES_SERVICE_URL=http://gateway-service:8080/api/v1/server-rules \
--e APPLICANT_SERVICE_URL=http://gateway-service:8080/api/v1/applicant \
--e UNIVERSITY_RECORD_SERVICE_URL=http://gateway-service:8080/api/v1/university-record \
--e DISCORD_DMS_SERVICE_URL=http://gateway-service:8080/api/v1/discord-dms \
+-e MESSAGE_BROKER_URL=message-broker-service:8071 \
 -e SERVICE_TOKEN=<the stack's SERVICE_TOKEN>
 ```
 
-The root compose file sets exactly these. The last two are event consumers only; `PLAYER_SERVICE_URL`
-also receives `session.ended`. `SERVICE_TOKEN` is required as soon as any URL is set.
+The root compose file sets these. Without `MESSAGE_BROKER_URL` the three dependencies are the
+built-in stubs and the relay publishes nothing. The five `*_SERVICE_URL` variables of Lab 2-3 are
+gone.
 
 ### From source (development)
 
@@ -145,17 +145,13 @@ once.
 | **`POSTGRES_PASSWORD`** | **none** | **Required.** The service refuses to start without it |
 | `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` / `DB_CONN_MAX_LIFETIME` | `25` / `5` / `30m` | Connection pool |
 | `DB_AUTO_MIGRATE` | `true` | Applies the schema at startup |
-| `PLAYER_SERVICE_URL` | `""` | Gateway URL of Player Service (`.../api/v1/player`), for the player lookup and the `session.ended` push. Empty selects the built-in stub and leaves Player's deliveries pending |
-| `RULES_SERVICE_URL` | `""` | Gateway URL of Server Rules (`.../api/v1/server-rules`). Empty selects the built-in stub |
-| `APPLICANT_SERVICE_URL` | `""` | Gateway URL of Applicant Service (`.../api/v1/applicant`). Empty selects the built-in stub |
-| `UNIVERSITY_RECORD_SERVICE_URL` | `""` | Gateway URL of University Record (`.../api/v1/university-record`), for the event pushes. Empty leaves its deliveries pending |
-| `DISCORD_DMS_SERVICE_URL` | `""` | Gateway URL of Discord DMs (`.../api/v1/discord-dms`), for the event pushes. Empty leaves its deliveries pending |
-| `SERVICE_TOKEN` | - | Sent as `X-Service-Token` on every outbound call, event push and Service Discovery call. **Required** as soon as any URL above or `SERVICE_DISCOVERY_URL` is set |
-| `DEPENDENCY_TIMEOUT` | `3s` | Applies to every outbound call and push. Must be below `HTTP_REQUEST_TIMEOUT` |
+| `MESSAGE_BROKER_URL` | `""` | `4.0.0`. The broker's gRPC `host:port`, no scheme (team stack: `message-broker-service:8071`). Empty selects the three built-in stubs, the relay publishes nothing (deliveries stay pending) and nothing arrives from the broker. Replaces `PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`, `APPLICANT_SERVICE_URL`, `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL` |
+| `SERVICE_TOKEN` | - | The stack's token: gRPC metadata `x-service-token` on every broker call, `X-Service-Token` to Service Discovery, and the token `GET /logs` accepts. **Required** as soon as `MESSAGE_BROKER_URL` or `SERVICE_DISCOVERY_URL` is set |
+| `DEPENDENCY_TIMEOUT` | `3s` | The `timeout_ms` of every broker request, and the bound of every publish. Must be below `HTTP_REQUEST_TIMEOUT` |
 | `HTTP_REQUEST_TIMEOUT` | `5s` | Task timeout; reached = `408 REQUEST_TIMEOUT`. Must be below `HTTP_WRITE_TIMEOUT` |
 | `MAX_CONCURRENT_TASKS` | `50` | Concurrent task limit; reached = `429 TOO_MANY_REQUESTS` with `Retry-After: 1` |
 | `RELAY_INTERVAL` | `1s` | How often the relay looks for deliveries that are due |
-| `RELAY_BATCH` | `50` | The most deliveries one relay pass sends to one consumer; also sizes the claim lease (`RELAY_BATCH` x `DEPENDENCY_TIMEOUT` + 5 s) |
+| `RELAY_BATCH` | `50` | The most deliveries one relay pass publishes; also sizes the claim lease (`RELAY_BATCH` x `DEPENDENCY_TIMEOUT` + 5 s) |
 | `MAX_PLAYERS_PER_SESSION` | `5` | The contract's cap: 1 Moderator + up to 4 Junior Moderators |
 | `SCORE_PER_CORRECT` | `10` | Multiplied by the difficulty on a correct decision |
 | `XP_BASE` | `20` | What every player earns for working the shift at all |
@@ -166,17 +162,22 @@ once.
 | `SERVICE_DISCOVERY_URL` | `""` | Service Discovery to register with, directly (team stack: `http://service-discovery-service:8090`). Empty = no registration and one warning line at startup |
 | `INSTANCE_ID` | `session-<hostname>` | This instance's id in the registry, `/status`, the relay's claims and every log line |
 | `INSTANCE_HOST` | `""` | Sent as `host` at registration, for a run outside Docker; otherwise Service Discovery uses the request's source address |
+| `LOG_FILE` | `/var/log/session/session.jsonl` | `4.0.0`. The copy of the log lines `GET /logs` reads; the image creates the directory for its non-root user. Empty = stdout only, `GET /logs` answers `503` |
+| `LOG_FILE_MAX_MB` / `LOG_FILE_KEEP` | `50` / `5` | `4.0.0`. Rotation of the log file |
 
 Two switches matter in a shared stack. `SEED_ON_START` is harmless - it is a no-op once the table
 has rows. `ENABLE_DEV_ENDPOINTS` mounts an endpoint that only waits, to demonstrate the `408` and the
-`429`; the Gateway forwards `/dev/*` only with the service token.
+`429`; it is not a Gateway route (the Lab 4 Gateway answers `404` on `/dev/*`), so it is called on an
+instance directly.
 
 ---
 
 ## 5. HTTP API
 
-All paths are under `/api/v1`; callers reach them through the Gateway as
-`{gateway}/api/v1/session/...`.
+All paths are under `/api/v1`; clients reach them through the Gateway as
+`{gateway}/api/v1/session/...`, on the client routes of CPR README "Gateway" only. The Lab 4 Gateway
+answers `404` on every other path (`/health/ready`, `/sessions/{id}/deliveries`, `/dev/*`, `/logs`,
+`/metrics`, and a known path with a method it does not take); those are called on an instance directly.
 
 **Contract.** The Gateway validates the player's `Authorization: Bearer <jwt>`, removes it, and
 forwards the player id as `X-Player-Id`. Requests that act for "the calling player" read that header
@@ -270,7 +271,7 @@ produces and their delivery can be inspected.
 | `DELETE` | `/sessions/{session_id}/players/{player_id}` | required | `204`. Leave a lobby. The creator leaving deletes the session |
 | `GET` | `/sessions/{session_id}/decisions?limit=&offset=` | no | The decision log, newest first |
 | `GET` | `/sessions/{session_id}/events?limit=&offset=` | no | The outbox, **oldest first** - the order they happened in |
-| `GET` | `/sessions/{session_id}/deliveries` | no | `{ items, total }`: per event and consumer, `status` (`pending` \| `delivered` \| `parked`), `attempts`, `next_attempt_at`, `last_error`, `delivered_at` |
+| `GET` | `/sessions/{session_id}/deliveries` | no | `{ items, total }`: per event (from `4.0.0` one row each, consumer `message-broker`), `status` (`pending` \| `delivered` \| `parked`), `attempts`, `next_attempt_at`, `last_error`, `delivered_at` |
 | `GET` | `/dev/slow?ms=` | no | Flag-gated. Waits `ms` (at most `60000`); demonstrates `408` and `429` |
 
 A session that started cannot be deleted: a shift that ran is history, and other services hold
@@ -297,26 +298,30 @@ The eleven the contract lists for this service, plus the contract's shared codes
 | `MODERATOR_NOT_IN_SESSION` | 422 | `moderator_id` is not one of the session's players |
 | `VALIDATION_ERROR` | 400 | Anything malformed: a body that is not JSON or misses a field, a path id that is not a UUID, a bad query parameter. `details` names it |
 | `UNAUTHENTICATED` | 401 | A route that acts for a player got no usable `X-Player-Id` |
-| `INVALID_EVENT` | 422 | `POST /events` only - see [§6](#6-events) |
-| `DEPENDENCY_UNAVAILABLE` | 500 | One of the three services did not answer, or the Gateway answered `502`/`408`/`429` for it. `details.dependency` names it. **Nothing was changed** |
+| `DEPENDENCY_UNAVAILABLE` | 500 | One of the three services did not answer: the broker did not answer, answered `503` (no instance) or `408` (no reply in time), or the peer answered something the contract does not name. `details.dependency` names it. **Nothing was changed** |
 | `REQUEST_TIMEOUT` | 408 | The task timeout was reached; the transaction was rolled back |
 | `TOO_MANY_REQUESTS` | 429 | The concurrent task limit was reached, with `Retry-After` |
 | `PLAYER_NOT_IN_SESSION` | 404 | Beyond contract: leaving a lobby the player is not in |
 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` / `INTERNAL_ERROR` | 404 / 405 / 500 | Routing and unexpected failures |
+| `SERVICE_TOKEN_REQUIRED` / `INVALID_SERVICE_TOKEN` | 403 / 401 | `GET /logs` only (`4.0.0`): no `X-Service-Token` / a wrong one |
+| `LOGS_UNAVAILABLE` | 503 | `GET /logs` only: no log file |
+
+`INVALID_EVENT` (`422`) is gone with `POST /api/v1/events` in `4.0.0`; its cases are now the
+`PERMANENT` outcome of [§6](#6-events).
 
 ---
 
 ## 6. Events
 
-Events travel by HTTP push through the Gateway, as the CPR's "Event delivery" section defines it:
-produced events are relayed from the outbox to each consumer's `{gateway}/api/v1/<consumer>/events`
-with `X-Service-Token`, and `decision.recorded` is pushed by Moderation Service to this service's own
-`POST /api/v1/events` (reached as `{gateway}/api/v1/session/events`).
+From `4.0.0` events travel through the Message Broker: produced events are published from the outbox
+to their topic, `events.<event_type>`, and the broker fans each out to every subscribed service;
+`decision.recorded` arrives on this instance's subscription to `events.decision.recorded`, as CPR
+README "Event delivery" describes. `POST /api/v1/events` is removed.
 
 The **outbox**: Every published event is written to the `outbox_events` table
 **inside the same database transaction as the state change that produced it**, together with one
-pending row per consumer in `outbox_deliveries`, so an event can never exist without the state it
-announces, nor the reverse. `GET /sessions/{id}/events` returns those rows rendered as full
+pending row in `outbox_deliveries` for the broker (consumer `message-broker`; one per consumer
+before `4.0.0`), so an event can never exist without the state it announces, nor the reverse. `GET /sessions/{id}/events` returns those rows rendered as full
 envelopes, `GET /sessions/{id}/deliveries` their delivery state.
 
 ### Published
@@ -324,7 +329,7 @@ envelopes, `GET /sessions/{id}/deliveries` their delivery state.
 Both carry the shared envelope, with `producer: "server-moderation-session-service"` and
 `version: 1`.
 
-**`session.started`** - consumed by University Record Service (which learns each junior's scopes) and
+**`session.started`** - topic `events.session.started`; consumed by University Record Service (which learns each junior's scopes) and
 Discord DMs Service (which learns the membership so it can scope its channels).
 
 ```json
@@ -340,7 +345,7 @@ Discord DMs Service (which learns the membership so it can scope its channels).
 }
 ```
 
-**`session.ended`** - consumed by Player Service, Discord DMs Service and University Record Service.
+**`session.ended`** - topic `events.session.ended`; consumed by Player Service, Discord DMs Service and University Record Service.
 The payload is the `POST /sessions/{id}/end` response **without `status`**. In this implementation
 that is not a promise, it is a fact of the code: the response type embeds the payload type, so the
 two cannot drift.
@@ -365,35 +370,39 @@ than once. This service does, in two layers, both inside one transaction:
 2. `session_decisions` is keyed by `decision_id`. So even a redelivery under a *fresh* `event_id`
    cannot count the same decision twice.
 
-A replay is a **success**, not an error. `POST /api/v1/events` reports `"duplicate": true` so a
-caller can see the deduplication fire.
+A replay is a **success**, not an error: it is acked `OK`, and logged `event.received` with
+`"duplicate": true` so the deduplication can be seen firing.
 
 ### The relay (producer side)
 
-Every `RELAY_INTERVAL` the relay claims the pending deliveries that are due and `POST`s each envelope,
-unchanged, to `{consumer URL}/events` with `X-Service-Token` and the `X-Request-ID` of the request
-that produced the event - one goroutine per consumer, so a consumer that hangs until
-`DEPENDENCY_TIMEOUT` delays only its own deliveries. Every instance runs a relay; how they share the
-work is in [§12](#12-several-instances-lab-3):
+Every `RELAY_INTERVAL` the relay claims the pending deliveries that are due and publishes each
+envelope, unchanged, with gRPC `Publish` to `events.<event_type>`, carrying the `X-Request-ID` of the
+request that produced the event as `request_id`. Each `Publish` is bounded by `DEPENDENCY_TIMEOUT`.
+Every instance runs a relay; how they share the work is in [§12](#12-several-instances-lab-3):
 
-| Consumer answers | Delivery becomes |
+| The broker | Delivery becomes |
 | --- | --- |
-| `2xx` | `delivered` |
-| `422 INVALID_EVENT` | `parked`, logged as an error; never retried |
-| Anything else (the Gateway's `408`/`429`/`502`, any `5xx`, another `4xx`), a timeout or a refused connection | stays `pending`, retried after 1 s, 2 s, 4 s … capped at 30 s |
+| Accepts the publish | `delivered` |
+| Refuses the event as invalid (`INVALID_ARGUMENT`) | `parked`, logged as an error; never retried |
+| Anything else (unreachable, a deadline, `RESOURCE_EXHAUSTED` for a full queue, `UNAVAILABLE`, a refused token) | stays `pending`, retried after 1 s, 2 s, 4 s … capped at 30 s |
 
-A consumer whose URL is empty is not sent to; its deliveries stay `pending` and go out once it is
-configured. Seeded sessions get no delivery rows, so a fresh boot never pushes fixture history.
+Without `MESSAGE_BROKER_URL` nothing is published and the deliveries stay `pending`. Seeded sessions
+get no delivery rows, so a fresh boot never publishes fixture history. Deliveries still pending for
+the Lab 3 consumers (`player-service`, `university-record-service`, `discord-dms-service`) on a
+`3.0.0` database are not converted: every service moves to `4.0.0` together.
 
-### `POST /api/v1/events` (consumer side)
+### `decision.recorded` (consumer side)
 
-| Situation | Answer |
-| --- | --- |
-| Applied | `200 { "event_id", "duplicate": false }` |
-| An `event_id` already applied | `200 { "event_id", "duplicate": true }`, nothing changes |
-| A decision for a session that has already ended | `200`, nothing changes, logged - see [§9](#9-edge-cases) |
-| Unparseable envelope, an `event_type` other than `decision.recorded`, a `version` other than `1`, an invalid payload, or an unknown session | `422 INVALID_EVENT`, `details.reason` says which |
-| The database fails | `500`; the producer retries |
+Settled with the broker's `Ack` (`4.0.0`; it replaced `POST /api/v1/events`):
+
+| Situation | `Ack` | The broker |
+| --- | --- | --- |
+| Applied | `OK` | done |
+| An `event_id` already applied | `OK`, nothing changes | done |
+| A decision for a session that has already ended | `OK`, nothing changes, logged `event.dropped` - see [§9](#9-edge-cases) | done |
+| Unparseable envelope, an `event_type` other than `decision.recorded`, a `version` other than `1`, an invalid payload, or an unknown session (the old `422 INVALID_EVENT`) | `PERMANENT`, the reason (at most 200 characters, never the body) | dead-letters it |
+| The database fails, or the task timeout is reached | `RETRY` | delivers it again later |
+| The instance dies before acking | none | delivers it again after its ack timeout, to another instance |
 
 ---
 
@@ -485,13 +494,33 @@ service issues; the contract defines no enum and shows no other value.
 4. **Seven endpoints beyond the contract**, all labelled as such in [§5.2](#52-extension-endpoints-beyond-contract---lab-1-crud-requirement). They exist for the Lab 1 CRUD
    requirement and to make the outbox and its delivery inspectable. Nothing else in the system calls them.
 
-5. **A `decision.recorded` for a session that has already ended is acknowledged** (`200`, nothing
-   changes) rather than refused. The contract does not say; a `422` would only park it in
-   Moderation Service's outbox, and the contract already drops an applicant still undecided when
-   the shift ends.
+5. **A `decision.recorded` for a session that has already ended is acknowledged** (`Ack OK`,
+   nothing changes) rather than refused. The contract does not say; a refusal would only
+   dead-letter it, and the contract already drops an applicant still undecided when the shift ends.
 
 6. **`username` and `level` in the session object are a snapshot**, taken when the player joined and
    never refreshed. See [§5.1](#51-contract-endpoints).
+
+7. **Log event names (Lab 4).** CPR README "Logging" names the relay's outcome of a `Publish`
+   `event.pushed` / `event.parked`, a request delivered by the broker `request.received` /
+   `request.replied`, and puts the `Ack` outcome sent on `event.received`. `4.0.0` logs
+   `event.published` (`warn` when it will be retried) and `event.parked`; one `broker.request` line per
+   delivered request once it is answered (`broker.reply_failed`, `warn`, when the `Reply` could not be
+   sent), with no line on arrival; and the `Ack` outcome as the line's name rather than a field:
+   `event.received` (`OK`, `duplicate` true or false), `event.dropped` (`OK`, the session has ended),
+   `event.retry` (`RETRY`), `event.rejected` (`PERMANENT`). It also logs `broker.stream_ended` and
+   `broker.ack_failed`, and its `breaker.*` lines add `via`. See [§12](#logging).
+
+8. **The relay's metrics (Lab 4).** CPR README "Metrics" asks a service with an outbox for
+   `outbox_pending` and `outbox_parked`; `4.0.0` exposes one gauge, `relay_deliveries{status}`
+   (`pending`, `parked`), counted in the outbox at scrape time, and no `breaker_state`. See
+   [§13](#get-metrics).
+
+9. **Two circuit breakers on the broker (Lab 4).** CPR README "Circuit breaker" gives a service one
+   breaker on the broker, for its requests and its relay's publishes. `4.0.0` keeps two, both on the
+   broker: `call` (the requests to Player, Server Rules and Applicant) and `relay` (the publishes),
+   each with the README's 17.5 s window and cooldown; the `relay` breaker also counts a publish the
+   broker refused for a reason a retry may fix. See [§12](#circuit-breakers).
 
 ---
 
@@ -511,10 +540,10 @@ service issues; the contract defines no enum and shows no other value.
   apply to it.
 - **The shift ends with an applicant still undecided.** That applicant is dropped and does not count.
   This needs no code: `applications_processed` only ever moves when a `decision.recorded` arrives.
-- **A decision arrives after the shift ended.** Acknowledged with `200` on `POST /api/v1/events`
-  and nothing changes. Not hypothetical - Moderation Service does not wait for the Moderator.
+- **A decision arrives after the shift ended.** Acked `OK` and nothing changes. Not hypothetical - Moderation Service does not wait for the Moderator.
 - **A peer call is never retried.** One attempt, bounded by `DEPENDENCY_TIMEOUT`: `POST
   /applicants/next` is not idempotent, and a second attempt would also eat the task's time budget.
+  The broker does not repeat a request either.
 - **Ending twice.** The second answers `409 SESSION_NOT_ACTIVE`. The results are frozen in
   `session_results`, so the event stays reproducible.
 - **The creator leaves the lobby.** The session is deleted: nobody would be left who is allowed to
@@ -533,15 +562,19 @@ service issues; the contract defines no enum and shows no other value.
 
 What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, prefix `session`:
 
-- Forwards to container port `8080`. Health pair at `/health` and `/health/ready`, reached as
-  `{gateway}/api/v1/session/health`.
+- **Lab 4 (#110):** sends every client request to the broker's `requests.session`, never to an
+  instance. Of the health pair only `/health` is a client route (`{gateway}/api/v1/session/health`,
+  public); `/health/ready` answers `404` there and is called on an instance directly.
 - `/health` never consults a dependency, so a database blip does not cause a restart loop.
   `/health/ready` returns `503` and a `degraded` status when one is down, naming which.
 - **Identity:** validate the player's JWT, remove `Authorization`, **strip any client-sent
   `X-Player-Id`** and set it from the token's `sub`. This service trusts `X-Player-Id` blindly, so a
   Gateway that forwarded a client's own value would let anyone act as anyone.
-- `GET /sessions/{id}` accepts a player or the service token (Moderation calls it);
-  `POST /events` and `/dev/*` only the service token.
+- `GET /sessions/{id}` is a player route on the Gateway, which accepts no service token from Lab 4;
+  Moderation's `GET /sessions/{id}` reaches this service through the broker, not the Gateway.
+- Not Gateway routes (`404` before any credential check): `/health/ready`,
+  `GET /sessions/{id}/deliveries`, `/dev/*`, `GET /logs`, `GET /metrics`, and `POST /events`, which
+  the instance no longer has either (`4.0.0`).
 - `X-Request-Id` is honoured inbound and echoed outbound, so one player action can be followed
   through the logs of every service that handled it.
 - Every response, including 404s, 405s and panics, uses the shared error envelope.
@@ -557,13 +590,13 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 > seeded active session already holds the three players they use. Through the Gateway, replace
 > `localhost:8088/api/v1/` with `localhost:8080/api/v1/session/`, send `Authorization: Bearer` with
 > a JWT from `POST /api/v1/player/auth/login` instead of `X-Player-Id` (the Gateway discards a
-> client-sent one), and send `X-Service-Token` on service-only and `/dev/*` routes - as the last
-> recipe does.
+> client-sent one). Only the client routes go through the Gateway: `/dev/*`, `/health/ready` and
+> `/deliveries` stay on the instance, as the last recipe calls `/deliveries`.
 
-Every cross-service dependency has a real HTTP client written against the contract **and** an
-in-process stub with the same interface. Which one runs is decided by whether that dependency's base
-url is set - a runtime switch, not a build flag - so each can be replaced by the real service
-independently, as they land.
+Every cross-service dependency has a real client written against the contract **and** an in-process
+stub with the same interface. From `4.0.0` the real clients send their requests through the broker,
+and which one runs is decided by whether `MESSAGE_BROKER_URL` is set - a runtime switch, not a build
+flag.
 
 | Dependency | Stub behaviour |
 | --- | --- |
@@ -594,17 +627,19 @@ Or in one command: `./scripts/seed.sh`.
 
 ### Recipe: prove a decision is applied only once
 
+With the broker's command-line client (`scripts/smoke.py` in `message-broker-service`, run where it
+reaches the broker's gRPC port, with `SERVICE_TOKEN` set), on a stack where this service is
+subscribed:
+
 ```bash
 E=$(uuidgen | tr 'A-Z' 'a-z'); D=$(uuidgen | tr 'A-Z' 'a-z')
-BODY="{\"event_id\":\"$E\",\"event_type\":\"decision.recorded\",\"occurred_at\":\"2026-09-10T18:12:00Z\",
-       \"producer\":\"moderation-service\",\"version\":1,
-       \"payload\":{\"decision_id\":\"$D\",\"session_id\":\"$S\",\"applicant_id\":\"$(uuidgen)\",
-                    \"moderator_id\":\"$M\",\"action\":\"accept\",\"is_correct\":true,\"penalty\":0}}"
+P="{\"decision_id\":\"$D\",\"session_id\":\"$S\",\"applicant_id\":\"$(uuidgen | tr 'A-Z' 'a-z')\",
+    \"moderator_id\":\"$M\",\"action\":\"accept\",\"is_correct\":true,\"penalty\":0}"
 
-curl -sS -X POST localhost:8088/api/v1/events -d "$BODY"
-# {"duplicate":false,"event_id":"..."}
-curl -sS -X POST localhost:8088/api/v1/events -d "$BODY"
-# {"duplicate":true,"event_id":"..."}
+python -m scripts.smoke publish --topic events.decision.recorded --event-id $E --producer moderation-service --payload "$P"
+# one instance logs event.received, duplicate false; the broker logs broker.acked
+python -m scripts.smoke publish --topic events.decision.recorded --event-id $E --producer moderation-service --payload "$P"
+# event.received, duplicate true, acked
 
 curl -sS localhost:8088/api/v1/sessions/$S | jq '.score, .applications_processed'
 # 30   1   <- moved once
@@ -612,35 +647,36 @@ curl -sS localhost:8088/api/v1/sessions/$S | jq '.score, .applications_processed
 
 ### Recipe: the end-to-end path across both of Dev's services
 
-On the team stack (`docker compose up -d`, everything through the Gateway), the Moderator of the
-seeded active session ends it, and the relay pushes `session.ended` to Player Service within
-`RELAY_INTERVAL`:
+On a stack with the broker, Player `4.0.0` and this service, the Moderator of the seeded active
+session ends it, and the relay publishes `session.ended` within `RELAY_INTERVAL`; Player applies it
+from its own subscription:
 
 ```bash
-G=localhost:8080/api/v1
 S=3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e   # the seeded active session, dima_mod is its Moderator
 M=8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11
-T=$(curl -sS -X POST $G/player/auth/login -H 'Content-Type: application/json' \
-      -d '{"username":"dima_mod","password":"seed-password"}' | jq -r .access_token)
 
-curl -sS -X POST $G/session/sessions/$S/end -H "Authorization: Bearer $T" | jq .
+curl -sS -X POST localhost:8088/api/v1/sessions/$S/end -H "X-Player-Id: $M" | jq .
 
-curl -sS $G/session/sessions/$S/deliveries -H "Authorization: Bearer $T" \
-  | jq '.items[] | {consumer, status, last_error}'
-# player-service, university-record-service, discord-dms-service: delivered
+curl -sS localhost:8088/api/v1/sessions/$S/deliveries | jq '.items[] | {consumer, status, last_error}'
+# message-broker: delivered
 
-curl -sS $G/player/players/$M -H "X-Service-Token: $SERVICE_TOKEN" | jq .
-# the XP, the shift count and the level have moved
+curl -sS <player instance>:8080/api/v1/players/$M | jq .
+# the XP, the shift count and the level have moved (checked live: xp 1250 -> 1283, shifts 12 -> 13)
 ```
 
 ### Postman
 
 [`postman/server-moderation-session-service.postman_collection.json`](../postman/server-moderation-session-service.postman_collection.json).
-`GET /status` is the one request sent to the instance directly, through `session_direct_url`, because
-the Gateway does not route it.
+The routes the Lab 4 Gateway does not serve are sent to one instance directly, through
+`session_direct_url` (inside `student-id-net`: `http://session-service:8080`), with the instance's own
+paths: `GET /health/ready`, `GET /status`, `GET /logs`, `GET /metrics`,
+`GET /api/v1/sessions/{id}/deliveries` (with `X-Service-Token`), `PUT /api/v1/sessions/{id}` (the
+`405`, with `X-Player-Id`) and `GET /api/v1/dev/slow`. `POST /session/events` stays on the Gateway,
+to show its `404`. Postman cannot send the broker's gRPC calls, so `decision.recorded` is published
+with `smoke.py` (above).
 Every request name carries the status code it expects, so the collection can be checked mechanically.
-It goes through the Gateway: `base_url` is `http://localhost:8080/api/v1` (Session routes under
-`/session`, login under `/player`) and `service_token` must equal `SERVICE_TOKEN` in `.env`. The
+Everything else goes through the Gateway: `base_url` is `http://localhost:8080/api/v1` (Session routes
+under `/session`, login under `/player`); `service_token` must equal `SERVICE_TOKEN` in `.env`. The
 `auth` folder registers four fresh players through Player Service and stores their ids and tokens,
 so the run does not depend on the seed (the seeded `dima_mod`, `maxim_jr` and `vlad_jr` are in the
 seeded active session) or on the other collections; the cleanup folder deletes them. Run the folders in order - the flow folder captures the `session_id` into a
@@ -666,23 +702,27 @@ At the root, next to `/health`; no credential, outside the concurrent task limit
 
 ```json
 // 200, or 503 with "status": "degraded" when the PostgreSQL ping (1 s) fails
-{ "service": "session", "instance_id": "session-3f4e2a9b1c7d", "version": "3.0.0",
+{ "service": "session", "instance_id": "session-3f4e2a9b1c7d", "version": "4.0.0",
   "status": "up", "in_flight": 3, "max_concurrent_tasks": 50 }
 ```
 
 Only the database makes it `degraded`: a peer that does not answer is a per-request `500`, not an
-outage of this instance. `/health` keeps `"service": "server-moderation-session-service"`, which is also
+outage of this instance, and neither is the broker being away (`4.0.0`; `/health/ready` reports it).
+`in_flight` counts the requests delivered by the broker too, since they run through the same limit. `/health` keeps `"service": "server-moderation-session-service"`, which is also
 the events' `producer`; the Lab 3 name `session` is used in `/status`, the logs and the registration.
 
 ### Registration with Service Discovery
 
 - `PUT {SERVICE_DISCOVERY_URL}/api/v1/instances/{instance_id}` with `X-Service-Token` and
-  `{"service_name": "session", "port": 8080, "version": "3.0.0"}` (`host` added when `INSTANCE_HOST`
-  is set), sent right after the HTTP listener is up and then every 5 s as the heartbeat.
+  `{"service_name": "session", "port": 8080, "version": "4.0.0", "topics": {"publishes":
+  ["events.session.started", "events.session.ended"], "subscribes": ["events.decision.recorded"]}}`
+  (`host` added when `INSTANCE_HOST` is set; `topics` from `4.0.0`), sent right after the HTTP
+  listener is up and then every 5 s as the heartbeat.
 - `sd.registered` on the first success; a failure logs `sd.heartbeat_failed` (`warn`) and is retried on
   the next tick. The instance keeps serving either way.
-- On SIGTERM/SIGINT: `DELETE` the same path (2 s timeout, `sd.deregistered`), then the HTTP server
-  drains and the relay stops. Every call to Service Discovery has a 2 s timeout.
+- On SIGTERM/SIGINT (`4.0.0`): the broker subscription stops first and its deliveries in progress
+  are settled, then the relay stops, then `DELETE` the same path (2 s timeout, `sd.deregistered`),
+  then the HTTP server drains. Every call to Service Discovery has a 2 s timeout.
 
 ### Logging
 
@@ -692,55 +732,63 @@ handling a request, and the relay's lines for an event, add `request_id`.
 
 | `event` | Level | Extra fields |
 | --- | --- | --- |
-| `http.request` | `info`; `debug` for `/health*` and `/status` | `method`, `path`, `status`, `duration_ms` (integer), `client_ip`, `player_id` when `X-Player-Id` is set |
+| `http.request` | `info`; `debug` for `/health*`, `/status`, `/logs` and `/metrics` | `method`, `path`, `status`, `duration_ms` (integer), `client_ip`, `player_id` when `X-Player-Id` is set |
 | `http.error` | `info`; `error` with `stack` for a panic or an unexpected `500` (logged once) | `status`, `code`, `error` |
-| `outbound.call` | `info` | `target` (`player`, `server-rules`, `applicant`, `university-record`, `discord-dms`), `method`, `path`, `status` (`0` = no answer), `duration_ms` |
-| `event.pushed` | `info`; `warn` when it will be retried | `event_id`, `event_type`, `consumer`, `status`, `attempt`, `next_attempt_at` on a retry |
+| `outbound.call` | `info` | `4.0.0`: a request - `target` (`player`, `server-rules`, `applicant`), `method`, `path`, `status` (`0` = the broker did not answer), `duration_ms`, `target_instance`; a publish - `target` `message-broker`, `method` `Publish`, `path` the topic, `ok`, `duration_ms` |
+| `event.published` | `info`; `warn` when it will be retried | `4.0.0` (was `event.pushed`): `event_id`, `event_type`, `topic`, `attempt`, `next_attempt_at` and `reason` on a retry |
 | `event.parked` | `error` | the same, plus `reason` |
-| `event.received` | `info` | `event_id`, `event_type`, `producer`, `duplicate` |
+| `event.received` | `info` | `event_id`, `event_type`, `producer`, `duplicate`; from `4.0.0` also `message_id`, `queue`, `attempt` |
+| `event.dropped` / `event.retry` / `event.rejected` | `warn` | as `event.received`, plus `session_id` or `reason` (`4.0.0`) |
+| `broker.subscribed` / `broker.subscribe_failed` / `broker.stream_ended` / `broker.disabled` | `info` / `warn` | `topics`, `max_concurrent_tasks`; `error`, `retry_in_ms` when failed (`4.0.0`) |
+| `broker.request` | `info`; `warn` as `broker.reply_failed` | `message_id`, `correlation_id`, `method`, `path` (no query), `caller`, `status`, `duration_ms` (`4.0.0`) |
+| `broker.ack_failed` | `warn` | `message_id`, `error` (`4.0.0`) |
+| `relay.started` / `relay.idle` | `info` / `warn` | the topics, interval and lease; `relay.idle` without a broker (`4.0.0`) |
+| `logs.file_unavailable` | `warn` | `path`, `error`, once at startup (`4.0.0`) |
 | `breaker.opened` / `breaker.closed` / `breaker.rejected` | `warn` / `info` / `warn` | `target`, `via` (`call` or `relay`), `failures`, `window_s` |
 | `session.created` / `.joined` / `.started` / `.next_applicant` / `.ended` | `info` | `session_id` and `player_id`, `moderator_id`, `applicant_id`, or the final score |
 | `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` / `sd.disabled` | `info` / `warn` | `error` when failed |
 | `relay.claim_lost` | `warn` | a delivery whose lease ran out before its outcome was recorded |
-| `startup` / `shutdown` | `info` | address, port, timeouts, limits, pool size, breaker window, Service Discovery URL - no secrets |
+| `startup` / `shutdown` | `info` | address, port, timeouts, limits, pool size, breaker window, Service Discovery URL, broker URL, log file - no secrets |
 
 Never logged: `Authorization`, `X-Service-Token`, request or response bodies.
 
 ### The outbox relay in several copies
 
-- **Claim.** Each pass, per consumer, one statement claims up to `RELAY_BATCH` due deliveries:
+- **Claim.** Each pass, for the one consumer `message-broker` (`4.0.0`; per consumer before), one statement claims up to `RELAY_BATCH` due deliveries:
   `UPDATE outbox_deliveries SET claimed_by = <instance>, next_attempt_at = now + lease WHERE
   (event_id, consumer) IN (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING ...`. Two relays claiming at
   once get disjoint rows, and a claimed row is not due for anyone else until the lease runs out.
-- **Lease** = `RELAY_BATCH` x `DEPENDENCY_TIMEOUT` + 5 s (155 s with the defaults). Pushes to one
-  consumer are sequential, so the lease covers a whole batch and cannot run out mid-batch. A relay
+- **Lease** = `RELAY_BATCH` x `DEPENDENCY_TIMEOUT` + 5 s (155 s with the defaults). Publishes are sequential, so the lease covers a whole batch and cannot run out mid-batch. A relay
   that dies holding claims delays those deliveries by up to the lease. (The Lab 3 brief proposed
   `2 x DEPENDENCY_TIMEOUT + 5 s`, which a full batch would outlive.)
 - **Updates** (`delivered`, `parked`, rescheduled) apply only while the instance still holds the
   claim and the delivery is pending; `attempts` is incremented in SQL. A lost claim changes nothing
   and logs `relay.claim_lost`.
 - **Request id.** The `X-Request-ID` of the request that produced the event is stored on the outbox
-  row (`outbox_events.request_id`) and sent with every push; a new one is generated when it is empty.
+  row (`outbox_events.request_id`) and sent with the publish; a new one is generated when it is empty.
 
 ### Circuit breakers
 
-| Target | Calls | Breaker |
-| --- | --- | --- |
-| `player` | `GET /players/{id}` (create, join) | `call` |
-| `server-rules` | `GET /rulesets/current` (start) | `call` |
-| `applicant` | `POST /applicants/next` | `call` |
-| `player`, `university-record`, `discord-dms` | the relay's `POST /events` | `relay`, one per consumer |
+From `4.0.0` the one target is the broker:
 
-- **Failure:** no answer within `DEPENDENCY_TIMEOUT` (3 s), a refused or reset connection, or any
-  `5xx` (the Gateway's `502` and `503` included). Any `4xx` - `429` and `422` included - is an answer.
+| Breaker | Calls |
+| --- | --- |
+| `message-broker` / `call` | the requests to Player (`GET /players/{id}`: create, join), Server Rules (`GET /rulesets/current`: start) and Applicant (`POST /applicants/next`) |
+| `message-broker` / `relay` | the relay's `Publish` |
+
+- **Failure:** only the broker not answering - a gRPC error, a deadline, a refused connection; for the
+  relay also a publish refused for a reason a retry may fix. **A reply is an answer**: a peer's `5xx`,
+  the broker's `503` (no instance) and `408` (no reply in time) map to `500 DEPENDENCY_UNAVAILABLE`
+  but never trip the breaker, because the broker keeps a breaker per peer instance, and counting them
+  here would let one dead peer block the calls to the others (checked live: five `503` replies for
+  Server Rules left it closed).
 - **Trip:** 3 failures within `HTTP_REQUEST_TIMEOUT` x 3.5 = 17.5 s. **Open:** a synchronous call
   answers `500 DEPENDENCY_UNAVAILABLE` with `details.dependency` (`player-service`, ...) without
-  calling, logged `breaker.rejected`; the relay does not claim that consumer's deliveries, which stay
-  pending and untouched (deliveries already claimed when it opens mid-batch are released, due at once).
+  calling, logged `breaker.rejected`; the relay claims nothing, so the deliveries stay pending and
+  untouched (deliveries already claimed when it opens mid-batch are released, due at once).
 - **Recovery:** after a 17.5 s cooldown one trial call goes through; success closes the breaker,
   failure opens it again. Every transition is logged.
-- A breaker only logs and fails fast; it never calls Service Discovery (only the Gateway marks
-  instances down).
+- A breaker only logs and fails fast; it never calls Service Discovery.
 
 ### What else makes several copies safe
 
@@ -759,3 +807,56 @@ Never logged: `Authorization`, `X-Service-Token`, request or response bodies.
 - **Connection budget.** `DB_MAX_OPEN_CONNS` is `25` per copy: 3 copies use at most 75 of
   PostgreSQL's default 100 `max_connections`.
 
+---
+
+## 13. Message Broker, logs and metrics (Lab 4)
+
+From `4.0.0`.
+
+### The connection
+
+One gRPC connection to `MESSAGE_BROKER_URL`, with the metadata `x-service-token: SERVICE_TOKEN` on
+every call, carries three things:
+
+- **Publish** (the relay): `session.started` and `session.ended` to `events.<event_type>`, the
+  envelope unchanged - see [§6](#6-events).
+- **Request** (the three clients): `requests.player`, `requests.server-rules`, `requests.applicant`,
+  with the peer's own path (`/api/v1/players/{id}`), `timeout_ms` = `DEPENDENCY_TIMEOUT`,
+  `X-Request-ID`, `caller: session` and no credential in the headers. The peer's answer comes back as
+  a reply; the broker's own outcomes (`503` no instance, `408` no reply in time) too.
+- **Subscribe** (one stream per instance): `service: "session"`, `instance_id: INSTANCE_ID`,
+  `topics: ["events.decision.recorded"]`, `max_concurrent_tasks: MAX_CONCURRENT_TASKS`; the broker
+  attaches `requests.session`. A stream that cannot be opened or ends is opened again with backoff
+  (0.5 s doubling to 10 s, ±20%); what was not settled is redelivered by the broker.
+
+`/health/ready` reports `broker` (the stream); `GET /status` does not. The contract is
+`internal/brokerpb/broker.proto` with checked-in Go stubs; CI regenerates them and fails on a
+difference.
+
+### Requests from `requests.session`
+
+A delivered request runs through the same Gin engine as the REST port, so it meets the same
+concurrent task limit (`429`), task timeout (`408`), access log and error envelope, and counts in
+`in_flight`, the load the broker routes by. The answer goes back with `Reply`: the status, the
+headers, the body, the request's `correlation_id` and this instance's id. `X-Request-ID` comes from
+the delivery; `X-Service-Token` and `Authorization` are dropped if they ever arrive.
+
+### `GET /logs?since=&until=&level=`
+
+As CPR README "Logs download" defines it, the same as Player Service (`docs/PLAYER_SERVICE.md` §13): the instance's own lines from `LOG_FILE` and its rotated files, oldest first,
+`since <= time < until`, `level` and above; `403 SERVICE_TOKEN_REQUIRED`, `401 INVALID_SERVICE_TOKEN`,
+`400 VALIDATION_ERROR` with `details.errors`, `503 LOGS_UNAVAILABLE`. Headers are sent before the
+files are read; a broken or unfinished line is left out. Outside the concurrent task limit and the
+task timeout.
+
+### `GET /metrics`
+
+| Series | Labels |
+| --- | --- |
+| `http_requests_total` | `method`, `route` (the template, `unmatched` for an unknown path), `status`; `/health*`, `/status`, `/logs`, `/metrics` not counted |
+| `http_request_duration_seconds` (histogram) | `method`, `route` |
+| `tasks_in_flight`, `max_concurrent_tasks` | - |
+| `broker_connected` | - (1 while the stream is open) |
+| `events_consumed_total` | `event_type` (`decision.recorded` or `other`), `outcome` (`ok`, `duplicate`, `dropped`, `retry`, `permanent`) |
+| `relay_deliveries` | `status` (`pending`, `parked`), counted in the outbox at scrape time |
+| `go_*`, `process_*` | the Go runtime and process collectors |

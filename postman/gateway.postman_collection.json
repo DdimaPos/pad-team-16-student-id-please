@@ -1,16 +1,13 @@
 {
   "info": {
     "name": "Gateway Service",
-    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "The Gateway 4.0.0 (Lab 4, #110): every client request goes to the Message Broker as a gRPC Request, and only the client's routes are served; see docs/GATEWAY.md. Run against the team stack with the broker (#113). The task timeout and concurrent limit are not shown here: the /dev routes that gave a slow request are no longer Gateway routes; they are covered by the Gateway's tests and, for the broker's own 408/429, by its collection and scripts/smoke.py."
   },
   "variable": [
     {
       "key": "base_url",
       "value": "http://localhost:8080"
-    },
-    {
-      "key": "slow_ms",
-      "value": "6000"
     },
     {
       "key": "max_concurrent_tasks",
@@ -41,37 +38,15 @@
       "value": ""
     },
     {
-      "key": "session_id",
-      "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
-    },
-    {
-      "key": "applicant_id",
-      "value": ""
-    },
-    {
-      "key": "moderator_id",
-      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
-      "description": "The Moderator of the seeded Discord DMs session. Sent as X-Player-Id until the authorization part sets it from the JWT"
-    },
-    {
       "key": "ws_session_id",
       "value": "",
-      "description": "set by the websocket setup request (a fresh session pushed through the Gateway)"
-    },
-    {
-      "key": "started_event_id",
-      "value": "",
-      "description": "set by the setup request"
-    },
-    {
-      "key": "no_instance_prefix",
-      "value": "discord-dms",
-      "description": "A route prefix whose service has no instance while the last folder runs (stop every copy of it first)"
+      "description": "A started session in Discord DMs with {{player_id}} in it (set by a shift run through Session, e.g. the Lab 4 shift collection of #113); empty skips the 201 ticket request"
     }
   ],
   "item": [
     {
-      "name": "health and status",
+      "name": "health, status and metrics",
+      "description": "The Gateway's own routes: no credential, not tasks. `/metrics` is scraped by Prometheus as a static target (#113).",
       "item": [
         {
           "name": "GET /health (liveness)",
@@ -82,7 +57,11 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.test('names the gateway', () => pm.expect(pm.response.json().service).to.eql('gateway-service'));"
+                  "pm.test('names the gateway, version 4.x', () => {",
+                  "  const b = pm.response.json();",
+                  "  pm.expect(b.service).to.eql('gateway-service');",
+                  "  pm.expect(b.version).to.match(/^4\\.\\d+\\.\\d+$/);",
+                  "});"
                 ]
               }
             }
@@ -116,12 +95,12 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('the shape agreed in #71', () => {",
+                  "pm.test('the shape every component shares', () => {",
                   "  const s = pm.response.json();",
                   "  pm.expect(s).to.have.all.keys('service', 'instance_id', 'version', 'status', 'in_flight', 'max_concurrent_tasks');",
                   "  pm.expect(s.service).to.eql('gateway');",
                   "  pm.expect(s.instance_id).to.match(/^gateway-/);",
-                  "  pm.expect(s.version).to.match(/^3\\.\\d+\\.\\d+$/);",
+                  "  pm.expect(s.version).to.match(/^4\\.\\d+\\.\\d+$/);",
                   "  pm.expect(s.status).to.eql('up');",
                   "});",
                   "pm.test('in_flight counts the tasks in progress, within max_concurrent_tasks', () => {",
@@ -137,64 +116,86 @@
               }
             }
           ]
-        }
-      ]
-    },
-    {
-      "name": "Routing",
-      "description": "`{{base_url}}/api/v1/<prefix>/<rest>` is forwarded to the service behind `<prefix>` as `/api/v1/<rest>`, and `/api/v1/<prefix>/health` as the service's own `/health` (CPR README, Gateway). Method, query, body and the service's answer pass through unchanged; the Gateway only handles the credential (next folder), the limits (last folder) and `X-Request-ID`. Applicant and Credential Service are the examples; the mechanics are the same for every prefix of the route table.",
-      "item": [
+        },
         {
-          "name": "A contract call through its prefix: POST /api/v1/applicant/applicants/next",
+          "name": "GET /metrics (Prometheus, no credential)",
           "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
+            "method": "GET",
+            "header": [],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicant/applicants/next",
+              "raw": "{{base_url}}/metrics",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
-                "api",
-                "v1",
-                "applicant",
-                "applicants",
-                "next"
+                "metrics"
               ]
-            },
-            "description": "Forwarded to Applicant Service as `POST /api/v1/applicants/next`. The same path exists in Credential and University Record Service; the prefix is what tells them apart. Service-only route, hence the token.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
             }
           },
-          "response": [],
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('201 Created', () => pm.response.to.have.status(201));",
-                  "const body = pm.response.json();",
-                  "pm.test('the service answered: an applicant was created', () => {",
-                  "  pm.expect(body.applicant_id).to.be.a('string');",
+                  "pm.test('200, the Prometheus text format', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.headers.get('Content-Type')).to.include('text/plain');",
                   "});",
-                  "pm.collectionVariables.set('applicant_id', body.applicant_id);"
+                  "pm.test('the shared series and the breaker on the broker', () => {",
+                  "  const t = pm.response.text();",
+                  "  ['http_requests_total', 'http_request_duration_seconds_bucket', 'tasks_in_flight',",
+                  "   'breaker_state{target=\"message-broker\"}'].forEach((s) => pm.expect(t).to.include(s));",
+                  "});",
+                  "pm.test('a route is a template, never a path with ids', () => {",
+                  "  pm.expect(pm.response.text()).to.not.match(/route=\"[^\"]*[0-9a-f]{8}-[0-9a-f]{4}-/);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "routing through the broker",
+      "description": "`{{base_url}}/api/v1/<prefix>/<rest>` reaches the service behind `<prefix>` as `/api/v1/<rest>`, and `/api/v1/<prefix>/health` as the service's own `/health` (docs/GATEWAY.md §5, §7). Since `4.0.0` every request goes to the Message Broker as a gRPC `Request` and the broker chooses the instance; the reply comes back unchanged. Needs the broker and the services of the Lab 4 stack.",
+      "item": [
+        {
+          "name": "A user route through its prefix, answered through the broker: GET /api/v1/server-rules/rulesets/1",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/server-rules/rulesets/1",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "server-rules",
+                "rulesets",
+                "1"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200, the ruleset from Server Rules', () => {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().version).to.eql(1);",
+                  "});",
+                  "pm.test('the Gateway added X-Request-ID', () => pm.expect(pm.response.headers.get('X-Request-ID')).to.match(/^[0-9a-f-]{36}$/));"
                 ]
               }
             }
@@ -277,14 +278,9 @@
           "name": "Forgotten prefix (404 NOT_FOUND)",
           "request": {
             "method": "GET",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
+            "header": [],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicants/{{applicant_id}}",
+              "raw": "{{base_url}}/api/v1/applicants/00000000-0000-4000-8000-000000000000",
               "host": [
                 "{{base_url}}"
               ],
@@ -292,7 +288,7 @@
                 "api",
                 "v1",
                 "applicants",
-                "{{applicant_id}}"
+                "00000000-0000-4000-8000-000000000000"
               ]
             },
             "description": "`/api/v1/applicants/...` is the service's own path; through the Gateway it needs `/api/v1/applicant/` in front. No service is registered as `applicants`, so the Gateway answers itself, before any credential check, and `details.service` names the segment it did not recognise."
@@ -362,8 +358,8 @@
             "method": "GET",
             "header": [
               {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
               }
             ],
             "url": {
@@ -503,11 +499,120 @@
       ]
     },
     {
-      "name": "Authorization",
-      "description": "Credentials are checked at the Gateway and only there (CPR README, Authentication). A player sends `Authorization: Bearer <jwt>` (HS256 with JWT_SECRET, `sub` = the player's id, `iat`, `exp`); a service sends `X-Service-Token`. The Gateway checks the credential the route accepts, removes `Authorization`, `X-Service-Token` and any `X-Player-Id` of the caller, and sets `X-Player-Id: <sub>` for a player. A refusal uses the shared envelope and reaches no service. The collection's pre-request script mints the player tokens with `jwt_secret`; `service_token` and `jwt_secret` must match the Gateway's SERVICE_TOKEN and JWT_SECRET. The first two requests need the applicant created in the Routing folder.",
+      "name": "only user routes (Lab 4)",
+      "description": "Since `4.0.0` (#110) the Gateway serves only the routes a client calls (docs/GATEWAY.md §5). Everything else is `404 NOT_FOUND` (`No such route.`, `details.service`) whatever the credential, and nothing is sent to the broker. The services keep these handlers and reach each other through the broker.",
       "item": [
         {
-          "name": "Player-or-service route as a player (200, forwarded with X-Player-Id)",
+          "name": "POST /api/v1/applicant/applicants/next (a service route since Lab 4) - 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/applicants/next",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "applicant",
+                "applicants",
+                "next"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"difficulty\": 2\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 NOT_FOUND, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.message).to.eql('No such route.');",
+                  "  pm.expect(e.details).to.eql({ service: 'applicant' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "POST /api/v1/discord-dms/events (events travel through the broker) - 404",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/discord-dms/events",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "discord-dms",
+                "events"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 NOT_FOUND, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.message).to.eql('No such route.');",
+                  "  pm.expect(e.details).to.eql({ service: 'discord-dms' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/server-rules/rulesets/current (not a ruleset version) - 404",
           "request": {
             "method": "GET",
             "header": [
@@ -517,41 +622,37 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "raw": "{{base_url}}/api/v1/server-rules/rulesets/current?difficulty=3",
               "host": [
                 "{{base_url}}"
               ],
               "path": [
                 "api",
                 "v1",
-                "applicant",
-                "applicants",
-                "{{applicant_id}}"
+                "server-rules",
+                "rulesets",
+                "current"
+              ],
+              "query": [
+                {
+                  "key": "difficulty",
+                  "value": "3"
+                }
               ]
-            },
-            "description": "`GET /applicants/{id}` on Applicant Service accepts either credential. With a player token the service receives `X-Player-Id: <sub>` and no token."
+            }
           },
-          "response": [],
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "if (!pm.collectionVariables.get('applicant_id')) {",
-                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
-                  "}"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('the applicant asked for', () => {",
-                  "  pm.expect(pm.response.json().applicant_id).to.eql(pm.collectionVariables.get('applicant_id'));",
+                  "pm.test('404 NOT_FOUND, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.message).to.eql('No such route.');",
+                  "  pm.expect(e.details).to.eql({ service: 'server-rules' });",
                   "});"
                 ]
               }
@@ -559,7 +660,7 @@
           ]
         },
         {
-          "name": "Player-or-service route as a service (200)",
+          "name": "GET /api/v1/university-record/applicants/{id}/records (Moderation calls it through the broker) - 404",
           "request": {
             "method": "GET",
             "header": [
@@ -569,7 +670,92 @@
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+              "raw": "{{base_url}}/api/v1/university-record/applicants/00000000-0000-4000-8000-000000000000/records",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "university-record",
+                "applicants",
+                "00000000-0000-4000-8000-000000000000",
+                "records"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 NOT_FOUND, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.message).to.eql('No such route.');",
+                  "  pm.expect(e.details).to.eql({ service: 'university-record' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/credential/health/ready - 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/credential/health/ready",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "credential",
+                "health",
+                "ready"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 NOT_FOUND, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.message).to.eql('No such route.');",
+                  "  pm.expect(e.details).to.eql({ service: 'credential' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "GET /api/v1/applicant/dev/slow - 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/applicant/dev/slow?ms=0",
               "host": [
                 "{{base_url}}"
               ],
@@ -577,36 +763,138 @@
                 "api",
                 "v1",
                 "applicant",
-                "applicants",
-                "{{applicant_id}}"
+                "dev",
+                "slow"
+              ],
+              "query": [
+                {
+                  "key": "ms",
+                  "value": "0"
+                }
               ]
-            },
-            "description": "The same route with the service token, as Moderation Service calls it. The service receives no `X-Player-Id` at all."
+            }
           },
-          "response": [],
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "if (!pm.collectionVariables.get('applicant_id')) {",
-                  "  throw new Error('applicant_id is not set — run the request that creates it first, or use Run Collection.');",
-                  "}"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                  "pm.test('404 NOT_FOUND, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.message).to.eql('No such route.');",
+                  "  pm.expect(e.details).to.eql({ service: 'applicant' });",
+                  "});"
                 ]
               }
             }
           ]
         },
+        {
+          "name": "GET /api/v1/university-record/ADMIN/applicants (another spelling) - 404",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/university-record/ADMIN/applicants",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "university-record",
+                "ADMIN",
+                "applicants"
+              ]
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 NOT_FOUND, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.message).to.eql('No such route.');",
+                  "  pm.expect(e.details).to.eql({ service: 'university-record' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "PUT /api/v1/player/players/{id} (a path with another method) - 404, never 405",
+          "request": {
+            "method": "PUT",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/api/v1/player/players/{{player_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "player",
+                "players",
+                "{{player_id}}"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 NOT_FOUND, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  const e = pm.response.json().error;",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.message).to.eql('No such route.');",
+                  "  pm.expect(e.details).to.eql({ service: 'player' });",
+                  "});"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "authorization",
+      "description": "A player sends `Authorization: Bearer <jwt>` (HS256 with JWT_SECRET, `sub` = the player's id). Every route that is not public takes it; the service token is no credential for a route any more (README Authentication, Lab 4). The collection signs the tokens itself from `{{jwt_secret}}`.",
+      "item": [
         {
           "name": "Player route without a credential (401 UNAUTHENTICATED)",
           "request": {
@@ -820,111 +1108,17 @@
           ]
         },
         {
-          "name": "Service-only route without a token (403 SERVICE_TOKEN_REQUIRED)",
+          "name": "A valid player token reaches the service (its own 404 APPLICANT_NOT_FOUND)",
           "request": {
             "method": "GET",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/v1/applicant/health/ready",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "applicant",
-                "health",
-                "ready"
-              ]
-            },
-            "description": "Readiness leaks dependency state and is a service-only route (docs/APPLICANT_SERVICE.md §14)."
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
-                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
-                  "  const e = pm.response.json().error;",
-                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
-                  "  pm.expect(e.details).to.be.an('object');",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Service-only route with a player token (403)",
-          "request": {
-            "method": "POST",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
               {
                 "key": "Authorization",
                 "value": "Bearer {{player_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/api/v1/credential/applicants/next",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "credential",
-                "applicants",
-                "next"
-              ]
-            },
-            "description": "`POST /applicants/next` takes the service token only. A player token, however valid, is the wrong kind of credential: 403, not 401, and nothing is created.",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"difficulty\": 3\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
-                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
-                  "  const e = pm.response.json().error;",
-                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
-                  "  pm.expect(e.details).to.be.an('object');",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Wrong service token (401 INVALID_SERVICE_TOKEN)",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "not-the-token"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/applicant/health/ready",
+              "raw": "{{base_url}}/api/v1/applicant/applicants/00000000-0000-4000-8000-000000000000",
               "host": [
                 "{{base_url}}"
               ],
@@ -932,65 +1126,20 @@
                 "api",
                 "v1",
                 "applicant",
-                "health",
-                "ready"
+                "applicants",
+                "00000000-0000-4000-8000-000000000000"
               ]
-            },
-            "description": "Present but not the stack's SERVICE_TOKEN."
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('401 Unauthorized', () => pm.response.to.have.status(401));",
-                  "pm.test('INVALID_SERVICE_TOKEN, in the shared envelope', () => {",
-                  "  const e = pm.response.json().error;",
-                  "  pm.expect(e.code).to.eql('INVALID_SERVICE_TOKEN');",
-                  "  pm.expect(e.details).to.be.an('object');",
-                  "});"
-                ]
-              }
             }
-          ]
-        },
-        {
-          "name": "Service-only route with the service token (200)",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/credential/health/ready",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "credential",
-                "health",
-                "ready"
-              ]
-            },
-            "description": "Forwarded; the service receives neither the token nor an `X-Player-Id`."
           },
-          "response": [],
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.test('answered by Credential Service', () => {",
-                  "  pm.expect(pm.response.json().service).to.eql('credential-service');",
+                  "pm.test('404 from Applicant Service, so the token was accepted', () => {",
+                  "  pm.response.to.have.status(404);",
+                  "  pm.expect(pm.response.json().error.code).to.eql('APPLICANT_NOT_FOUND');",
                   "});"
                 ]
               }
@@ -1037,173 +1186,13 @@
               }
             }
           ]
-        },
-        {
-          "name": "Dev route with a player token (403)",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Authorization",
-                "value": "Bearer {{player_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/applicant/dev/slow?ms=0",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "applicant",
-                "dev",
-                "slow"
-              ],
-              "query": [
-                {
-                  "key": "ms",
-                  "value": "0"
-                }
-              ]
-            },
-            "description": "`/dev/*` and `/admin/*` are beyond the contract and forwarded with the service token only, whatever the service behind them does - the rule the Limits folder relies on."
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('403 Forbidden', () => pm.response.to.have.status(403));",
-                  "pm.test('SERVICE_TOKEN_REQUIRED, in the shared envelope', () => {",
-                  "  const e = pm.response.json().error;",
-                  "  pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED');",
-                  "  pm.expect(e.details).to.be.an('object');",
-                  "});"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "Dev route with the service token",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/applicant/dev/slow?ms=0",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "applicant",
-                "dev",
-                "slow"
-              ],
-              "query": [
-                {
-                  "key": "ms",
-                  "value": "0"
-                }
-              ]
-            },
-            "description": "Forwarded. Answers 200 when Applicant Service runs with DEV_ENDPOINTS=true, its own 404 otherwise."
-          },
-          "response": [],
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// The dev endpoint answers 404 when the service runs without DEV_ENDPOINTS=true.",
-                  "const check = pm.response.code === 404 ? pm.test.skip : pm.test;",
-                  "check('200 OK, the service did nothing for 0 ms', () => {",
-                  "  pm.response.to.have.status(200);",
-                  "  pm.expect(pm.response.json().slept_ms).to.eql(0);",
-                  "});"
-                ]
-              }
-            }
-          ]
         }
       ]
     },
     {
       "name": "websocket negotiation (the Gateway negotiates, the client connects to Discord DMs directly)",
+      "description": "`POST /api/v1/discord-dms/ws-tickets` is a player route through the broker; the client then opens `ws_url` on Discord DMs directly. The `201` request needs `ws_session_id`: a started session with `{{player_id}}` in it.",
       "item": [
-        {
-          "name": "setup: a fresh active session in Discord DMs (session.started through the Gateway, service token)",
-          "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "// A session of its own, so the run does not depend on the seeded one (Session Service's seed may already have ended it).",
-                  "const hex = () => Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');",
-                  "const uuid = () => hex().replace(/^(.{8})(.{4})(.{3})(.{3})(.{12})$/, (m, a, b, c, d, e) => `${a}-${b}-4${c}-8${d}-${e}`);",
-                  "pm.collectionVariables.set('ws_session_id', uuid()); pm.collectionVariables.set('started_event_id', uuid());"
-                ]
-              }
-            },
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('not a duplicate', () => pm.expect(pm.response.json().duplicate).to.eql(false));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/discord-dms/events",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "discord-dms",
-                "events"
-              ]
-            },
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"event_id\": \"{{started_event_id}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-10-08T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{ws_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"ruleset_version\": 3,\n    \"started_at\": \"2026-10-08T18:05:00Z\",\n    \"junior_moderators\": []\n  }\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            },
-            "description": "Pushes session.started the way Session Service does, so the ticket requests below have an active session whatever the seeds look like."
-          },
-          "response": []
-        },
         {
           "name": "POST /api/v1/discord-dms/ws-tickets -> 201 with the direct ws_url and a one-time ticket",
           "event": [
@@ -1219,6 +1208,18 @@
                   "console.log('open directly, once, within 30 s: ' + b.ws_url);"
                 ]
               }
+            },
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Needs a started session in Discord DMs with {{player_id}} in it: Discord DMs learns sessions from",
+                  "// session.started through the broker, so start a shift first (the Lab 4 shift collection of #113, or",
+                  "// Session's own collection) and set ws_session_id. Without it this request is skipped.",
+                  "if (!pm.collectionVariables.get('ws_session_id')) { pm.execution.skipRequest(); }"
+                ]
+              }
             }
           ],
           "request": {
@@ -1229,8 +1230,8 @@
                 "value": "application/json"
               },
               {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}"
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
               }
             ],
             "url": {
@@ -1259,19 +1260,7 @@
           "response": []
         },
         {
-          "name": "a stranger gets no ticket: 403 NOT_IN_SESSION passed through unchanged",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 403', () => pm.response.to.have.status(403));",
-                  "pm.test('NOT_IN_SESSION', () => pm.expect(pm.response.json().error.code).to.eql('NOT_IN_SESSION'));"
-                ]
-              }
-            }
-          ],
+          "name": "a player not in the session gets no ticket: 403 NOT_IN_SESSION passed through unchanged",
           "request": {
             "method": "POST",
             "header": [
@@ -1280,8 +1269,8 @@
                 "value": "application/json"
               },
               {
-                "key": "X-Player-Id",
-                "value": "5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13"
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
               }
             ],
             "url": {
@@ -1298,7 +1287,7 @@
             },
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"{{ws_session_id}}\"\n}",
+              "raw": "{\n  \"session_id\": \"00000000-0000-4000-8000-000000000000\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1306,7 +1295,21 @@
               }
             }
           },
-          "response": []
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Discord DMs answered through the broker, not the Gateway', () => {",
+                  "  pm.expect(pm.response.code).to.be.oneOf([403, 404]);",
+                  "  pm.expect(pm.response.json().error.code).to.not.be.oneOf(['UNAUTHENTICATED', 'NOT_FOUND']);",
+                  "});",
+                  "pm.test('no ticket', () => pm.expect(pm.response.json()).to.not.have.property('ws_url'));"
+                ]
+              }
+            }
+          ]
         },
         {
           "name": "no player identity: 401",
@@ -1399,11 +1402,26 @@
       ]
     },
     {
-      "name": "Limits (needs DEV_ENDPOINTS=true)",
-      "description": "Task timeout and concurrent task limit, demonstrated with Applicant Service's GET /api/v1/dev/slow through the Gateway. `/dev/*` is forwarded with the service token only, so every request here carries `service_token`.",
+      "name": "logs (#112)",
+      "description": "GET /logs of the Gateway itself (service token only). CPR README \"Logs download\".",
       "item": [
         {
-          "name": "Task timeout (408)",
+          "name": "GET /logs - its own lines",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "pm.test('an attachment', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\".+\\.jsonl\"$/));",
+                  "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
+                  "pm.test('one JSON object per line, oldest first', () => { for (let i = 1; i < rows.length; i++) pm.expect(rows[i].time >= rows[i - 1].time).to.be.true; });"
+                ]
+              }
+            }
+          ],
           "request": {
             "method": "GET",
             "header": [
@@ -1412,190 +1430,103 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/applicant/dev/slow?ms={{slow_ms}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "applicant",
-                "dev",
-                "slow"
-              ],
-              "query": [
-                {
-                  "key": "ms",
-                  "value": "{{slow_ms}}"
-                }
-              ]
-            },
-            "description": "Asks Applicant Service, through the Gateway, to do nothing for `slow_ms` (6000 ms). With the defaults the service stops the task at its own 5s and the Gateway passes that 408 through unchanged; the Gateway's own 408 (details.service) appears when it runs with a timeout below the service's, e.g. HTTP_REQUEST_TIMEOUT=2. Needs DEV_ENDPOINTS=true in Applicant Service and the service token, which /dev routes require."
-          },
-          "response": [],
+            "url": "{{base_url}}/logs?since=2020-01-01T00:00:00Z"
+          }
+        },
+        {
+          "name": "GET /logs - no token is 403",
           "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// The dev endpoint answers 404 when the service runs without DEV_ENDPOINTS=true.",
-                  "const devOff = pm.response.code === 404;",
-                  "const check = devOff ? pm.test.skip : pm.test;",
-                  "check('408 Request Timeout', () => pm.response.to.have.status(408));",
-                  "check('code is REQUEST_TIMEOUT, in the shared envelope', () => {",
-                  "  const error = pm.response.json().error;",
-                  "  pm.expect(error.code).to.eql('REQUEST_TIMEOUT');",
-                  "  pm.expect(error.details).to.be.an('object');",
-                  "});",
-                  "check('stopped at the timeout, not after slow_ms', () => {",
-                  "  pm.expect(pm.response.responseTime).to.be.below(Number(pm.variables.get('slow_ms')));",
-                  "});"
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
                 ]
               }
             }
-          ]
-        },
-        {
-          "name": "Concurrent task limit (429)",
+          ],
           "request": {
             "method": "GET",
             "header": [],
-            "url": {
-              "raw": "{{base_url}}/health",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "health"
-              ]
-            },
-            "description": "The pre-request script opens `max_concurrent_tasks` (64) slow requests through the Gateway at once. While they are in progress one more proxied request must be refused with 429 TOO_MANY_REQUESTS and Retry-After, and the Gateway's own GET /health must still answer. Needs DEV_ENDPOINTS=true in Applicant Service, the service token (/dev routes require it) and `max_concurrent_tasks` equal to the Gateway's MAX_CONCURRENT_TASKS."
-          },
-          "response": [],
+            "url": "{{base_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs - a player token is 403",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "const base = pm.variables.get('base_url');",
-                  "const limit = Number(pm.variables.get('max_concurrent_tasks'));",
-                  "const service = { 'X-Service-Token': pm.variables.get('service_token') };",
-                  "const seen = {};",
-                  "const save = () => pm.variables.set('limit_seen', JSON.stringify(seen));",
-                  "save();",
-                  "",
-                  "pm.sendRequest({ url: base + '/api/v1/applicant/dev/slow?ms=0', method: 'GET', header: service }, (err, res) => {",
-                  "  seen.dev = err ? 0 : res.code;",
-                  "  save();",
-                  "  if (seen.dev !== 200) { return; }",
-                  "",
-                  "  // Fill every slot. These are still running when the two requests below are sent.",
-                  "  for (let i = 0; i < limit; i++) {",
-                  "    pm.sendRequest({ url: base + '/api/v1/applicant/dev/slow?ms=3000', method: 'GET', header: service }, () => {});",
-                  "  }",
-                  "  setTimeout(() => {",
-                  "    pm.sendRequest({ url: base + '/api/v1/applicant/applicants?limit=1', method: 'GET', header: service }, (err, res) => {",
-                  "      if (!err) { seen.extra = { status: res.code, retryAfter: res.headers.get('Retry-After'), body: res.text() }; }",
-                  "      save();",
-                  "    });",
-                  "    pm.sendRequest(base + '/health', (err, res) => {",
-                  "      if (!err) { seen.ready = res.code; }",
-                  "      save();",
-                  "    });",
-                  "  }, 1000);",
-                  "});"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "const seen = JSON.parse(pm.variables.get('limit_seen') || '{}');",
-                  "// The dev endpoint answers 404 when the service runs without DEV_ENDPOINTS=true.",
-                  "const check = seen.dev === 200 ? pm.test : pm.test.skip;",
-                  "check('the request above the limit is refused with 429', () => {",
-                  "  pm.expect(seen.extra.status).to.eql(429);",
-                  "});",
-                  "check('code is TOO_MANY_REQUESTS, with Retry-After', () => {",
-                  "  pm.expect(JSON.parse(seen.extra.body).error.code).to.eql('TOO_MANY_REQUESTS');",
-                  "  pm.expect(seen.extra.retryAfter).to.be.a('string').and.not.empty;",
-                  "});",
-                  "check('/health still answers while the limit is reached', () => {",
-                  "  pm.expect(seen.ready).to.eql(200);",
-                  "});",
-                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
                 ]
               }
             }
-          ]
-        }
-      ]
-    },
-    {
-      "name": "Instances from Service Discovery (needs a service with no instance)",
-      "description": "Since Lab 3 the Gateway reads the instances of every service from Service Discovery (`GET /api/v1/instances`, at startup and every 5 s) and sends the requests to a service to its instances in turn; which instance got a request is the `target_instance` of the Gateway's `http.request` log line (`docker compose logs -f gateway-service`). A service with no instance, or none whose circuit breaker lets the request through, is answered `503 SERVICE_UNAVAILABLE` and no instance is called. To see it, stop every copy of the service named by `no_instance_prefix` (`docker compose stop discord-dms-service`) and wait about 20 s (Service Discovery drops it after 15 s without heartbeat, the Gateway reads the list every 5 s); while the service has an instance, its own `/health` answers 200 and the checks below are skipped.",
-      "item": [
-        {
-          "name": "A service with no instance: 503 SERVICE_UNAVAILABLE",
+          ],
           "request": {
             "method": "GET",
             "header": [
               {
-                "key": "X-Request-ID",
-                "value": "{{request_id}}"
+                "key": "Authorization",
+                "value": "Bearer {{player_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/{{no_instance_prefix}}/health",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "{{no_instance_prefix}}",
-                "health"
-              ]
-            },
-            "description": "A public route, so no credential is involved: with no instance of the service the Gateway answers itself, in the shared envelope, with `details.service` naming the prefix, and logs `route.no_instance` and `http.error` with this request id."
-          },
-          "response": [],
+            "url": "{{base_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs - a wrong token is 401",
           "event": [
-            {
-              "listen": "prerequest",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.variables.set('request_id', pm.variables.replaceIn('{{$guid}}'));"
-                ]
-              }
-            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// Runs while the service behind no_instance_prefix has no instance (see the folder description);",
-                  "// while it has one, its own /health answers 200 and the checks are skipped.",
-                  "const check = pm.response.code === 200 ? pm.test.skip : pm.test;",
-                  "check('503 Service Unavailable', () => pm.response.to.have.status(503));",
-                  "check('SERVICE_UNAVAILABLE in the shared envelope, details name the service', () => {",
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong"
+              }
+            ],
+            "url": "{{base_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /api/v1/player/logs - a service's logs are not a Gateway route",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404 NOT_FOUND, answered by the Gateway', () => {",
+                  "  pm.response.to.have.status(404);",
                   "  const e = pm.response.json().error;",
-                  "  pm.expect(e.code).to.eql('SERVICE_UNAVAILABLE');",
-                  "  pm.expect(e.details).to.eql({ service: pm.variables.get('no_instance_prefix') });",
-                  "});",
-                  "check('the request id comes back', () => {",
-                  "  pm.expect(pm.response.headers.get('X-Request-ID')).to.eql(pm.variables.get('request_id'));",
+                  "  pm.expect(e.code).to.eql('NOT_FOUND');",
+                  "  pm.expect(e.message).to.eql('No such route.');",
+                  "  pm.expect(e.details).to.eql({ service: 'player' });",
                   "});"
                 ]
               }
             }
-          ]
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/player/logs"
+          }
         }
       ]
     }
@@ -1623,26 +1554,7 @@
           "const secret = pm.variables.get('jwt_secret');",
           "pm.collectionVariables.set('player_token', mint({ sub: sub, iat: now, exp: now + 3600 }, secret));",
           "pm.collectionVariables.set('expired_token', mint({ sub: sub, iat: now - 7200, exp: now - 3600 }, secret));",
-          "pm.collectionVariables.set('foreign_token', mint({ sub: sub, iat: now, exp: now + 3600 }, 'not-the-secret-of-this-gateway-at-all'));",
-          "",
-          "// Through the Gateway a player is identified by a JWT (HS256, JWT_SECRET shared with Player Service),",
-          "// never by X-Player-Id: the Gateway checks the token, discards any client-sent X-Player-Id and sets",
-          "// its own from the token's sub. Player Service's POST /api/v1/auth/login is not published yet, so",
-          "// this script signs the token itself: every request that names a player in X-Player-Id gets",
-          "// Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id header is dropped.",
-          "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
-          "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
-          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
-          "  const CryptoJS = require('crypto-js');",
-          "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
-          "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
-          "  const now = Math.floor(Date.now() / 1000);",
-          "  const sub = pm.variables.replaceIn(playerHeader.value);",
-          "  const unsigned = part({ alg: 'HS256', typ: 'JWT' }) + '.' + part({ sub: sub, iat: now, exp: now + 300 });",
-          "  const signature = b64url(CryptoJS.HmacSHA256(unsigned, pm.variables.get('jwt_secret')));",
-          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + unsigned + '.' + signature });",
-          "  pm.request.headers.remove('X-Player-Id');",
-          "}"
+          "pm.collectionVariables.set('foreign_token', mint({ sub: sub, iat: now, exp: now + 3600 }, 'not-the-secret-of-this-gateway-at-all'));"
         ]
       }
     }

@@ -1,0 +1,439 @@
+{
+  "info": {
+    "name": "Message Broker Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "The Message Broker 4.0.0 (Lab 4), its HTTP side on port 8070: the probes, the topics and dead letter listings (X-Service-Token), GET /logs (#112) and GET /metrics (#126). docs/MESSAGE_BROKER.md is the reference. On a new broker both listings are empty. Set base_url and service_token (the placeholder of .env.example) for your stack.\n\nThe gRPC API on port 8071 (Publish, Subscribe, Ack, Request, Reply, ListTopics, ListDeadLetters) is not in this collection, which holds HTTP requests only. It is called with scripts/smoke.py from the root of the broker's repository, with SERVICE_TOKEN in the environment and --broker host:port (default 127.0.0.1:8071):\n\n  python -m scripts.smoke subscribe --service player --instance player-1 --topic events.session.ended\n  python -m scripts.smoke publish --topic events.session.ended --event-id e1\n  python -m scripts.smoke topics\n  python -m scripts.smoke request --service player --method GET --path /api/v1/players\n\nTo fill the dead letter listing, run the subscriber alone with --outcome permanent and publish again."
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://localhost:8070" },
+    { "key": "service_token", "value": "change_me_too" }
+  ],
+  "item": [
+    {
+      "name": "probes",
+      "item": [
+        {
+          "name": "GET /health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('names the broker', () => pm.expect(b.service).to.eql('message-broker'));",
+                  "pm.test('a Lab 4 version', () => pm.expect(b.version).to.match(/^4\\.\\d+\\.\\d+$/));"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{base_url}}/health" }
+        },
+        {
+          "name": "GET /status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('contract shape and the gRPC threads', () => pm.expect(b).to.have.all.keys('service','instance_id','version','status','in_flight','max_concurrent_tasks','grpc_in_flight','grpc_max_workers'));",
+                  "pm.test('names the broker', () => pm.expect(b.service).to.eql('message-broker'));",
+                  "pm.test('up, the store writes', () => pm.expect(b.status).to.eql('up'));",
+                  "pm.test('gRPC threads within the pool', () => pm.expect(b.grpc_in_flight).to.be.within(0, b.grpc_max_workers));"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{base_url}}/status" }
+        },
+        {
+          "name": "GET /metrics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('the Prometheus text format', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('text/plain'));",
+                  "const body = pm.response.text();",
+                  "pm.test('the shared series', () => {",
+                  "  pm.expect(body).to.include('# TYPE http_requests_total counter');",
+                  "  pm.expect(body).to.include('tasks_in_flight');",
+                  "});",
+                  "pm.test('the broker series', () => {",
+                  "  pm.expect(body).to.include('broker_queue_depth');",
+                  "  pm.expect(body).to.include('broker_redeliveries_total');",
+                  "  pm.expect(body).to.include('broker_dead_letters_total');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{base_url}}/metrics" }
+        }
+      ]
+    },
+    {
+      "name": "topics",
+      "item": [
+        {
+          "name": "GET /api/v1/topics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const topics = pm.response.json().topics;",
+                  "pm.test('a list of topics', () => pm.expect(topics).to.be.an('array'));",
+                  "topics.forEach(t => {",
+                  "  pm.test(`${t.name} has its shape`, () => {",
+                  "    pm.expect(t).to.have.all.keys('name','queues');",
+                  "    t.queues.forEach(q => pm.expect(q).to.have.all.keys('name','service','depth','subscribers'));",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/api/v1/topics"
+          }
+        },
+        {
+          "name": "GET /api/v1/topics without a token: 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('the shared envelope', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{base_url}}/api/v1/topics" }
+        },
+        {
+          "name": "GET /api/v1/topics with a wrong token: 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('the shared envelope', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "not-the-token" }],
+            "url": "{{base_url}}/api/v1/topics"
+          }
+        }
+      ]
+    },
+    {
+      "name": "dead letters (#108)",
+      "description": "GET /api/v1/dead-letters?limit=&offset=: newest first, { items, total }, limit 1 to 100 (default 20), offset from 0.",
+      "item": [
+        {
+          "name": "GET /api/v1/dead-letters",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('a page', () => {",
+                  "  pm.expect(b).to.have.all.keys('items','total');",
+                  "  pm.expect(b.items).to.be.an('array');",
+                  "  pm.expect(b.total).to.be.a('number');",
+                  "});",
+                  "pm.test('at most the default limit of 20', () => pm.expect(b.items.length).to.be.at.most(20));",
+                  "pm.test('newest first', () => { for (let i = 1; i < b.items.length; i++) pm.expect(b.items[i].dead_at <= b.items[i - 1].dead_at).to.be.true; });",
+                  "b.items.forEach(d => {",
+                  "  pm.test(`${d.message_id} has its shape`, () => {",
+                  "    pm.expect(d).to.have.all.keys('message_id','queue','attempts','reason','created_at','dead_at','delivery');",
+                  "    pm.expect(d.delivery.event).to.include.keys('event_id','event_type','producer','version');",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/api/v1/dead-letters"
+          }
+        },
+        {
+          "name": "GET /api/v1/dead-letters?limit=1&offset=0 - one page",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('at most one item', () => pm.expect(b.items.length).to.be.at.most(1));",
+                  "pm.test('total counts them all', () => pm.expect(b.total).to.be.at.least(b.items.length));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/api/v1/dead-letters?limit=1&offset=0"
+          }
+        },
+        {
+          "name": "GET /api/v1/dead-letters?offset past the end - an empty page",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('no item', () => pm.expect(pm.response.json().items).to.eql([]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/api/v1/dead-letters?offset=1000000"
+          }
+        },
+        {
+          "name": "GET /api/v1/dead-letters?limit=0 - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.include('limit'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/api/v1/dead-letters?limit=0"
+          }
+        },
+        {
+          "name": "GET /api/v1/dead-letters?limit=101 - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.include('limit'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/api/v1/dead-letters?limit=101"
+          }
+        },
+        {
+          "name": "GET /api/v1/dead-letters?offset=-1 - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.include('offset'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/api/v1/dead-letters?offset=-1"
+          }
+        },
+        {
+          "name": "GET /api/v1/dead-letters without a token: 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('the shared envelope', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{base_url}}/api/v1/dead-letters" }
+        },
+        {
+          "name": "GET /api/v1/dead-letters with a wrong token: 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('the shared envelope', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "not-the-token" }],
+            "url": "{{base_url}}/api/v1/dead-letters"
+          }
+        }
+      ]
+    },
+    {
+      "name": "logs (#112)",
+      "description": "GET /logs, this instance's lines, as in CPR README \"Logs download\".",
+      "item": [
+        {
+          "name": "GET /logs - its own lines",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "pm.test('an attachment', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\".+\\.jsonl\"$/));",
+                  "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
+                  "pm.test('one JSON object per line, oldest first', () => { for (let i = 1; i < rows.length; i++) pm.expect(rows[i].time >= rows[i - 1].time).to.be.true; });",
+                  "pm.test('the broker\\'s lines', () => rows.forEach(r => pm.expect(r.service).to.eql('message-broker')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/logs?since=2020-01-01T00:00:00Z"
+          }
+        },
+        {
+          "name": "GET /logs?level=warn - warn and above",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
+                  "pm.test('no line below warn', () => rows.forEach(r => pm.expect(['warn', 'error']).to.include(r.level)));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/logs?level=warn"
+          }
+        },
+        {
+          "name": "GET /logs - no token is 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": { "method": "GET", "header": [], "url": "{{base_url}}/logs" }
+        },
+        {
+          "name": "GET /logs - a wrong token is 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "not-the-token" }],
+            "url": "{{base_url}}/logs"
+          }
+        },
+        {
+          "name": "GET /logs - a time without its zone is 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('since'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
+            "url": "{{base_url}}/logs?since=2026-11-05T10:00:00"
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -268,9 +268,8 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
   service, and hands the player route to the broker's `requests.server-rules`; Session and Moderation
   reach this service through the broker, not the Gateway. `GET /logs` and `GET /metrics` are not
   Gateway routes. #110 (IacovlevMaxim/gateway-service#15) shipped in the Gateway's `4.0.0`, which the
-  compose runs since #113, so the service-token routes above answer `404` at the Gateway: Session
-  `3.0.0`, still in the compose, gets `404` on `GET /rulesets/current` until its Lab 4 delivery (#130)
-  merges.
+  compose runs since #113, so the service-token routes above answer `404` at the Gateway; Session `4.0.0` calls `GET /rulesets/current`
+  through the broker.
 - No CORS headers, no rate limiting, no `Idempotency-Key` support. `POST /evaluations` and
   `POST /admin/rulesets` are not idempotent - two identical requests create two things (a log
   line; a new ruleset version, respectively). Safe to retry: every `GET`, `PATCH`, `DELETE`.

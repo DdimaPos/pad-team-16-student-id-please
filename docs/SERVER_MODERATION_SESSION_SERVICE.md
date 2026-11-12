@@ -843,8 +843,7 @@ the delivery; `X-Service-Token` and `Authorization` are dropped if they ever arr
 
 ### `GET /logs?since=&until=&level=`
 
-As CPR README "Logs download" defines it, the same as Player Service (`docs/PLAYER_SERVICE.md` §13
-once #114 merges): the instance's own lines from `LOG_FILE` and its rotated files, oldest first,
+As CPR README "Logs download" defines it, the same as Player Service (`docs/PLAYER_SERVICE.md` §13): the instance's own lines from `LOG_FILE` and its rotated files, oldest first,
 `since <= time < until`, `level` and above; `403 SERVICE_TOKEN_REQUIRED`, `401 INVALID_SERVICE_TOKEN`,
 `400 VALIDATION_ERROR` with `details.errors`, `503 LOGS_UNAVAILABLE`. Headers are sent before the
 files are read; a broken or unfinished line is left out. Outside the concurrent task limit and the

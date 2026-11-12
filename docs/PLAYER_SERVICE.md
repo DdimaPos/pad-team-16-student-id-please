@@ -271,8 +271,7 @@ Validation rules worth knowing before you call `POST /players`: username 3-32 ch
 Broker: every instance subscribes to the topic `events.session.ended` (queue
 `events.session.ended.player`, shared by the instances, so one of them gets each event), and settles
 each delivery with `Ack`. `POST /api/v1/events` is removed, and the Lab 4 Gateway does not route it
-either: Session `3.0.0`'s relay, which still pushes there through the Gateway, gets `404` until
-Session `4.0.0` (#130) publishes to the broker.
+either: Session `4.0.0` publishes `session.ended` to the broker.
 
 | Situation | `Ack` | The broker |
 | --- | --- | --- |

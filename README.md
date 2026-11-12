@@ -1123,13 +1123,6 @@ email.
   An id in `players[]` with no account here is skipped and logged - Session Service decides who was
   in a shift, and one unknown id must not cost the other players their XP.
 
-> **Known gap (Player, Session; until #130).** Player Service `4.0.0` receives `session.ended` only from
-> the Message Broker's topic `events.session.ended` and no longer exposes `POST /api/v1/events`. The
-> compose still runs Session Service `3.0.0`, whose relay pushes `session.ended` through the Gateway,
-> which answers `404` to `POST /events`; so no shift reaches Player and no XP is awarded until
-> Session `4.0.0` (#130) publishes to the broker. Details:
-> [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md) §6 and §13.
-
 #### Server Moderation Session Service
 
 ##### Consumed API endpoints
@@ -1143,13 +1136,6 @@ email.
 - Publish to `events.<event_type>` (Lab 4; Lab 2-3: `POST /api/v1/events` of University Record, Discord DMs and Player Service)  
   Pushes `session.started` (University Record, Discord DMs) and `session.ended` (Player, Discord DMs,
   University Record), as described in [Event delivery](#event-delivery).
-
-> **Known gap (Lab 4, Player).** The compose still runs Player Service `3.0.0` until its `4.0.0`
-> delivery (#114), and `3.0.0` does not subscribe to the broker: the broker answers Session's request
-> on `requests.player` with `503`, so creating and joining a session answer
-> `500 DEPENDENCY_UNAVAILABLE`. Details:
-> [`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md) §5.3
-> and §13.
 
 ##### Exposed API endpoints
 
@@ -1865,12 +1851,6 @@ The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a j
   Stores the `record_scopes` of every junior for this session. From now on, their searches are checked against these scopes.
 - `session.ended` - from Server Moderation Session Service  
   Closes access for that session, so players cannot read records after the shift.
-
-> **Known gap (Lab 4, #119).** Server Moderation Session Service still runs its `3.0.0` image in the compose until
-> its Lab 4 delivery (#130) merges. It pushes `session.started` and `session.ended` to `POST /api/v1/events` through
-> the Gateway, which answers `404` from `4.0.0`, so University Record Service `4.0.0` receives no session (and so no
-> record scopes) meanwhile. Details:
-> [`docs/UNIVERSITY_RECORD_SERVICE.md`](docs/UNIVERSITY_RECORD_SERVICE.md) §9.
 
 
 #### Moderation Service

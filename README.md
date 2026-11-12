@@ -1847,10 +1847,10 @@ The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a j
 - `session.ended` - from Server Moderation Session Service  
   Closes access for that session, so players cannot read records after the shift.
 
-> **Known gap (Lab 4, #119).** Applicant, Credential and Session still run their `3.0.0` images in the compose until
-> their Lab 4 deliveries (#128, #129, #130) merge. They push their events to `POST /api/v1/events` through the
-> Gateway, which answers `404` from `4.0.0`, so University Record Service `4.0.0` receives none of their
-> `applicant.initialized`, `session.started` or `session.ended` meanwhile. Details:
+> **Known gap (Lab 4, #119).** Server Moderation Session Service still runs its `3.0.0` image in the compose until
+> its Lab 4 delivery (#130) merges. It pushes `session.started` and `session.ended` to `POST /api/v1/events` through
+> the Gateway, which answers `404` from `4.0.0`, so University Record Service `4.0.0` receives no session (and so no
+> record scopes) meanwhile. Details:
 > [`docs/UNIVERSITY_RECORD_SERVICE.md`](docs/UNIVERSITY_RECORD_SERVICE.md) §9.
 
 

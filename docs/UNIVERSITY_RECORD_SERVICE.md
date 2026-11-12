@@ -296,12 +296,11 @@ cedilla form) - please confirm Applicant Service does the same.
 - **The broker is down.** The instance logs `broker.subscribe_failed` and subscribes again with backoff
   (1 s doubling to 30 s); its own events wait in the outbox, and the REST port, `/health` and `/status`
   keep answering.
-- **Peers still on `3.0.0` in the compose.** Until the Lab 4 deliveries of Applicant (#128), Credential
-  (#129) and Session (#130) merge, the compose runs their `3.0.0` images, which push their events to
-  `POST /api/v1/events` through the Gateway; Gateway `4.0.0` answers `404`, so no `applicant.initialized`,
-  `session.started` or `session.ended` of theirs reaches this service. An `applicant.initialized` this
-  service published meanwhile would reach only its own queue (the topic has a subscriber, this service,
-  so it keeps nothing for a later one); no service calls its `POST /applicants/next` yet, so none is.
+- **Session still on `3.0.0` in the compose.** Until the Lab 4 delivery of Session (#130) merges, the compose
+  runs its `3.0.0` image, which pushes `session.started` and `session.ended` to `POST /api/v1/events` through
+  the Gateway; Gateway `4.0.0` answers `404`, so neither a session nor its record scopes reach this
+  service. Applicant and Credential run `4.0.0` (#128, #129): their `applicant.initialized` arrives from the
+  broker, and this service's own reaches them.
 - **Ruleset/session ordering.** A junior can legitimately query before `session.started` has
   arrived; this reads as `403 CATEGORY_NOT_ASSIGNED` (a session this service has not
   heard of grants no scope to anyone) and is expected to resolve on retry.

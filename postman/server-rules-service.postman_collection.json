@@ -1,12 +1,12 @@
 {
   "info": {
     "name": "Server Rules Service",
-    "description": "Server Rules Service has zero mocked business logic - it calls no service, publishes no event, consumes no event, and stores nothing about applicants. Every input arrives in the request. This collection exercises the real code paths end to end.\n\nTHROUGH THE GATEWAY ({{base_url}}). Only the routes the Lab 4 Gateway serves for this service: GET /health (public) and GET rulesets/{version} (player JWT, signed by the pre-request script). The Gateway's 4.0.0 (#110, IacovlevMaxim/gateway-service#15, merged into its dev) keeps only these and answers 404 NOT_FOUND to every other path of this service, without forwarding it; Session and Moderation reach the others through the Message Broker's queue requests.server-rules (gRPC), which Postman cannot send.\n\nDIRECT CALLS ({{server_rules_direct_url}}). Every other request goes to one instance directly, by its own path (/api/v1/..., /health/ready, /status, /logs, /metrics, without the Gateway's /server-rules prefix): /health/ready, /status, rulesets/current, the evaluations, /admin/*, /logs and /metrics. The REST port still serves every route, exactly as the broker's requests are served (dispatched to it over loopback). A direct request is a service call: no X-Player-Id, no token, since the instance validates no credential except on /logs. GET /logs needs {{service_token}} (403 without it, 401 when wrong); /admin/* refuses a request carrying X-Player-Id (403 SERVICE_TOKEN_REQUIRED); the pre-request script never touches a direct request.",
+    "description": "Server Rules Service has zero mocked business logic - it calls no service, publishes no event, consumes no event, and stores nothing about applicants. Every input arrives in the request. This collection exercises the real code paths end to end.\n\nTHROUGH THE GATEWAY ({{base_url}}). Only the routes the Lab 4 Gateway serves for this service: GET /health (public) and GET rulesets/{version} (player JWT, signed by the pre-request script). The Gateway's 4.0.0 (#110, IacovlevMaxim/gateway-service#15, merged into its dev) keeps only these and answers 404 NOT_FOUND to every other path of this service, without forwarding it; Session and Moderation reach the others through the Message Broker's queue requests.server-rules (gRPC), which Postman cannot send.\n\nDIRECT CALLS ({{server_rules_direct_url}}). Every other request goes to one instance directly, by its own path (/api/v1/..., /health/ready, /status, /logs, /metrics, without the Gateway's /server-rules prefix): /health/ready, /status, rulesets/current, the evaluations, /admin/*, /logs and /metrics. The REST port still serves every route, exactly as the broker's requests are served (dispatched to it over loopback). A direct request is a service call: no X-Player-Id. The contract routes check no token; GET /logs and, from 4.0.1 (#150), /admin/* and /dev/* check X-Service-Token themselves, so every direct request to them sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong; the admin folder has both cases). /admin/* also refuses a request carrying X-Player-Id (403 SERVICE_TOKEN_REQUIRED), even with the right token. Through the broker /admin/* and /dev/* are refused, since the broker never passes the token on. The pre-request script never touches a direct request.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
     { "key": "base_url", "value": "http://localhost:8080/api/v1/server-rules", "description": "The Gateway with the service prefix; the Gateway forwards {{base_url}}/<rest> to the service as /api/v1/<rest> (health as /health). Used only for GET /health and GET rulesets/{version}, the Lab 4 Gateway's routes of this service" },
-    { "key": "service_token", "value": "change_me_too", "description": "The stack's SERVICE_TOKEN; only GET /logs (direct) sends it, the instance checks no other credential" },
+    { "key": "service_token", "value": "change_me_too", "description": "The stack's SERVICE_TOKEN; sent as X-Service-Token on the direct GET /logs and, from 4.0.1, /admin/* and /dev/* requests, the routes the instance checks it on. The contract routes check no token" },
     { "key": "jwt_secret", "value": "change_me_to_a_random_string_of_32_chars_or_more", "description": "JWT_SECRET of the Gateway in the stack's .env; the pre-request script signs the player token with it" },
     { "key": "server_rules_direct_url", "value": "http://localhost:8083", "description": "The instance itself, not the Gateway: its port is not published in the team stack, so run the service's own compose (host port 8083, APP_HOST_PORT) or the image with -p 8083:8080" }
   ],
@@ -291,12 +291,13 @@
     },
     {
       "name": "admin (beyond contract, service calls only - called directly)",
-      "description": "Not a Gateway route since Lab 4 (the Gateway answers 404 to /admin/*): every request goes to the instance directly. A service call is a request without X-Player-Id; the instance checks no token here and refuses a request that carries X-Player-Id (403 SERVICE_TOKEN_REQUIRED).",
+      "description": "Not a Gateway route since Lab 4 (the Gateway answers 404 to /admin/*), and refused through the broker, which never passes the token on: every request goes to the instance directly. From 4.0.1 (#150) the instance checks X-Service-Token here: every request sends {{service_token}}; without it 403 SERVICE_TOKEN_REQUIRED, with a wrong one 401 INVALID_SERVICE_TOKEN. A service call is a request without X-Player-Id: one that carries it is refused first (403 SERVICE_TOKEN_REQUIRED), even with the right token.",
       "item": [
         {
           "name": "list rulesets",
           "request": {
             "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
             "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets?limit=10"
           }
         },
@@ -304,6 +305,7 @@
           "name": "get ruleset detail (with jsonb conditions)",
           "request": {
             "method": "GET",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
             "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets/3"
           }
         },
@@ -318,7 +320,7 @@
           "request": {
             "method": "POST",
             "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"difficulty\": 3,\n  \"clone_from_version\": 3,\n  \"notes\": \"Postman clone test\",\n  \"rules\": []\n}" }
           }
         },
@@ -327,7 +329,7 @@
           "request": {
             "method": "PATCH",
             "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets/{{cloned_version}}",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{ \"notes\": \"renamed via Postman\" }" }
           }
         },
@@ -336,17 +338,37 @@
           "request": {
             "method": "POST",
             "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets",
-            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{\n  \"difficulty\": 2,\n  \"rules\": [{ \"rule_id\": \"noop\", \"kind\": \"channel\", \"description\": \"does nothing\", \"when\": {\"op\":\"always\"}, \"grant\": [], \"deny\": [] }]\n}" }
           }
         },
         {
-          "name": "admin route called with X-Player-Id (403 SERVICE_TOKEN_REQUIRED)",
-          "request": { "method": "GET", "header": [{ "key": "X-Player-Id", "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10" }], "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets" },
+          "name": "admin route called with X-Player-Id and the right token (403 SERVICE_TOKEN_REQUIRED)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "X-Player-Id", "value": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10" }], "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets" },
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
             "pm.test('403 SERVICE_TOKEN_REQUIRED', function () {",
             "  pm.response.to.have.status(403);",
             "  pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "admin route without a service token (403 SERVICE_TOKEN_REQUIRED)",
+          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('403 SERVICE_TOKEN_REQUIRED', function () {",
+            "  pm.response.to.have.status(403);",
+            "  pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED');",
+            "});"
+          ] } }]
+        },
+        {
+          "name": "admin route with a wrong service token (401 INVALID_SERVICE_TOKEN)",
+          "request": { "method": "GET", "header": [{ "key": "X-Service-Token", "value": "wrong-token" }], "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('401 INVALID_SERVICE_TOKEN', function () {",
+            "  pm.response.to.have.status(401);",
+            "  pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN');",
             "});"
           ] } }]
         }

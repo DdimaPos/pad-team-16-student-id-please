@@ -130,7 +130,7 @@ services:
       - student-id-net
 
   server-rules-service:
-    image: d1vinexd/server-rules-service:4.0.0
+    image: d1vinexd/server-rules-service:4.0.1
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
@@ -147,7 +147,8 @@ services:
       Dev__EnableTestEndpoints: ${RULES_ENABLE_DEV_ENDPOINTS:-true}
       # Task timeout and concurrent task limit (README "Task timeout and concurrent task limit"). Dev__EnableTestEndpoints
       # mounts GET /api/v1/dev/slow?ms=, which demonstrates both. The broker checks the service token of every call;
-      # the service itself checks X-Service-Token only on GET /logs.
+      # the service itself checks X-Service-Token on GET /logs and, from 4.0.1, on /admin/* and /dev/* (called directly
+      # only: through the broker, which never passes the token on, they are refused).
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
       # Lab 3: each copy registers with Service Discovery directly (not through the Gateway) and
@@ -182,7 +183,7 @@ services:
       - student-id-net
 
   university-record-service:
-    image: d1vinexd/university-record-service:4.0.0
+    image: d1vinexd/university-record-service:4.0.1
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
@@ -197,8 +198,8 @@ services:
     environment:
       ConnectionStrings__UniversityRecordDb: "Host=university-record-postgres;Port=5432;Database=${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db};Username=${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user};Password=${UNIVERSITY_RECORD_POSTGRES_PASSWORD:?set UNIVERSITY_RECORD_POSTGRES_PASSWORD}"
       REFERENCE_YEAR: *reference_year
-      # The gRPC metadata x-service-token of every broker call and X-Service-Token to Service Discovery; the only
-      # incoming request that checks it is GET /logs.
+      # The gRPC metadata x-service-token of every broker call and X-Service-Token to Service Discovery; incoming, it is
+      # checked on GET /logs and, from 4.0.1, on /admin/* and /dev/* (called directly only, never through the broker).
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers applicant.initialized,
       # session.started and session.ended (topics events.<event_type>) and the requests of requests.university-record;

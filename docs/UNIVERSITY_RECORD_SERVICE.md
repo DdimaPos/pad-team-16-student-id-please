@@ -1,8 +1,9 @@
 # University Record Service - Integration Reference
 
 > **Audience:** developers and agents building the other services of *"Student ID, please"*
-> (Team 16, FAF.PAD21.1), or the gateway. Describes `4.0.0`: events and requests go through the
-> Message Broker (Lab 4), as the CPR contract describes since #105. Where the implementation diverges
+> (Team 16, FAF.PAD21.1), or the gateway. Describes `4.0.1`: events and requests go through the
+> Message Broker (Lab 4), as the CPR contract describes since #105; `4.0.1` (#151) adds the `X-Service-Token`
+> check of `/admin/*` and `/dev/*` to the `4.0.0` of Lab 4. Where the implementation diverges
 > from the CPR contract, the divergence is called out explicitly in [§8](#8-divergences-from-the-cpr-contract).
 
 ---
@@ -71,8 +72,8 @@ otherwise - an honest course must exist before anyone claims it.
 | **Circuit breaker** | One, on the broker (`target: message-broker`), in the outbox relay (§12) |
 | **Logs** | JSON lines on stdout, and the same lines in the rotating `LOG_FILE`, read back by `GET /logs` (`4.0.0`) |
 | **Metrics** | `GET /metrics`, Prometheus text format, no credential (`4.0.0`) |
-| **Authentication** | Checked by the Gateway (a player's JWT) and the broker (the service token, as gRPC metadata), not here. The service validates no token on its API: a player's request arrives with `X-Player-Id`, a service's without it, and the route tells which is expected (§10). `GET /logs` alone checks `X-Service-Token` itself |
-| **Docker image** | `d1vinexd/university-record-service:4.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64` |
+| **Authentication** | On the contract routes, checked by the Gateway (a player's JWT) and the broker (the service token, as gRPC metadata), not here: a player's request arrives with `X-Player-Id`, a service's without it, and the route tells which is expected (§10). The routes called directly, never through the broker or the Gateway, check `X-Service-Token` themselves (CPR README "Authentication" > "Through the Message Broker", rule 4): `GET /logs` (`4.0.0`) and, from `4.0.1` (#151), `/admin/*` and `/dev/*`: `403 SERVICE_TOKEN_REQUIRED` without it, `401 INVALID_SERVICE_TOKEN` when wrong, compared in constant time; an instance without a `SERVICE_TOKEN` accepts none. `/admin/*` and `/dev/*` refuse a request with `X-Player-Id` first (`403`), even with the right token |
+| **Docker image** | `d1vinexd/university-record-service:4.0.1` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64`. `4.0.1` (#151) changes only the token check of `/admin/*` and `/dev/*`; events, the broker, the contract routes, `/logs` and `/metrics` are those of `4.0.0` |
 | **Architecture** | Clean Architecture, five projects: `Domain` (pure - identity helpers, record generation, search semantics, the access-decision table), `Repositories` (interfaces + event DTOs), `Services` (use cases + event handlers), `Infrastructure` (EF Core, the gRPC broker client and outbox relay; `Protos/broker.proto`), `Api` (endpoints, the broker subscription and request dispatch, logs and metrics) |
 
 ---
@@ -90,7 +91,7 @@ docker run -d --name university-record-service --network student-id-net \
   -e SERVICE_TOKEN="<shared-secret>" \
   -e MESSAGE_BROKER_URL=message-broker-service:8071 \
   -e Dev__EnableTestEndpoints=true \
-  d1vinexd/university-record-service:4.0.0
+  d1vinexd/university-record-service:4.0.1
 ```
 
 Or use the team compose in the CPR root. Events arrive from the Message Broker (§6, §12). Without a
@@ -118,11 +119,11 @@ is a one-glance diff.
 | --- | --- | --- | --- |
 | `ConnectionStrings__UniversityRecordDb` | - | **yes** | Npgsql connection string |
 | `REFERENCE_YEAR` | `2026` | no | Must be identical across Applicant, Credential, University Record and Moderation, or perfectly honest applicants read as liars |
-| `SERVICE_TOKEN` | - | **yes** in the stack | The stack's one secret: the gRPC metadata `x-service-token` of every broker call, `X-Service-Token` to Service Discovery, and the token `GET /logs` checks. Never sent as a header of a request through the broker. `Auth__ServiceToken` is read as a fallback |
+| `SERVICE_TOKEN` | - | **yes** in the stack | The stack's one secret: the gRPC metadata `x-service-token` of every broker call, `X-Service-Token` to Service Discovery, and the token `GET /logs` (`4.0.0`), `/admin/*` and `/dev/*` (`4.0.1`) check; without it they accept no token. Never sent as a header of a request through the broker. `Auth__ServiceToken` is read as a fallback |
 | `MESSAGE_BROKER_URL` | empty | **yes** in the stack | The broker's gRPC target without a scheme (team stack: `message-broker-service:8071`). Empty = `broker.disabled` at startup: nothing arrives through the broker and the own events wait in the outbox (`4.0.0`) |
 | `HTTP_REQUEST_TIMEOUT` | `5` | no | Task timeout in seconds (`5` or `5s`): a longer request is cancelled, its transaction rolled back, and answered `408 REQUEST_TIMEOUT`. `/health*`, `/status`, `/logs` and `/metrics` are exempt |
 | `MAX_CONCURRENT_TASKS` | `100` | no | Concurrent task limit: one more request, the broker's included, is refused at once with `429 TOO_MANY_REQUESTS` and `Retry-After: 1`. Also the `max_concurrent_tasks` of the broker subscription. `/health*`, `/status`, `/logs` and `/metrics` are exempt. The team compose sets `64` |
-| `Dev__EnableTestEndpoints` | `false` | no | Mounts `GET /api/v1/dev/slow?ms=` (service-only, sleeps `ms` milliseconds, at most a minute) to demonstrate the two limits above. **Enable for the team demo**, leave `false` in any shared/production deployment |
+| `Dev__EnableTestEndpoints` | `false` | no | Mounts `GET /api/v1/dev/slow?ms=` (service-only, direct calls with `X-Service-Token` from `4.0.1`, sleeps `ms` milliseconds, at most a minute) to demonstrate the two limits above. **Enable for the team demo**, leave `false` in any shared/production deployment |
 | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn` or `error`. One JSON object per line on stdout |
 | `LOG_FILE` | `/var/log/university-record/university-record.jsonl` | no | The same log lines in a file, read back by `GET /logs`; the image creates the directory for its non-root user. Empty = stdout only, `GET /logs` answers `503 LOGS_UNAVAILABLE` (`4.0.0`) |
 | `LOG_FILE_MAX_MB` / `LOG_FILE_KEEP` | `50` / `5` | no | The file rotates at this size; this many rotated files are kept next to the current one (`4.0.0`) |
@@ -176,7 +177,7 @@ non-member, and the wrong category - the contract folds all of these into one co
 
 ### 5.2 Extension endpoints (beyond contract)
 
-All under `/api/v1/admin/*` and `/api/v1/dev/*`, for services only: through the broker, or directly on the REST port inside `student-id-net`. The Gateway's `4.0.0` answers `404` on them, and the service refuses a request that carries `X-Player-Id`. `/admin/courses` is
+All under `/api/v1/admin/*` and `/api/v1/dev/*`, for services only, called directly on the REST port inside `student-id-net` with `X-Service-Token` (from `4.0.1`, #151): `403 SERVICE_TOKEN_REQUIRED` without it, `401 INVALID_SERVICE_TOKEN` when wrong. Through the broker they cannot be reached, since no request there carries the token, and the Gateway's `4.0.0` answers `404` on them. A request that carries `X-Player-Id` is refused (`403 SERVICE_TOKEN_REQUIRED`), even with the right token. `/admin/courses` is
 full CRUD over the seeded catalog; `/admin/applicants` **reveals `actual`** (the answer key -
 service calls only, never route to a player); `/admin/sessions/{id}/scopes` doubles as a
 manual mock of Server Moderation Session Service. `/dev/slow` is covered in §11.
@@ -185,14 +186,16 @@ manual mock of Server Moderation Session Service. `/dev/slow` is covered in §11
 
 `VALIDATION_ERROR` (400), `UNKNOWN_CATEGORY` / `INVALID_RULESET`-equivalents (422),
 `APPLICANT_NOT_FOUND` / `NOT_FOUND` (404), `SESSION_ENDED` / `CATEGORY_NOT_ASSIGNED` /
-`SERVICE_TOKEN_REQUIRED` (403, a service-only route called with `X-Player-Id`), `COURSE_HAS_REGISTRATIONS`
+`SERVICE_TOKEN_REQUIRED` (403, a service-only route called with `X-Player-Id`, or from `4.0.1` `/admin/*` and
+`/dev/*` without `X-Service-Token`), `INVALID_SERVICE_TOKEN` (401, `/admin/*` and `/dev/*` with a wrong
+`X-Service-Token`, `4.0.1`), `COURSE_HAS_REGISTRATIONS`
 (409), `UNAUTHENTICATED` (401, no valid `X-Player-Id` on a player route), `REQUEST_TIMEOUT` (408),
 `TOO_MANY_REQUESTS` (429, with `Retry-After`), `INTERNAL_ERROR` (500). Before the service is called, the
 Gateway's `4.0.0` (#110) answers `401 UNAUTHENTICATED` for a missing or invalid player JWT on the player route
 `GET /records/{category}`, and `404 NOT_FOUND` on every other path of this prefix but the public `GET /health`,
 before any credential is checked; its only `403` (`SERVICE_TOKEN_REQUIRED`) is on its own `GET /logs`.
 
-`GET /logs` only (`4.0.0`): `SERVICE_TOKEN_REQUIRED` (403, no `X-Service-Token`), `INVALID_SERVICE_TOKEN`
+`GET /logs` (`4.0.0`): `SERVICE_TOKEN_REQUIRED` (403, no `X-Service-Token`), `INVALID_SERVICE_TOKEN`
 (401, a wrong one), `VALIDATION_ERROR` (400, a malformed window), `LOGS_UNAVAILABLE` (503, no log file).
 `INVALID_EVENT` (422) is gone with `POST /api/v1/events` in `4.0.0`; its cases are now the `PERMANENT`
 ack of §6.
@@ -309,7 +312,9 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 - `/applicants/{id}/records` and every `/admin/*` route are **player-lethal or
   service-only** - `actual`, cross-category access, and admin CRUD must never reach a client.
   Service calls only, and the request must arrive **without** `X-Player-Id`: that absence is how
-  this service tells Moderation's full-access call from a junior's scoped one.
+  this service tells Moderation's full-access call from a junior's scoped one. From `4.0.1` (#151)
+  `/admin/*` and `/dev/*` also need `X-Service-Token`, checked by the service: they are called directly,
+  never through the Gateway or the broker.
 - `GET /records/{category}` is the only genuinely player-facing endpoint: player JWT at the
   Gateway, scope checked here against `X-Player-Id`.
 - `/dev/*` and `POST /applicants/next`: service calls only. `POST /applicants/next` is **not
@@ -322,7 +327,8 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
   path answers `404 NOT_FOUND` before any credential is checked and nothing reaches the broker:
   `GET /applicants/{id}/records` and `POST /applicants/next` (Moderation, or any other service, sends them
   through the broker as service calls), `/admin/*`, `/dev/*`, `/health/ready`, `/status`, `POST /events`,
-  `/logs` and `/metrics`; `/admin/*`, `/dev/*` and the probes are called on the instance itself. The service still tells a player's request from a
+  `/logs` and `/metrics`; `/admin/*`, `/dev/*` and the probes are called on the instance itself (`/admin/*`, `/dev/*`
+  and `/logs` with `X-Service-Token`). On the routes reached through the broker the service still tells a player's request from a
   service's only by the route and by the absence of `X-Player-Id`; it drops an `X-Service-Token` or
   `Authorization` header if one arrives from the broker.
 
@@ -334,8 +340,10 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 > publish: run the image alone with `-p 8084:8080`, or forward one instance of the team stack (below). On the
 > team stack, through the Gateway, replace `localhost:8084/api/v1/` with `localhost:8080/api/v1/university-record/`
 > and send a JWT from `POST /api/v1/player/auth/login` as `Authorization: Bearer` - for `GET /records/{category}`
-> only: the Gateway's `4.0.0` answers `404` on every other route of this service. The service itself reads no token: on the direct port, send
-> `X-Player-Id: <uuid>` to play a player and no `X-Player-Id` for a service call.
+> only: the Gateway's `4.0.0` answers `404` on every other route of this service. The contract routes read no token: on the direct port, send
+> `X-Player-Id: <uuid>` to play a player and no `X-Player-Id` for a service call. `/admin/*` and `/dev/*` (from `4.0.1`)
+> and `GET /logs` also need `X-Service-Token: <SERVICE_TOKEN>` (`403 SERVICE_TOKEN_REQUIRED` without it,
+> `401 INVALID_SERVICE_TOKEN` when wrong).
 >
 > To call an instance of the team stack directly, so that direct calls and the Gateway's share one database, forward
 > it to this machine only, for the demo:
@@ -347,8 +355,8 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 Peers that may be missing are replaced by real code paths, not by throwaway ones:
 
 1. **`POST /api/v1/applicants/next`** is a contract-mandated endpoint, not scaffolding - it lets this service generate a whole applicant (with lies driven by `difficulty`) and exercises the exact same `ApplicantRecordFactory` the event consumer uses.
-2. **`/api/v1/admin/sessions/{id}/scopes`** doubles as a manual mock of Server Moderation Session Service, in place of `session.started`.
-3. **`GET /api/v1/dev/slow?ms=`** (only when `Dev__EnableTestEndpoints=true`) sleeps, to show `408` (with a lower `HTTP_REQUEST_TIMEOUT`) and `429` (with a lower `MAX_CONCURRENT_TASKS`).
+2. **`/api/v1/admin/sessions/{id}/scopes`** doubles as a manual mock of Server Moderation Session Service, in place of `session.started` (with `X-Service-Token` from `4.0.1`).
+3. **`GET /api/v1/dev/slow?ms=`** (only when `Dev__EnableTestEndpoints=true`, with `X-Service-Token` from `4.0.1`) sleeps, to show `408` (with a lower `HTTP_REQUEST_TIMEOUT`) and `429` (with a lower `MAX_CONCURRENT_TASKS`).
 
 `POST /api/v1/events`, which took the three events directly, is removed in `4.0.0`: an event now has to
 be published to the broker with the full envelope (`event_id`, `event_type`, `occurred_at`, `producer`,
@@ -395,8 +403,9 @@ every step; the three events it used to push to `POST /events` (both `applicant.
 with the session-service mock. Only `GET /health` and `GET /records/{category}` go through the Gateway
 (`{{base_url}}`, the player's JWT signed by the collection); every other request goes to one instance
 directly (`{{university_record_direct_url}}`, the path without the Gateway's `/university-record` prefix,
-no `X-Service-Token` but on `GET /logs`), since the Gateway's `4.0.0` serves no other route of this
-service. Forward an instance of the team stack as above, so that both reach the same database.
+`X-Service-Token: {{service_token}}` on `/admin/*`, `/dev/*` and `GET /logs`, none on the contract routes), since
+the Gateway's `4.0.0` serves no other route of this service. The service-only refusals also send no token and a
+wrong one to an admin route (`403`, `401`). Forward an instance of the team stack as above, so that both reach the same database.
 
 ---
 
@@ -440,7 +449,8 @@ headers, the body, the request's `correlation_id` and this instance's id - a `4x
   the method a standard one; otherwise the instance itself replies `400 VALIDATION_ERROR`. The in-process call may
   take the caller's `timeout_ms` (at most 60 s), else the task timeout plus 1 s; past that the instance replies
   `408 REQUEST_TIMEOUT`, and a loopback failure `500 INTERNAL_ERROR`, in the shared error envelope.
-- `GET /logs` cannot be reached this way: no request through the broker carries the token.
+- `GET /logs`, and from `4.0.1` `/admin/*` and `/dev/*`, cannot be reached this way: no request through the broker
+  carries the token they check (`403 SERVICE_TOKEN_REQUIRED`).
 
 ### Publishing: the outbox through the broker
 

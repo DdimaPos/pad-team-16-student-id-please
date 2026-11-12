@@ -367,7 +367,7 @@ services:
       - student-id-net
 
   player-service:
-    image: dimapos/player-service:3.0.0
+    image: dimapos/player-service:4.0.0
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
@@ -376,6 +376,8 @@ services:
       service-discovery-service:
         condition: service_healthy
       player-postgres:
+        condition: service_healthy
+      message-broker-service:
         condition: service_healthy
     environment:
       APP_ENV: docker
@@ -399,6 +401,12 @@ services:
       # SERVICE_TOKEN is required with it.
       SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers session.ended
+      # (topic events.session.ended) and the requests of requests.player. POST /api/v1/events is
+      # gone.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
+      # GET /logs reads this file. It stays inside each container: copies must never share one.
+      LOG_FILE: /var/log/player/player.jsonl
     networks:
       - student-id-net
 

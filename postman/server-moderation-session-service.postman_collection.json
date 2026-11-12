@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Server Moderation Session Service",
-    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded comes from the broker -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`. Service-only routes (/dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env.\n\nDIRECT CALLS. GET /status, GET /logs and GET /metrics are not Gateway routes: they go to one instance directly through {{session_direct_url}}. GET /logs needs {{service_token}}.\n\nLAB 4 (4.0.0). decision.recorded arrives from the Message Broker (topic events.decision.recorded), not on POST /events, which is removed; the service's calls to Player, Server Rules and Applicant go through the broker too, so the flow needs those services on the broker (or the session run without MESSAGE_BROKER_URL, on its stubs). Postman cannot send the broker's gRPC calls: publish decision.recorded with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711).\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
+    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded comes from the broker -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway, except the DIRECT CALLS below. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`.\n\nDIRECT CALLS. The Lab 4 Gateway serves only the client routes (README \"Gateway\") and answers 404 on every other path. These go to one instance directly through {{session_direct_url}}, with the instance's own paths: GET /health/ready, GET /status, GET /logs, GET /metrics, GET /api/v1/sessions/{id}/deliveries, PUT /api/v1/sessions/{id} (the 405, with X-Player-Id) and GET /api/v1/dev/slow. GET /logs and /deliveries send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. POST /session/events stays on the Gateway to show that no client can push an event.\n\nLAB 4 (4.0.0). decision.recorded arrives from the Message Broker (topic events.decision.recorded), not on POST /events, which is removed; the service's calls to Player, Server Rules and Applicant go through the broker too, so the flow needs those services on the broker: Server Rules and Applicant run 4.0.0 in the CPR compose, Player from its 4.0.0 delivery (#114); or run the session without MESSAGE_BROKER_URL, on its stubs. Postman cannot send the broker's gRPC calls: publish decision.recorded with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711).\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -13,12 +13,12 @@
     {
       "key": "session_direct_url",
       "value": "http://localhost:8088",
-      "description": "The instance itself, not the Gateway: its port is not published in the team stack, so run the service's own compose and use `docker compose port --index 1 session-service 8080`."
+      "description": "One instance itself, not the Gateway, for the routes the Lab 4 Gateway does not serve. Its port is not published in the team stack: run the collection inside student-id-net with http://session-service:8080, or run the service's own compose and use `docker compose port --index 1 session-service 8080`."
     },
     {
       "key": "service_token",
       "value": "change_me_too",
-      "description": "SERVICE_TOKEN from the CPR .env, for the service-only routes (/events, /dev/*, /health/ready)."
+      "description": "SERVICE_TOKEN from the CPR .env, for GET /logs and GET /sessions/{id}/deliveries, both called directly. The Lab 4 Gateway accepts no service token."
     },
     {
       "key": "moderator_id",
@@ -163,27 +163,21 @@
           ]
         },
         {
-          "name": "GET /health/ready -> 200",
+          "name": "GET /health/ready -> 200 (called directly, not a Gateway route)",
           "request": {
             "method": "GET",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
+            "header": [],
             "url": {
-              "raw": "{{base_url}}/session/health/ready",
+              "raw": "{{session_direct_url}}/health/ready",
               "host": [
-                "{{base_url}}"
+                "{{session_direct_url}}"
               ],
               "path": [
-                "session",
                 "health",
                 "ready"
               ]
             },
-            "description": "Readiness. Reports Postgres plus each of the three services this one calls, saying which are real ('configured') and which are answered in-process ('stub')."
+            "description": "Readiness. Reports Postgres plus each of the three services this one calls, saying which are real ('configured') and which are answered in-process ('stub'). Not a client route: the Lab 4 Gateway answers 404 on /health/ready, so it goes to one instance directly."
           },
           "response": [],
           "event": [
@@ -1230,10 +1224,10 @@
     },
     {
       "name": "events - decision.recorded comes from the broker (Lab 4)",
-      "description": "From 4.0.0 decision.recorded is delivered by the Message Broker (topic events.decision.recorded) and settled with Ack; POST /events is removed. Postman cannot send gRPC: publish it with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711 'prove a decision is applied only once'), then read its effect with GET /sessions/{id} and GET /sessions/{id}/decisions.",
+      "description": "From 4.0.0 decision.recorded is delivered by the Message Broker (topic events.decision.recorded) and settled with Ack; POST /events is removed from the instance, and the Lab 4 Gateway does not serve POST /events at all. Postman cannot send gRPC: publish it with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711 'prove a decision is applied only once'), then read its effect with GET /sessions/{id} and GET /sessions/{id}/decisions.",
       "item": [
         {
-          "name": "POST /events is gone -> 404 NOT_FOUND",
+          "name": "POST /session/events through the Gateway -> 404 NOT_FOUND (not a client route; events arrive from the broker)",
           "event": [
             {
               "listen": "test",
@@ -1253,10 +1247,6 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
               }
             ],
             "body": {
@@ -1267,7 +1257,8 @@
                   "language": "json"
                 }
               }
-            }
+            },
+            "description": "Shows that no client can push an event: the Lab 4 Gateway answers 404 on POST /events itself, before any credential check, and sends nothing to the broker. The instance no longer has the route either (4.0.0); decision.recorded arrives on its subscription to events.decision.recorded."
           }
         }
       ]
@@ -1431,27 +1422,29 @@
           ]
         },
         {
-          "name": "3a. GET /sessions/{id}/deliveries -> 200 (one per event, to the broker)",
+          "name": "3a. GET /sessions/{id}/deliveries -> 200 (one per event, to the broker; called directly)",
           "request": {
             "method": "GET",
             "header": [
               {
-                "key": "Authorization",
-                "value": "Bearer {{jwt_moderator}}"
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/session/sessions/{{session_id}}/deliveries",
+              "raw": "{{session_direct_url}}/api/v1/sessions/{{session_id}}/deliveries",
               "host": [
-                "{{base_url}}"
+                "{{session_direct_url}}"
               ],
               "path": [
-                "session",
+                "api",
+                "v1",
                 "sessions",
                 "{{session_id}}",
                 "deliveries"
               ]
-            }
+            },
+            "description": "Not a client route: the Lab 4 Gateway answers 404 on Session's /deliveries, so it goes to one instance directly."
           },
           "event": [
             {
@@ -1999,27 +1992,28 @@
           ]
         },
         {
-          "name": "PUT /sessions/{id} -> 405 METHOD_NOT_ALLOWED",
+          "name": "PUT /sessions/{id} -> 405 METHOD_NOT_ALLOWED (called directly)",
           "request": {
             "method": "PUT",
             "header": [
               {
-                "key": "Authorization",
-                "value": "Bearer {{jwt_moderator}}"
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
               }
             ],
             "url": {
-              "raw": "{{base_url}}/session/sessions/{{session_id}}",
+              "raw": "{{session_direct_url}}/api/v1/sessions/{{session_id}}",
               "host": [
-                "{{base_url}}"
+                "{{session_direct_url}}"
               ],
               "path": [
-                "session",
+                "api",
+                "v1",
                 "sessions",
                 "{{session_id}}"
               ]
             },
-            "description": ""
+            "description": "The instance's own 405. Through the Gateway a known path with a method it does not take answers 404 (README \"Gateway\"), so it goes to one instance directly, with X-Player-Id as the Gateway would set it."
           },
           "response": [],
           "event": [
@@ -2264,25 +2258,21 @@
       ]
     },
     {
-      "name": "dev - task timeout (beyond contract, service token)",
+      "name": "dev - task timeout (beyond contract, called directly)",
       "item": [
         {
           "name": "GET /dev/slow?ms=100 -> 200",
           "request": {
             "method": "GET",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
+            "header": [],
             "url": {
-              "raw": "{{base_url}}/session/dev/slow?ms=100",
+              "raw": "{{session_direct_url}}/api/v1/dev/slow?ms=100",
               "host": [
-                "{{base_url}}"
+                "{{session_direct_url}}"
               ],
               "path": [
-                "session",
+                "api",
+                "v1",
                 "dev",
                 "slow"
               ],
@@ -2310,19 +2300,15 @@
           "name": "GET /dev/slow?ms=7000 -> 408 REQUEST_TIMEOUT (the service's 5s)",
           "request": {
             "method": "GET",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
+            "header": [],
             "url": {
-              "raw": "{{base_url}}/session/dev/slow?ms=7000",
+              "raw": "{{session_direct_url}}/api/v1/dev/slow?ms=7000",
               "host": [
-                "{{base_url}}"
+                "{{session_direct_url}}"
               ],
               "path": [
-                "session",
+                "api",
+                "v1",
                 "dev",
                 "slow"
               ],
@@ -2347,7 +2333,8 @@
             }
           ]
         }
-      ]
+      ],
+      "description": "GET /api/v1/dev/slow is not a client route: the Lab 4 Gateway answers 404 on /dev/*. Both requests go to one instance directly through {{session_direct_url}}; ENABLE_DEV_ENDPOINTS must be true (the compose default)."
     },
     {
       "name": "cleanup (destructive - run last)",

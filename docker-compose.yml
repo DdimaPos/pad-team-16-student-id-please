@@ -438,6 +438,8 @@ services:
     depends_on:
       service-discovery-service:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
       session-postgres:
         condition: service_healthy
     environment:
@@ -451,9 +453,8 @@ services:
       # Server Rules and Applicant (requests.<service>), the publishes of session.started and
       # session.ended, and the subscription that delivers decision.recorded and the requests of
       # requests.session. It replaces the five *_SERVICE_URL of Lab 3; POST /api/v1/events is gone.
-      # Empty selects the built-in stubs. The broker joins this file with #113; until then the
-      # instance retries the subscription with backoff and the calls answer 500
-      # DEPENDENCY_UNAVAILABLE. GET /health/ready says what is wired.
+      # The same variable and default as the Gateway and every service; empty selects the built-in
+      # stubs. GET /health/ready says what is wired.
       MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       # GET /logs reads this file. It stays inside each container: copies must never share one.

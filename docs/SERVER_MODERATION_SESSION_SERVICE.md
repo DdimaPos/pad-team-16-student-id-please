@@ -167,14 +167,17 @@ once.
 
 Two switches matter in a shared stack. `SEED_ON_START` is harmless - it is a no-op once the table
 has rows. `ENABLE_DEV_ENDPOINTS` mounts an endpoint that only waits, to demonstrate the `408` and the
-`429`; the Gateway forwards `/dev/*` only with the service token.
+`429`; it is not a Gateway route (the Lab 4 Gateway answers `404` on `/dev/*`), so it is called on an
+instance directly.
 
 ---
 
 ## 5. HTTP API
 
-All paths are under `/api/v1`; callers reach them through the Gateway as
-`{gateway}/api/v1/session/...`.
+All paths are under `/api/v1`; clients reach them through the Gateway as
+`{gateway}/api/v1/session/...`, on the client routes of CPR README "Gateway" only. The Lab 4 Gateway
+answers `404` on every other path (`/health/ready`, `/sessions/{id}/deliveries`, `/dev/*`, `/logs`,
+`/metrics`, and a known path with a method it does not take); those are called on an instance directly.
 
 **Contract.** The Gateway validates the player's `Authorization: Bearer <jwt>`, removes it, and
 forwards the player id as `X-Player-Id`. Requests that act for "the calling player" read that header
@@ -312,10 +315,8 @@ The eleven the contract lists for this service, plus the contract's shared codes
 
 From `4.0.0` events travel through the Message Broker: produced events are published from the outbox
 to their topic, `events.<event_type>`, and the broker fans each out to every subscribed service;
-`decision.recorded` arrives on this instance's subscription to `events.decision.recorded`. The
-README's "Event delivery" section still describes the Lab 3 push through the Gateway until the Lab 4
-contract (#105) merges - see [§8](#8-divergences-from-the-cpr-contract). `POST /api/v1/events` is
-removed.
+`decision.recorded` arrives on this instance's subscription to `events.decision.recorded`, as CPR
+README "Event delivery" describes. `POST /api/v1/events` is removed.
 
 The **outbox**: Every published event is written to the `outbox_events` table
 **inside the same database transaction as the state change that produced it**, together with one
@@ -500,17 +501,26 @@ service issues; the contract defines no enum and shows no other value.
 6. **`username` and `level` in the session object are a snapshot**, taken when the player joined and
    never refreshed. See [§5.1](#51-contract-endpoints).
 
-7. **Ahead of the README contract (Lab 4).** `4.0.0` follows the Lab 4 brief (#115) while the Lab 4
-   contract (#105) is not merged: the README still describes calls and event pushes through the
-   Gateway and `POST /api/v1/events`. The broker's names (topics `events.<event_type>`, queues
-   `requests.<service>`, the `Ack` outcomes, `x-service-token` as metadata), the `topics` of the
-   Service Discovery registration and the two broker breakers follow the broker's and Service
-   Discovery's code. `internal/brokerpb/broker.proto` is a copy of the broker repository's, itself a
-   copy of the CPR's `shared/broker.proto` that #105 adds.
-   *Who this affects:* Moderation `3.0.0`, whose push of `decision.recorded` now gets `404` (until
-   #120); the services still on `3.0.0` that Session calls (Server Rules #118, Applicant #116), whose
-   requests the broker answers `503`, so `start` and `next applicant` answer
-   `500 DEPENDENCY_UNAVAILABLE` until they move to the broker.
+7. **Log event names (Lab 4).** CPR README "Logging" names the relay's outcome of a `Publish`
+   `event.pushed` / `event.parked`, a request delivered by the broker `request.received` /
+   `request.replied`, and puts the `Ack` outcome sent on `event.received`. `4.0.0` logs
+   `event.published` (`warn` when it will be retried) and `event.parked`; one `broker.request` line per
+   delivered request once it is answered (`broker.reply_failed`, `warn`, when the `Reply` could not be
+   sent), with no line on arrival; and the `Ack` outcome as the line's name rather than a field:
+   `event.received` (`OK`, `duplicate` true or false), `event.dropped` (`OK`, the session has ended),
+   `event.retry` (`RETRY`), `event.rejected` (`PERMANENT`). It also logs `broker.stream_ended` and
+   `broker.ack_failed`, and its `breaker.*` lines add `via`. See [§12](#logging).
+
+8. **The relay's metrics (Lab 4).** CPR README "Metrics" asks a service with an outbox for
+   `outbox_pending` and `outbox_parked`; `4.0.0` exposes one gauge, `relay_deliveries{status}`
+   (`pending`, `parked`), counted in the outbox at scrape time, and no `breaker_state`. See
+   [§13](#get-metrics).
+
+9. **Two circuit breakers on the broker (Lab 4).** CPR README "Circuit breaker" gives a service one
+   breaker on the broker, for its requests and its relay's publishes. `4.0.0` keeps two, both on the
+   broker: `call` (the requests to Player, Server Rules and Applicant) and `relay` (the publishes),
+   each with the README's 17.5 s window and cooldown; the `relay` breaker also counts a publish the
+   broker refused for a reason a retry may fix. See [§12](#circuit-breakers).
 
 ---
 
@@ -552,18 +562,19 @@ service issues; the contract defines no enum and shows no other value.
 
 What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, prefix `session`:
 
-- Forwards to container port `8080`. Health pair at `/health` and `/health/ready`, reached as
-  `{gateway}/api/v1/session/health`.
+- **Lab 4 (#110):** sends every client request to the broker's `requests.session`, never to an
+  instance. Of the health pair only `/health` is a client route (`{gateway}/api/v1/session/health`,
+  public); `/health/ready` answers `404` there and is called on an instance directly.
 - `/health` never consults a dependency, so a database blip does not cause a restart loop.
   `/health/ready` returns `503` and a `degraded` status when one is down, naming which.
 - **Identity:** validate the player's JWT, remove `Authorization`, **strip any client-sent
   `X-Player-Id`** and set it from the token's `sub`. This service trusts `X-Player-Id` blindly, so a
   Gateway that forwarded a client's own value would let anyone act as anyone.
-- `GET /sessions/{id}` accepts a player or the service token (Moderation calls it); `/dev/*` only
-  the service token. `POST /events` is removed in `4.0.0`; `GET /logs` and `GET /metrics` are not
-  Gateway routes.
-- **Lab 4 (#110):** the Gateway hands client requests to the broker's `requests.session`; Moderation's
-  `GET /sessions/{id}` reaches this service through the broker, not the Gateway.
+- `GET /sessions/{id}` is a player route on the Gateway, which accepts no service token from Lab 4;
+  Moderation's `GET /sessions/{id}` reaches this service through the broker, not the Gateway.
+- Not Gateway routes (`404` before any credential check): `/health/ready`,
+  `GET /sessions/{id}/deliveries`, `/dev/*`, `GET /logs`, `GET /metrics`, and `POST /events`, which
+  the instance no longer has either (`4.0.0`).
 - `X-Request-Id` is honoured inbound and echoed outbound, so one player action can be followed
   through the logs of every service that handled it.
 - Every response, including 404s, 405s and panics, uses the shared error envelope.
@@ -579,8 +590,8 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 > seeded active session already holds the three players they use. Through the Gateway, replace
 > `localhost:8088/api/v1/` with `localhost:8080/api/v1/session/`, send `Authorization: Bearer` with
 > a JWT from `POST /api/v1/player/auth/login` instead of `X-Player-Id` (the Gateway discards a
-> client-sent one), and send `X-Service-Token` on service-only and `/dev/*` routes - as the last
-> recipe does.
+> client-sent one). Only the client routes go through the Gateway: `/dev/*`, `/health/ready` and
+> `/deliveries` stay on the instance, as the last recipe calls `/deliveries`.
 
 Every cross-service dependency has a real client written against the contract **and** an in-process
 stub with the same interface. From `4.0.0` the real clients send their requests through the broker,
@@ -656,12 +667,16 @@ curl -sS <player instance>:8080/api/v1/players/$M | jq .
 ### Postman
 
 [`postman/server-moderation-session-service.postman_collection.json`](../postman/server-moderation-session-service.postman_collection.json).
-`GET /status`, `GET /logs` and `GET /metrics` are sent to the instance directly, through
-`session_direct_url`, because the Gateway does not route them. Postman cannot send the broker's gRPC
-calls, so `decision.recorded` is published with `smoke.py` (above).
+The routes the Lab 4 Gateway does not serve are sent to one instance directly, through
+`session_direct_url` (inside `student-id-net`: `http://session-service:8080`), with the instance's own
+paths: `GET /health/ready`, `GET /status`, `GET /logs`, `GET /metrics`,
+`GET /api/v1/sessions/{id}/deliveries` (with `X-Service-Token`), `PUT /api/v1/sessions/{id}` (the
+`405`, with `X-Player-Id`) and `GET /api/v1/dev/slow`. `POST /session/events` stays on the Gateway,
+to show its `404`. Postman cannot send the broker's gRPC calls, so `decision.recorded` is published
+with `smoke.py` (above).
 Every request name carries the status code it expects, so the collection can be checked mechanically.
-It goes through the Gateway: `base_url` is `http://localhost:8080/api/v1` (Session routes under
-`/session`, login under `/player`) and `service_token` must equal `SERVICE_TOKEN` in `.env`. The
+Everything else goes through the Gateway: `base_url` is `http://localhost:8080/api/v1` (Session routes
+under `/session`, login under `/player`); `service_token` must equal `SERVICE_TOKEN` in `.env`. The
 `auth` folder registers four fresh players through Player Service and stores their ids and tokens,
 so the run does not depend on the seed (the seeded `dima_mod`, `maxim_jr` and `vlad_jr` are in the
 seeded active session) or on the other collections; the cleanup folder deletes them. Run the folders in order - the flow folder captures the `session_id` into a

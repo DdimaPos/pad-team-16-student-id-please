@@ -189,6 +189,8 @@ services:
     depends_on:
       service-discovery-service:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
       university-record-postgres:
         condition: service_healthy
     environment:
@@ -200,9 +202,8 @@ services:
       # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers applicant.initialized,
       # session.started and session.ended (topics events.<event_type>) and the requests of requests.university-record;
       # its own applicant.initialized is published once to events.applicant.initialized. POST /api/v1/events,
-      # APPLICANT_URL and CREDENTIAL_URL are gone. The broker joins this file with #113; until then the instance retries
-      # the subscription with backoff (broker.subscribe_failed), its events wait in the outbox, and it serves its REST
-      # port as before.
+      # APPLICANT_URL and CREDENTIAL_URL are gone. While the broker is unreachable the instance retries the subscription
+      # with backoff (broker.subscribe_failed), its events wait in the outbox, and it keeps serving /health and /status.
       MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       # GET /logs reads this file. It stays inside each container: copies must never share one.
       LOG_FILE: /var/log/university-record/university-record.jsonl

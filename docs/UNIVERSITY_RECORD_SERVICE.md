@@ -147,9 +147,8 @@ is a one-glance diff.
 | `POST` | `/api/v1/applicants/next` | (no service calls it yet) | A service call through the broker, which checks the token. Not a route of the Gateway's `4.0.0` (§10) |
 
 From `4.0.0` a service's call arrives through the broker (the broker checks the token) instead of the
-Gateway, and still without `X-Player-Id`. The Gateway `3.1.0` the compose still runs keeps taking the two
-service-only routes above with the service token until the compose runs the Gateway's `4.0.0` (#110), which
-answers `404` on them. `POST /api/v1/events` is removed in `4.0.0`: events arrive from the broker only (§6).
+Gateway, and still without `X-Player-Id`. The Gateway's `4.0.0` (#110), which the compose runs since #113, answers
+`404` on the two service-only routes above. `POST /api/v1/events` is removed in `4.0.0`: events arrive from the broker only (§6).
 
 Also outside the versioned base path, called directly on the REST port, never through the Gateway or the broker:
 
@@ -178,7 +177,7 @@ non-member, and the wrong category - the contract folds all of these into one co
 
 ### 5.2 Extension endpoints (beyond contract)
 
-All under `/api/v1/admin/*` and `/api/v1/dev/*`, for services only: through the broker, or directly on the REST port inside `student-id-net`. The Gateway's `4.0.0` answers `404` on them (its `3.1.0`, still in the compose, lets in the service token alone), and the service refuses a request that carries `X-Player-Id`. `/admin/courses` is
+All under `/api/v1/admin/*` and `/api/v1/dev/*`, for services only: through the broker, or directly on the REST port inside `student-id-net`. The Gateway's `4.0.0` answers `404` on them, and the service refuses a request that carries `X-Player-Id`. `/admin/courses` is
 full CRUD over the seeded catalog; `/admin/applicants` **reveals `actual`** (the answer key -
 service calls only, never route to a player); `/admin/sessions/{id}/scopes` doubles as a
 manual mock of Server Moderation Session Service. `/dev/slow` is covered in §11.
@@ -192,8 +191,7 @@ manual mock of Server Moderation Session Service. `/dev/slow` is covered in §11
 `TOO_MANY_REQUESTS` (429, with `Retry-After`), `INTERNAL_ERROR` (500). Before the service is called, the
 Gateway's `4.0.0` (#110) answers `401 UNAUTHENTICATED` for a missing or invalid player JWT on the player route
 `GET /records/{category}`, and `404 NOT_FOUND` on every other path of this prefix but the public `GET /health`,
-before any credential is checked; its only `403` (`SERVICE_TOKEN_REQUIRED`) is on its own `GET /logs`. The
-Gateway `3.1.0` the compose still runs answers `401` / `403` for a missing or wrong credential until then.
+before any credential is checked; its only `403` (`SERVICE_TOKEN_REQUIRED`) is on its own `GET /logs`.
 
 `GET /logs` only (`4.0.0`): `SERVICE_TOKEN_REQUIRED` (403, no `X-Service-Token`), `INVALID_SERVICE_TOKEN`
 (401, a wrong one), `VALIDATION_ERROR` (400, a malformed window), `LOGS_UNAVAILABLE` (503, no log file).
@@ -326,9 +324,7 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
   path answers `404 NOT_FOUND` before any credential is checked and nothing reaches the broker:
   `GET /applicants/{id}/records` and `POST /applicants/next` (Moderation, or any other service, sends them
   through the broker as service calls), `/admin/*`, `/dev/*`, `/health/ready`, `/status`, `POST /events`,
-  `/logs` and `/metrics`; `/admin/*`, `/dev/*` and the probes are called on the instance itself. The Gateway
-  `3.1.0` the compose still runs keeps serving the Lab 3 routes (the service-only ones with the service
-  token) until the compose runs the Gateway's `4.0.0`. The service still tells a player's request from a
+  `/logs` and `/metrics`; `/admin/*`, `/dev/*` and the probes are called on the instance itself. The service still tells a player's request from a
   service's only by the route and by the absence of `X-Player-Id`; it drops an `X-Service-Token` or
   `Authorization` header if one arrives from the broker.
 
@@ -340,8 +336,7 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
 > publish: run the image alone with `-p 8084:8080`, or forward one instance of the team stack (below). On the
 > team stack, through the Gateway, replace `localhost:8084/api/v1/` with `localhost:8080/api/v1/university-record/`
 > and send a JWT from `POST /api/v1/player/auth/login` as `Authorization: Bearer` - for `GET /records/{category}`
-> only: the Gateway's `4.0.0` answers `404` on every other route of this service (its `3.1.0`, still in the
-> compose, takes the service-only ones with `X-Service-Token`). The service itself reads no token: on the direct port, send
+> only: the Gateway's `4.0.0` answers `404` on every other route of this service. The service itself reads no token: on the direct port, send
 > `X-Player-Id: <uuid>` to play a player and no `X-Player-Id` for a service call.
 >
 > To call an instance of the team stack directly, so that direct calls and the Gateway's share one database, forward

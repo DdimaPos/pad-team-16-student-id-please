@@ -181,7 +181,7 @@ services:
       - student-id-net
 
   university-record-service:
-    image: d1vinexd/university-record-service:3.0.1
+    image: d1vinexd/university-record-service:4.0.0
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
@@ -189,16 +189,24 @@ services:
     depends_on:
       service-discovery-service:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
       university-record-postgres:
         condition: service_healthy
     environment:
       ConnectionStrings__UniversityRecordDb: "Host=university-record-postgres;Port=5432;Database=${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db};Username=${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user};Password=${UNIVERSITY_RECORD_POSTGRES_PASSWORD:?set UNIVERSITY_RECORD_POSTGRES_PASSWORD}"
       REFERENCE_YEAR: *reference_year
-      # The service checks no incoming token; SERVICE_TOKEN is what it sends with its own events.
+      # The gRPC metadata x-service-token of every broker call and X-Service-Token to Service Discovery; the only
+      # incoming request that checks it is GET /logs.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
-      # Consumers of applicant.initialized: the Gateway plus the consumer's prefix.
-      APPLICANT_URL: ${UNIVERSITY_RECORD_APPLICANT_URL:-http://gateway-service:8080/api/v1/applicant}
-      CREDENTIAL_URL: ${UNIVERSITY_RECORD_CREDENTIAL_URL:-http://gateway-service:8080/api/v1/credential}
+      # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers applicant.initialized,
+      # session.started and session.ended (topics events.<event_type>) and the requests of requests.university-record;
+      # its own applicant.initialized is published once to events.applicant.initialized. POST /api/v1/events,
+      # APPLICANT_URL and CREDENTIAL_URL are gone. While the broker is unreachable the instance retries the subscription
+      # with backoff (broker.subscribe_failed), its events wait in the outbox, and it keeps serving /health and /status.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
+      # GET /logs reads this file. It stays inside each container: copies must never share one.
+      LOG_FILE: /var/log/university-record/university-record.jsonl
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
       # Lab 3: each copy registers with Service Discovery directly (not through the Gateway) and

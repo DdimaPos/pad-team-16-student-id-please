@@ -430,13 +430,15 @@ services:
       - student-id-net
 
   session-service:
-    image: dimapos/server-moderation-session-service:3.0.0
+    image: dimapos/server-moderation-session-service:4.0.0
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
       replicas: 2
     depends_on:
       service-discovery-service:
+        condition: service_healthy
+      message-broker-service:
         condition: service_healthy
       session-postgres:
         condition: service_healthy
@@ -447,15 +449,16 @@ services:
       POSTGRES_USER: ${SESSION_POSTGRES_USER:-session_user}
       POSTGRES_PASSWORD: ${SESSION_POSTGRES_PASSWORD:?set SESSION_POSTGRES_PASSWORD}
       POSTGRES_DB: ${SESSION_POSTGRES_DB:-session_db}
-      # Every peer is reached through the Gateway, with the service token. An
-      # empty url selects a built-in stub instead (an event consumer's
-      # deliveries wait); GET /health/ready says which are real.
-      PLAYER_SERVICE_URL: http://gateway-service:8080/api/v1/player
-      RULES_SERVICE_URL: http://gateway-service:8080/api/v1/server-rules
-      APPLICANT_SERVICE_URL: http://gateway-service:8080/api/v1/applicant
-      UNIVERSITY_RECORD_SERVICE_URL: http://gateway-service:8080/api/v1/university-record
-      DISCORD_DMS_SERVICE_URL: http://gateway-service:8080/api/v1/discord-dms
+      # Lab 4 (4.0.0): one gRPC connection to the Message Broker carries the calls to Player,
+      # Server Rules and Applicant (requests.<service>), the publishes of session.started and
+      # session.ended, and the subscription that delivers decision.recorded and the requests of
+      # requests.session. It replaces the five *_SERVICE_URL of Lab 3; POST /api/v1/events is gone.
+      # The same variable and default as the Gateway and every service; empty selects the built-in
+      # stubs. GET /health/ready says what is wired.
+      MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      # GET /logs reads this file. It stays inside each container: copies must never share one.
+      LOG_FILE: /var/log/session/session.jsonl
       HTTP_REQUEST_TIMEOUT: ${SESSION_HTTP_REQUEST_TIMEOUT:-5s}
       MAX_CONCURRENT_TASKS: ${SESSION_MAX_CONCURRENT_TASKS:-50}
       # Seeds three sessions on an empty database - one in each state - so every

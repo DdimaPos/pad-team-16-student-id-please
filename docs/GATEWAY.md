@@ -3,7 +3,7 @@
 > **Status:** `stewdh/gateway-service:4.0.0` (Lab 4). `4.0.0` sends every client request through the Message Broker
 > and serves only the client's routes (#110), and adds the log file with `GET /logs` (#112) and `GET /metrics`.
 > The instance table read from Service Discovery, the round-robin and the circuit breaker per instance of `3.x` moved
-> to the broker (#107). The Lab 4 contract (#105) is not merged yet; where `4.0.0` goes beyond the README, see §14.
+> to the broker (#107). README "Gateway" (the Lab 4 contract, #105) describes `4.0.0`; the leftovers are in §14.
 
 ## 1. What this service is
 
@@ -32,7 +32,7 @@ they use the broker directly, so the Gateway keeps only the routes a client call
 ## 3. Running it
 
 The team stack runs the published image: `docker compose up -d` in the CPR, with `JWT_SECRET` and `SERVICE_TOKEN` set
-in `.env`. The Gateway needs the broker on `student-id-net` (#113 adds it to the compose). Standalone:
+in `.env`. The Gateway needs the broker on `student-id-net` (in the compose since #113). Standalone:
 
 ```bash
 docker run --rm --network student-id-net -p 8080:8080 \
@@ -308,22 +308,18 @@ request or response bodies, query strings.
 - Service Discovery's `GET /api/v1/logs` fetches this endpoint at `gateway-service:8080` (its default
   `LOGS_STATIC_TARGETS`) for the whole system's zip.
 
-## 14. Divergences from the README contract (#105 not merged)
+## 14. Divergences from the README contract
 
-The README "Gateway" section still describes Lab 3: requests forwarded to the instances read from Service Discovery,
-round-robin, a breaker per instance with the mark-down, and the service-token and player-or-service routes. `4.0.0`
-follows the Lab 4 brief and the broker's code, as recorded in README's "Known gap (Lab 4, #110)" note. Choices for
-#105 to confirm:
+None in the routes, the credentials, the request to the broker, the limits or the breaker: README "Gateway",
+"Authentication", "Circuit breaker" and "Task timeout and concurrent task limit" describe `4.0.0` (#105). Leftovers:
 
-1. **The route table** of §5 is the brief's proposal, with `{version}` digits only.
-2. **A known path with another method** is `404`, never `405`, like every path that is not a route.
-3. **Only three headers** reach the service: `X-Request-ID`, `X-Player-Id` and `Content-Type`.
-4. **`timeout_ms`** is what is left of the 10 s once the body has arrived, less a margin, not a flat 10 000.
-5. **A request too large for the broker** is `400 VALIDATION_ERROR` with `details.max_bytes`; the contract has no
-   `413`.
-6. **`503` with `details.service: "message-broker"`** when the broker is unreachable or its breaker open, next to the
-   broker's own `503` naming the prefix; README "Errors" lists `503 SERVICE_UNAVAILABLE` for the Gateway only with a
-   prefix.
+1. **`502 BAD_GATEWAY`** when the broker hands back a reply whose status is not an HTTP status (outside `100`-`599`),
+   `details.service` naming the prefix (`app/proxy.py`). README "Errors" lists `502` for the Gateway in Lab 2-3 only.
+2. **`outbound.call`** names the broker in `target` (`message-broker`) and the prefix in `service_name`; README
+   "Logging" gives `target` as the prefix.
+
+Beyond the contract, inside its `400 VALIDATION_ERROR`: the details of a dot segment, of a request too large for the
+broker (`details.max_bytes`, §7) and of a request the broker will not carry (`details.reason`).
 
 ## 15. Postman
 

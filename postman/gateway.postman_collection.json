@@ -1554,26 +1554,7 @@
           "const secret = pm.variables.get('jwt_secret');",
           "pm.collectionVariables.set('player_token', mint({ sub: sub, iat: now, exp: now + 3600 }, secret));",
           "pm.collectionVariables.set('expired_token', mint({ sub: sub, iat: now - 7200, exp: now - 3600 }, secret));",
-          "pm.collectionVariables.set('foreign_token', mint({ sub: sub, iat: now, exp: now + 3600 }, 'not-the-secret-of-this-gateway-at-all'));",
-          "",
-          "// Through the Gateway a player is identified by a JWT (HS256, JWT_SECRET shared with Player Service),",
-          "// never by X-Player-Id: the Gateway checks the token, discards any client-sent X-Player-Id and sets",
-          "// its own from the token's sub. Player Service's POST /api/v1/auth/login is not published yet, so",
-          "// this script signs the token itself: every request that names a player in X-Player-Id gets",
-          "// Authorization: Bearer <jwt> with sub = that id, and the X-Player-Id header is dropped.",
-          "// jwt_secret must equal JWT_SECRET of the Gateway in the stack's .env.",
-          "const playerHeader = pm.request.headers.find((h) => h.key.toLowerCase() === 'x-player-id' && !h.disabled);",
-          "if (playerHeader && !pm.request.headers.has('Authorization')) {",
-          "  const CryptoJS = require('crypto-js');",
-          "  const b64url = (words) => CryptoJS.enc.Base64.stringify(words).replace(/=+$/, '').replace(/\\+/g, '-').replace(/\\//g, '_');",
-          "  const part = (obj) => b64url(CryptoJS.enc.Utf8.parse(JSON.stringify(obj)));",
-          "  const now = Math.floor(Date.now() / 1000);",
-          "  const sub = pm.variables.replaceIn(playerHeader.value);",
-          "  const unsigned = part({ alg: 'HS256', typ: 'JWT' }) + '.' + part({ sub: sub, iat: now, exp: now + 300 });",
-          "  const signature = b64url(CryptoJS.HmacSHA256(unsigned, pm.variables.get('jwt_secret')));",
-          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + unsigned + '.' + signature });",
-          "  pm.request.headers.remove('X-Player-Id');",
-          "}"
+          "pm.collectionVariables.set('foreign_token', mint({ sub: sub, iat: now, exp: now + 3600 }, 'not-the-secret-of-this-gateway-at-all'));"
         ]
       }
     }

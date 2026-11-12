@@ -628,7 +628,7 @@ Every component - the eight services, the Gateway, Service Discovery and the Mes
 | `event.received`                                            | `event_id`, `event_type`, `producer`, `duplicate` (bool); from Lab 4 also the `Ack` outcome sent                   |
 | `broker.subscribed` / `broker.subscribe_failed` / `broker.disabled` | Lab 4: the instance's `Subscribe` stream opened (`topics`), failed and retried with backoff (`error`, `warn`), or `MESSAGE_BROKER_URL` empty (`warn`, once) |
 | `request.received` / `request.replied`                      | Lab 4: a request delivered by the broker (`correlation_id`, `method`, `path`, `caller`) and its `Reply` (`status`) |
-| `breaker.opened` / `breaker.closed` / `breaker.rejected`    | `target`, `failures`, `window_s`; the Gateway and Service Discovery add `target_instance`                         |
+| `breaker.opened` / `breaker.closed` / `breaker.rejected`    | `target`, `failures`, `window_s`; Service Discovery adds `target_instance` (the Gateway until Lab 3)              |
 | `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` | `instance_id`, `error` when failed                                                                                 |
 | `logs.file_unavailable`                                     | `path`, `error`; `warn`, once at startup when `LOG_FILE` cannot be opened (#112)                                   |
 | `startup` / `shutdown`                                      | version, instance id, port, configuration without secrets                                                          |

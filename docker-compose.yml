@@ -377,6 +377,8 @@ services:
         condition: service_healthy
       player-postgres:
         condition: service_healthy
+      message-broker-service:
+        condition: service_healthy
     environment:
       APP_ENV: docker
       # Signs the player JWT issued by POST /api/v1/auth/login. The Gateway
@@ -401,8 +403,7 @@ services:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers session.ended
       # (topic events.session.ended) and the requests of requests.player. POST /api/v1/events is
-      # gone. The broker joins this file with #113; until then the instance retries the
-      # subscription with backoff (broker.subscribe_failed) and serves its REST port as before.
+      # gone.
       MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       # GET /logs reads this file. It stays inside each container: copies must never share one.
       LOG_FILE: /var/log/player/player.jsonl

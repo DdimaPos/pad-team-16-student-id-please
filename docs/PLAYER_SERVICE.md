@@ -58,7 +58,7 @@ one event.
 | **Language / framework** | Go 1.26 / Gin |
 | **Container port** | `8080` |
 | **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/player/...` |
-| **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres). Through the Gateway: `/api/v1/player/health` (public) and `/api/v1/player/health/ready` (service token). `GET /status` for Service Discovery, called directly - see [§12](#12-several-instances-lab-3) |
+| **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres and, from `4.0.0`, the broker). Through the Gateway only `/api/v1/player/health` (public); `/health/ready` is not a Lab 4 Gateway route (`404`) and is called on the instance directly, like `GET /status` for Service Discovery - see [§12](#12-several-instances-lab-3) |
 | **Database** | PostgreSQL 17, `player_db` (own container). Schema applied at startup by GORM `AutoMigrate`, under a PostgreSQL advisory lock together with the seed |
 | **Service Discovery** | Registers as `player`, instance id `player-<hostname>`, port `8080`; heartbeat every 5 s, `DELETE` on graceful shutdown - see [§12](#12-several-instances-lab-3) |
 | **Logs** | One JSON object per line on stdout in the format of CPR README "Logging", and the same lines in the rotating `LOG_FILE`, read back by `GET /logs` (`4.0.0`) |
@@ -82,7 +82,9 @@ one event.
 
 The CPR `docker-compose.yml` runs `dimapos/player-service:4.0.0` next to its database and the
 Gateway. Set `PLAYER_POSTGRES_PASSWORD` and `JWT_SECRET` in `.env` (the same `JWT_SECRET` the Gateway
-reads), then `docker compose up -d`. Every call goes to the Gateway on `http://localhost:8080`.
+reads), then `docker compose up -d`. The client routes go to the Gateway on `http://localhost:8080`;
+the rest (`/health/ready`, `/status`, `/logs`, `/metrics`, `/api/v1/dev/slow`) only to an instance
+directly - see [§10](#10-gateway-requirements).
 
 ### From the published image alone
 
@@ -155,17 +157,21 @@ silently reverting to a default.
 
 ## 5. HTTP API
 
-Every caller reaches this service through the Gateway (`{gateway}/api/v1/player/...`), which checks
-the credential, removes it, and forwards only `X-Player-Id` for a player. The service itself
-validates no token. The **Gateway** column below is the credential the Gateway accepts for each
-route; the **Service** column is what the service itself checks.
+A client reaches this service through the Gateway (`{gateway}/api/v1/player/...`). From Lab 4
+(#110) the Gateway serves only the client routes: it checks the player token, removes it, and sends
+the request through the broker's queue `requests.player` with only `X-Player-Id`. Session Service's
+`GET /players/{player_id}` arrives through the same queue without the Gateway (see
+[§13](#13-message-broker-logs-and-metrics-lab-4)). The service itself validates no token. The
+**Gateway** column below is the credential the Lab 4 Gateway accepts for each route (*not routed*:
+the Gateway answers `404 NOT_FOUND` and the route is reached on an instance directly); the
+**Service** column is what the service itself checks.
 
 ### 5.1 Contract endpoints
 
 | Method | Path | Consumed by | Gateway | Service |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/auth/login` | the client | public | - |
-| `GET` | `/api/v1/players/{player_id}` | Server Moderation Session Service, the client | player or service | - |
+| `GET` | `/api/v1/players/{player_id}` | Server Moderation Session Service (through the broker), the client | player | - |
 
 **`POST /api/v1/auth/login`.** `{ "username", "password" }` →
 `200 { "access_token", "token_type": "Bearer", "expires_in" }`. The token is HS256 with
@@ -196,7 +202,7 @@ Also mandatory for every service, outside the versioned base path:
 | Method | Path | Gateway | Notes |
 | --- | --- | --- | --- |
 | `GET` | `/health` | public | Liveness. Never consults a dependency, so a database outage does not make an orchestrator restart a healthy container |
-| `GET` | `/health/ready` | service | Readiness. `{"status":"ok","dependencies":{"postgres":{"status":"ok"},"broker":{"status":"ok"}}}` (`broker` only when `MESSAGE_BROKER_URL` is set); `503` with `"status":"degraded"` and a per-dependency `error` if any is down |
+| `GET` | `/health/ready` | not routed | Readiness. `{"status":"ok","dependencies":{"postgres":{"status":"ok"},"broker":{"status":"ok"}}}` (`broker` only when `MESSAGE_BROKER_URL` is set); `503` with `"status":"degraded"` and a per-dependency `error` if any is down |
 | `GET` | `/logs` | not routed | `4.0.0`. This instance's log lines, `X-Service-Token` checked by the service - see [§13](#13-message-broker-logs-and-metrics-lab-4) |
 | `GET` | `/metrics` | not routed | `4.0.0`. Prometheus scrapes it directly - see [§13](#13-message-broker-logs-and-metrics-lab-4) |
 
@@ -218,7 +224,7 @@ Their shapes are this service's own design.
 | `GET` | `/api/v1/players/{player_id}/friends` | player | - | Paginated. Returns **public** projections - a friend's fields are no more visible than anyone else's |
 | `POST` | `/api/v1/players/{player_id}/friends` | player | owner | `201`. Body: `{ "friend_id": "<uuid>" }`. Symmetric |
 | `DELETE` | `/api/v1/players/{player_id}/friends/{friend_id}` | player | owner | `204`. Removes both directions |
-| `GET` | `/api/v1/dev/slow?ms=` | service | - | Waits `ms` milliseconds (at most `60000`), then `200 { "waited_ms" }`. Demonstrates `408` (`ms` above `HTTP_REQUEST_TIMEOUT`) and `429` (enough parallel calls). Mounted only when `ENABLE_DEV_ENDPOINTS` is true |
+| `GET` | `/api/v1/dev/slow?ms=` | not routed | - | Waits `ms` milliseconds (at most `60000`), then `200 { "waited_ms" }`. Demonstrates `408` (`ms` above `HTTP_REQUEST_TIMEOUT`) and `429` (enough parallel calls). Mounted only when `ENABLE_DEV_ENDPOINTS` is true |
 
 **Owner** means the route needs a calling player and that player must be the one in the path: no
 `X-Player-Id` is `401 UNAUTHENTICATED`, a different player is `403 NOT_ACCOUNT_OWNER`. Through the
@@ -264,8 +270,9 @@ Validation rules worth knowing before you call `POST /players`: username 3-32 ch
 **Produced:** none. **Received:** `session.ended` only. From `4.0.0` it arrives from the Message
 Broker: every instance subscribes to the topic `events.session.ended` (queue
 `events.session.ended.player`, shared by the instances, so one of them gets each event), and settles
-each delivery with `Ack`. `POST /api/v1/events` is removed: Session `3.0.0`'s relay, which still pushes
-there through the Gateway, gets `404` until Session moves to the broker (#115).
+each delivery with `Ack`. `POST /api/v1/events` is removed, and the Lab 4 Gateway does not route it
+either: Session `3.0.0`'s relay, which still pushes there through the Gateway, gets `404` until
+Session `4.0.0` (#130) publishes to the broker.
 
 | Situation | `Ack` | The broker |
 | --- | --- | --- |
@@ -335,8 +342,9 @@ a level of 0 would distort the average Session divides by.
 
 `3.0.0` implemented the whole Lab 3 contract slice of this service: login, `GET /players/{player_id}`,
 `POST /events`, `X-Player-Id`, the shared error codes, the task timeout and the concurrent task
-limit. `4.0.0` follows the Lab 4 briefs (#114) while the Lab 4 contract (#105) is not merged yet, so
-item 9 lists where it is ahead of the README. The rest is beyond the contract rather than against it:
+limit. `4.0.0` implements the Lab 4 contract (#105): the broker subscription, the queue
+`requests.player`, `GET /logs` and `GET /metrics`. Item 9 is where it differs from the README; the
+rest is beyond the contract rather than against it:
 
 1. **Ten endpoints beyond the contract** (register, list, profile, edit, delete, shifts,
    disciplinary actions, friends) and `GET /dev/slow`.
@@ -376,14 +384,14 @@ item 9 lists where it is ahead of the README. The rest is beyond the contract ra
    Only changes are restricted to the owner. No endpoint returns `email`, so there is nothing
    private to hide on those reads.
 
-9. **Ahead of the README contract (Lab 4).** The README still describes events pushed to
-   `POST /api/v1/events` through the Gateway; `4.0.0` removed that route and consumes from the broker.
-   The broker's names (topic `events.session.ended`, queue `requests.player`, the `Ack` outcomes,
-   `x-service-token` as metadata) and the `topics` of the Service Discovery registration follow the
-   broker's and Service Discovery's code. `internal/brokerpb/broker.proto` is a copy of the broker
-   repository's, itself a copy of the CPR's `shared/broker.proto` that #105 adds.
-   *Who this affects:* Session `3.0.0`, whose `session.ended` push now gets `404` (until #115), and
-   the Gateway, whose `POST /api/v1/player/events` route has no target any more (#110).
+9. **Log event names (Lab 4).** README "Logging" names a request delivered by the broker
+   `request.received` and its `Reply` `request.replied`, and puts the `Ack` outcome on
+   `event.received`. `4.0.0` logs one `broker.request` line per request (`broker.reply_failed`, `warn`,
+   when the `Reply` cannot be sent) and has no outcome field on `event.received`: a `RETRY` is logged
+   as `event.retry`, a `PERMANENT` as `event.rejected` ([§12](#logging)). A rename needs a new image;
+   until then it is recorded here and in the README.
+   *Who this affects:* anyone filtering the logs in Grafana by `event`, where Player's requests do not
+   appear under `request.received` / `request.replied`.
 
 ---
 
@@ -435,16 +443,18 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) does for this service, prefix
   change without a CPR amendment.
 - **Public routes:** `POST /api/v1/auth/login`, `POST /api/v1/players` (registration) and
   `GET /health`.
-- **Service token only:** `/api/v1/dev/*` and `GET /health/ready`. `GET /logs` and `GET /metrics`
-  are not Gateway routes.
+- **Player token:** every other client route, `GET /api/v1/players/{player_id}` included.
+- **Not Gateway routes (Lab 4, #110):** `/api/v1/dev/*`, `GET /health/ready`, `GET /status`,
+  `GET /logs`, `GET /metrics` and the removed `POST /api/v1/events`. The Gateway answers `404 NOT_FOUND`
+  to them before any credential check, and to a known path with a method it does not take; they are
+  reached on an instance directly. The Gateway takes no service token.
 - **Lab 4 (#110):** the Gateway hands client requests to the broker's `requests.player`; Session's
   `GET /players/{player_id}` reaches this service through the broker, not the Gateway.
-- **Player or service:** `GET /api/v1/players/{player_id}`. Every other route needs a player token.
 - **`JWT_SECRET` is shared** between this service (signs) and the Gateway (verifies). The Gateway
   requires it to be at least 32 characters.
 - **The Gateway strips any client-sent `X-Player-Id`** and sets its own from the token, which is
-  what the owner check relies on. This service's port is not published, so nothing but the Gateway
-  can reach it.
+  what the owner check relies on. This service's port is not published, so a request with
+  `X-Player-Id` comes from the Gateway through the broker, or from inside `student-id-net`.
 - **`email` is never in a response**, so there is nothing to redact.
 - `X-Request-Id` is read from the request when present (a uuid4 is generated otherwise), echoed on
   every response, including errors, and printed as `request_id` on every log line of the request. Pass yours through and one player action can be followed across every service's logs.
@@ -456,7 +466,12 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) does for this service, prefix
 
 ## 11. Testing recipes
 
-The recipes go through the Gateway on `http://localhost:8080`, with `SERVICE_TOKEN` from `.env`.
+The first recipe goes through the Gateway on `http://localhost:8080`. The routes the Lab 4 Gateway
+does not serve (`/api/v1/dev/slow`, `/health/ready`) are called on an instance directly, by the
+instance's own path (no `player` prefix) and with no token: `$PLAYER` below is
+`http://player-service:8080` from a shell inside `student-id-net`
+(`docker run --rm -it --network student-id-net --entrypoint sh curlimages/curl`), or the host port of
+the service's own compose.
 
 ### Recipe: log in and read the contract endpoint against the seeded example
 
@@ -496,18 +511,20 @@ python -m scripts.smoke publish --topic events.session.ended --payload '{}'
 ### Recipe: the task timeout and the concurrent task limit
 
 ```bash
-# 408: the service stops the task at 5s, before the Gateway's 10s.
-curl -s "localhost:8080/api/v1/player/dev/slow?ms=7000" -H "X-Service-Token: $SERVICE_TOKEN"
+PLAYER=http://player-service:8080
+
+# 408: the service stops the task at 5s.
+curl -s "$PLAYER/api/v1/dev/slow?ms=7000"
 # {"error":{"code":"REQUEST_TIMEOUT",...}}
 
 # 429: start the service with MAX_CONCURRENT_TASKS=1 (PLAYER_MAX_CONCURRENT_TASKS in the CPR .env),
-# hold the slot, then call again.
-curl -s "localhost:8080/api/v1/player/dev/slow?ms=3000" -H "X-Service-Token: $SERVICE_TOKEN" &
+# hold the slot, then call the same instance again. With two copies, set PLAYER to one copy's own
+# address (its container IP from docker inspect), since the service name resolves to either.
+curl -s "$PLAYER/api/v1/dev/slow?ms=3000" &
 sleep 0.5
-curl -si "localhost:8080/api/v1/player/players/8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11" \
-  -H "X-Service-Token: $SERVICE_TOKEN"
+curl -si "$PLAYER/api/v1/players/8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11"
 # HTTP/1.1 429, Retry-After: 1, {"error":{"code":"TOO_MANY_REQUESTS",...}}
-curl -s localhost:8080/api/v1/player/health     # still 200 while the slot is held
+curl -s "$PLAYER/health"     # still 200 while the slot is held
 ```
 
 ### Recipe: what a teammate can assume about the seeded players
@@ -530,10 +547,12 @@ Every seeded account logs in with the password `seed-password`.
 ### Postman
 
 [`postman/player-service.postman_collection.json`](../postman/player-service.postman_collection.json)
-goes through the Gateway: one `base_url` variable (`http://localhost:8080/api/v1/player`) and a
-`service_token` variable that must equal `SERVICE_TOKEN` in `.env`. `GET /status` is the one request
-sent to the instance directly, through `player_direct_url`, because the Gateway does not route it;
-so are `GET /logs` and `GET /metrics` (`4.0.0`). Its first folder logs in as the
+sends the client routes through the Gateway, `base_url` (`http://localhost:8080/api/v1/player`), with
+a player token. Every request on a route the Lab 4 Gateway does not serve goes to one instance
+directly through `player_direct_url` (`http://player-service:8080` inside `student-id-net`), by the
+instance's own path: `GET /health/ready`, `GET /status`, `GET /logs`, `GET /metrics`,
+`GET /api/v1/dev/slow` and the `PUT` that shows `405`. Only `GET /logs` sends `service_token`, which
+must equal `SERVICE_TOKEN` in `.env`. Its first folder logs in as the
 seeded players and stores their tokens. Folders run top to bottom against a freshly seeded
 database; requests whose names begin with a number belong to a sequence. The last folder is
 destructive - drop the `player_db` volume to restore the seed. Every request name states the status
@@ -556,8 +575,8 @@ of the database rather than of Go code. Those tests skip when `TEST_POSTGRES_DSN
 
 ## 12. Several instances (Lab 3)
 
-From `3.0.0` the service runs as 2-3 copies behind the Gateway's round-robin, one database shared by
-all of them.
+From `3.0.0` the service runs as 2-3 copies, one database shared by all of them; in Lab 3 the
+Gateway chose the copy, from `4.0.0` the broker does.
 
 ### `GET /status`
 
@@ -600,7 +619,7 @@ handling a request add `request_id`.
 | `event.received` | `info` | `event_id`, `event_type`, `producer`, `duplicate`, `players_updated`; from `4.0.0` also `message_id`, `queue`, `attempt` |
 | `event.unknown_players` / `event.retry` / `event.rejected` | `warn` | as `event.received`, plus `unknown_players` or `reason` (`4.0.0`) |
 | `broker.subscribed` / `broker.subscribe_failed` / `broker.stream_ended` / `broker.disabled` | `info` / `warn` | `topics`, `max_concurrent_tasks`; `error`, `retry_in_ms` when failed (`4.0.0`) |
-| `broker.request` | `info`; `warn` as `broker.reply_failed` | `message_id`, `correlation_id`, `method`, `path` (no query), `caller`, `status`, `duration_ms` (`4.0.0`) |
+| `broker.request` | `info`; `warn` as `broker.reply_failed` | `message_id`, `correlation_id`, `method`, `path` (no query), `caller`, `status`, `duration_ms` (`4.0.0`; README "Logging" names these `request.received` / `request.replied` - [§8](#8-divergences-from-the-cpr-contract) item 9) |
 | `broker.ack_failed` | `warn` | `message_id`, `error` (`4.0.0`) |
 | `logs.file_unavailable` | `warn` | `path`, `error`, once at startup (`4.0.0`) |
 | `sd.registered` / `sd.heartbeat_failed` / `sd.deregistered` / `sd.disabled` | `info` / `warn` | `error` when failed |
@@ -645,8 +664,9 @@ From `4.0.0`.
   instance down while only its broker is away.
 - Shutdown: the stream closes first and the deliveries already received are settled, then the
   instance deregisters and drains its REST port.
-- The contract is `internal/brokerpb/broker.proto` with checked-in Go stubs; CI regenerates them and
-  fails on a difference.
+- The contract is `internal/brokerpb/broker.proto`, a copy of the CPR's `shared/broker.proto` (by way
+  of the broker repository's), with checked-in Go stubs; CI regenerates them and fails on a
+  difference.
 
 ### Requests from `requests.player`
 

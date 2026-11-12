@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Player Service",
-    "description": "Player Service owns the moderator player accounts: identity, credentials, profile, friends, XP, level, shift history and the disciplinary log. It is the only issuer of the player JWT.\n\nTHROUGH THE GATEWAY. Every request goes to the Gateway: {{base_url}} is http://localhost:8080/api/v1/player, the one base URL of this collection. The Gateway checks the credential each route accepts and forwards only X-Player-Id: player routes send `Authorization: Bearer {{<player>_token}}`, service-only routes (/dev/*, /health/ready) send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. Login and registration are public.\n\nCONTRACT. POST /auth/login and GET /players/{player_id} are in the CPR communication contract. Everything else is beyond it and labelled so in the folder names.\n\nTOKENS. The \"auth\" folder logs in as four seeded players (password `seed-password`) and stores {{dima_token}}, {{maxim_token}}, {{rookie_token}} and {{veteran_token}}; run it first. A player changes only their own account and friends list: another player's token is 403 NOT_ACCOUNT_OWNER.\n\nTESTS. Every request name states the status it expects, and the error code when there is one; a collection-level test asserts both.\n\nTASK LIMITS. The \"dev - task timeout\" folder shows the 408. The 429 needs parallel requests, which a sequential run cannot send: start Player Service with MAX_CONCURRENT_TASKS=1 and call /dev/slow?ms=3000 twice at once (docs/PLAYER_SERVICE.md, \u00a711).\n\nPREREQUISITES. The team stack from the CPR (docker compose up -d) on a freshly seeded player database. {{dima_id}}, {{maxim_id}} and {{vlad_id}} are the ids the CPR README and the other services' collections already use; {{dima_id}} carries xp 1250 / 12 completed shifts, so the contract's published example response is reproducible verbatim.\n\nDIRECT CALLS. GET /status, GET /logs and GET /metrics are not Gateway routes: they go to one instance directly through {{player_direct_url}}. GET /logs needs {{service_token}}.\n\nLAB 4 (4.0.0). session.ended arrives from the Message Broker (topic events.session.ended), not on POST /events, which is removed; and Session's GET /players/{player_id} arrives through the broker's queue requests.player. Postman cannot send the broker's gRPC calls: publish an event with the broker's scripts/smoke.py (docs/PLAYER_SERVICE.md, \u00a711) and read its effect with the requests of this collection.\n\nORDER. Folders run top to bottom. Requests whose names start with a number belong to a sequence and depend on the ones before them. The last folder is destructive; drop the player_db volume to restore the seed.",
+    "description": "Player Service owns the moderator player accounts: identity, credentials, profile, friends, XP, level, shift history and the disciplinary log. It is the only issuer of the player JWT.\n\nTHROUGH THE GATEWAY. {{base_url}} is http://localhost:8080/api/v1/player, the Lab 4 Gateway (#110), which serves only the client routes of this service: GET /health, POST /auth/login and POST /players (public), and the player routes, which send `Authorization: Bearer {{<player>_token}}`. The Gateway checks the token, removes it and forwards only X-Player-Id, through the Message Broker's queue requests.player. It takes no service token and answers 404 NOT_FOUND to every other path (POST /events, /dev/*, /health/ready) and to a known path with a method it does not take (PUT /players/{player_id}).\n\nCONTRACT. POST /auth/login and GET /players/{player_id} are in the CPR communication contract. Everything else is beyond it and labelled so in the folder names.\n\nTOKENS. The \"auth\" folder logs in as four seeded players (password `seed-password`) and stores {{dima_token}}, {{maxim_token}}, {{rookie_token}} and {{veteran_token}}; run it first. A player changes only their own account and friends list: another player's token is 403 NOT_ACCOUNT_OWNER.\n\nTESTS. Every request name states the status it expects, and the error code when there is one; a collection-level test asserts both.\n\nTASK LIMITS. The \"dev - task timeout\" folder shows the 408, directly on the instance. The 429 needs parallel requests, which a sequential run cannot send: start Player Service with MAX_CONCURRENT_TASKS=1 and call /api/v1/dev/slow?ms=3000 on the instance twice at once (docs/PLAYER_SERVICE.md, \u00a711).\n\nPREREQUISITES. The team stack from the CPR (docker compose up -d) on a freshly seeded player database. {{dima_id}}, {{maxim_id}} and {{vlad_id}} are the ids the CPR README and the other services' collections already use; {{dima_id}} carries xp 1250 / 12 completed shifts, so the contract's published example response is reproducible verbatim.\n\nDIRECT CALLS. Every request on a route the Lab 4 Gateway does not serve goes to one instance directly through {{player_direct_url}}, by the instance's own path (/api/v1/... without the player prefix): GET /health/ready, GET /status, GET /logs, GET /metrics, GET /api/v1/dev/slow and the PUT that shows 405. A direct request carries no token (a player is named by X-Player-Id), except X-Service-Token = {{service_token}} on GET /logs, the only route the instance checks it on; {{service_token}} must equal SERVICE_TOKEN in the CPR .env.\n\nLAB 4 (4.0.0). session.ended arrives from the Message Broker (topic events.session.ended), not on POST /events, which is removed; and Session's GET /players/{player_id} arrives through the broker's queue requests.player. Postman cannot send the broker's gRPC calls: publish an event with the broker's scripts/smoke.py (docs/PLAYER_SERVICE.md, \u00a711) and read its effect with the requests of this collection.\n\nORDER. Folders run top to bottom. Requests whose names start with a number belong to a sequence and depend on the ones before them. The last folder is destructive; drop the player_db volume to restore the seed.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -12,7 +12,7 @@
     {
       "key": "player_direct_url",
       "value": "http://localhost:8087",
-      "description": "The instance itself, not the Gateway: its port is not published in the team stack, so run the service's own compose and use `docker compose port --index 1 player-service 8080`."
+      "description": "The instance itself, not the Gateway: its port is not published in the team stack. Inside student-id-net it is http://player-service:8080 (Postman or newman run in a container on that network); from the host, run the service's own compose and use `docker compose port --index 1 player-service 8080`."
     },
     {
       "key": "service_token",
@@ -79,16 +79,10 @@
           }
         },
         {
-          "name": "GET /health/ready (200, readiness - postgres; service token only)",
+          "name": "GET /health/ready (200, readiness - postgres and broker; called directly, not a Lab 4 Gateway route)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/health/ready",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{player_direct_url}}/health/ready"
           }
         },
         {
@@ -945,18 +939,18 @@
           }
         },
         {
-          "name": "put player (405 METHOD_NOT_ALLOWED)",
+          "name": "put player - called directly (405 METHOD_NOT_ALLOWED; the Gateway answers 404 for a method it does not route)",
           "request": {
             "method": "PUT",
-            "url": "{{base_url}}/players/{{dima_id}}",
+            "url": "{{player_direct_url}}/api/v1/players/{{dima_id}}",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
               },
               {
-                "key": "Authorization",
-                "value": "Bearer {{dima_token}}"
+                "key": "X-Player-Id",
+                "value": "{{dima_id}}"
               }
             ],
             "body": {
@@ -1477,10 +1471,6 @@
               {
                 "key": "Content-Type",
                 "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
               }
             ],
             "body": {
@@ -1492,49 +1482,32 @@
       ]
     },
     {
-      "name": "dev - task timeout (beyond contract, service token)",
+      "name": "dev - task timeout (beyond contract, called directly)",
+      "description": "GET /api/v1/dev/slow is not a Lab 4 Gateway route (the Gateway answers 404 NOT_FOUND to /dev/*), so these requests go to one instance through {{player_direct_url}}, by its own path, with no credential: the instance checks X-Service-Token on GET /logs only.",
       "item": [
         {
           "name": "slow - within the timeout (200)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/dev/slow?ms=100",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{player_direct_url}}/api/v1/dev/slow?ms=100"
           }
         },
         {
           "name": "slow - past the service's 5s timeout (408 REQUEST_TIMEOUT)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/dev/slow?ms=7000",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{player_direct_url}}/api/v1/dev/slow?ms=7000"
           }
         },
         {
           "name": "slow - wait above 60000 ms (400 VALIDATION_ERROR)",
           "request": {
             "method": "GET",
-            "url": "{{base_url}}/dev/slow?ms=60001",
-            "header": [
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ]
+            "url": "{{player_direct_url}}/api/v1/dev/slow?ms=60001"
           }
         },
         {
-          "name": "slow - with a player token (403 SERVICE_TOKEN_REQUIRED, Gateway)",
+          "name": "slow - through the Gateway (404 NOT_FOUND, /dev/* is not a Lab 4 Gateway route)",
           "request": {
             "method": "GET",
             "url": "{{base_url}}/dev/slow?ms=100",

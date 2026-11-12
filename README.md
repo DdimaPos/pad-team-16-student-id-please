@@ -638,6 +638,11 @@ From Lab 4 the Gateway adds `target` (the prefix) and `correlation_id` to its `h
 
 **Never logged:** `Authorization`, `X-Service-Token`, `JWT_SECRET`, passwords, the Telegram bot token (it is part of the Telegram URL, so exception messages are sanitized), full request or response bodies, query strings (a `q` of `GET /records/{category}` holds a name, student ID or email, and `?ticket=` a one-time ticket), and applicant personal data other than `applicant_id`.
 
+> **Known gap (Player).** Player Service `4.0.0` logs a request delivered by the broker as `broker.request`
+> (`broker.reply_failed` when its `Reply` cannot be sent) instead of `request.received` / `request.replied`, and
+> its `event.received` carries no `Ack` outcome (a `RETRY` or `PERMANENT` is logged as `event.retry` /
+> `event.rejected`). See [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md) §8.
+
 Example line:
 
 ```json
@@ -1118,12 +1123,11 @@ email.
   An id in `players[]` with no account here is skipped and logged - Session Service decides who was
   in a shift, and one unknown id must not cost the other players their XP.
 
-> **Known gap (Lab 4, #114).** Player Service `4.0.0` no longer exposes `POST /api/v1/events`: it
-> receives `session.ended` from the Message Broker's topic `events.session.ended` and acks it, and
-> Session's `GET /players/{player_id}` reaches it through the broker's queue `requests.player`. The
-> text above and [Event delivery](#event-delivery) still describe the Lab 3 push through the Gateway
-> until the Lab 4 contract (#105) merges; until Session (#115) and the broker (#113) are deployed,
-> Session `3.0.0`'s push of `session.ended` to Player gets `404`. Details:
+> **Known gap (Player, Session; until #130).** Player Service `4.0.0` receives `session.ended` only from
+> the Message Broker's topic `events.session.ended` and no longer exposes `POST /api/v1/events`. The
+> compose still runs Session Service `3.0.0`, whose relay pushes `session.ended` through the Gateway,
+> which answers `404` to `POST /events`; so no shift reaches Player and no XP is awarded until
+> Session `4.0.0` (#130) publishes to the broker. Details:
 > [`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md) §6 and §13.
 
 #### Server Moderation Session Service
@@ -2278,7 +2282,7 @@ Everything else has a working default (`HTTP_REQUEST_TIMEOUT=5s`, `MAX_CONCURREN
 schema is applied at startup, and an empty database is seeded with six players (including
 `8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11` / `dima_mod`, the one this contract uses in its own example
 response; every seeded account logs in with `seed-password`). `ENABLE_DEV_ENDPOINTS` mounts
-`GET /api/v1/dev/slow`, which the Gateway forwards only with the service token. From `4.0.0`
+`GET /api/v1/dev/slow`, reached on the instance directly (not a Lab 4 Gateway route). From `4.0.0`
 (`dimapos/player-service:4.0.0`) it subscribes to the Message Broker at `MESSAGE_BROKER_URL`
 (`message-broker-service:8071` in the compose; empty turns it off), receives `session.ended` and the
 requests of `requests.player` there, no longer exposes `POST /api/v1/events`, writes its log lines to

@@ -7,14 +7,13 @@
 > Prometheus need (#111): `topics` in the registration, `load` on the list, `GET /api/v1/instances?topic=`,
 > `GET /api/v1/topics`, `GET /api/v1/instances/prometheus`, `GET /metrics`, `POST /api/v1/alerts`, the broker as the
 > mark-down's caller; the log file, `GET /logs` and the aggregated `GET /api/v1/logs` (#112); it no longer serves
-> `/openapi.json`, and its dependencies are updated. The Lab 4 additions are ahead of the README contract until #105
-> merges: see §10.
+> `/openapi.json`, and its dependencies are updated. The Lab 4 additions follow the Lab 4 contract (#105): see §10.
 
 ## 1. What this service is
 
 The instance registry of Lab 3: which instance of which service runs where, and whether it is `up`
-or `down`. Every instance of the eight services registers here and sends a heartbeat; the Gateway
-reads the `up` instances from here and marks an instance down when its circuit breaker trips. Service
+or `down`. Every instance of the eight services registers here and sends a heartbeat; in Lab 3 the Gateway
+read the `up` instances from here and marked an instance down when its circuit breaker tripped. Service
 Discovery polls every instance's `GET /status`, raises alerts on a critical load or an instance that stops
 answering, and posts them to the team's Telegram group. It owns no business data and takes part in no
 event. Contract: CPR README "Service Discovery", "Status endpoint", "Logging", "Logs download".
@@ -41,7 +40,8 @@ alerts, and Prometheus finds its targets here (#113).
 | **Docker image** | `d1vinexd/service-discovery-service:4.0.0` and `:latest`, published by GitHub Actions on merge to `main` |
 | **API schema** | none served: `/docs`, `/redoc` and `/openapi.json` answer `404` (`4.0.0`); this file and the Postman collection document the API |
 
-Instances call it **directly**, not through the Gateway: the Gateway itself needs the registry to route.
+Instances call it **directly**, not through the Gateway or the broker: the broker itself (the Gateway in Lab 3) needs
+the registry to route.
 
 ## 3. Running it
 
@@ -135,9 +135,8 @@ logged only when a record was removed. A deregistered instance raises no alert.
 `200 {"instances": [{instance_id, service_name, host, port, version, status, last_seen_at, topics, load,
 last_checked_at}]}`. Only `up` instances. `service` omitted: every service; empty or unknown: `[]`. `topic`
 (`4.0.0`): only the instances whose registration subscribes to it; empty or unknown: `[]`. From Lab 4 the broker
-reads it every 5 s (`SERVICE_DISCOVERY_REFRESH_SECONDS`) and routes on it (`load`); the Gateway stops reading it with
-#110 (merged into the Gateway's `dev`), while Gateway `3.1.0`, the one in the team compose until the cutover, still
-reads it every 5 s for its routing table.
+reads it every 5 s (`SERVICE_DISCOVERY_REFRESH_SECONDS`) and routes on it (`load`). Gateway `3.1.0` read it every 5 s
+for its Lab 3 routing table; Gateway `4.0.0` (#110), which the team compose runs since #113, no longer reads it.
 
 ### `GET /api/v1/topics` - topics named by the registrations (`4.0.0`)
 
@@ -161,8 +160,9 @@ Prometheus `http_sd_configs`: every `up` instance of every service and the broke
 It needs `X-Service-Token`, as every `/api/v1/instances` route does, because the list names the instances' addresses
 and the port is published on the host. The labels `service` and `instance_id` are enough to group the series by service
 and tell the instances apart. The Gateway and Service Discovery do not register, so they are static targets with a
-`service` label of their own. The scrape configuration agreed for #113 (where `prometheus.yml` and the compose block
-live), with the token read from a file so it stays out of `prometheus.yml`:
+`service` label of their own. The core of the scrape configuration of #113 (the CPR's
+`monitoring/prometheus/prometheus.yml`, README "Monitoring"), with the token read from a file so it stays out of
+`prometheus.yml`:
 
 ```yaml
 scrape_configs:
@@ -225,10 +225,11 @@ x 3.5), from Lab 4 by the broker, the endpoint's only caller then. The endpoint 
   alive, but the list leaves it out until health polling sees 3 healthy checks in a row (20-30 s); heartbeats
   alone never bring it back. Logged as `registry.marked_down` (`reason`; `marked_down_by: broker` from `4.0.0`,
   `gateway` in `3.0.0`) and raised as a `marked_down` alert ("marked down by the broker"). `4.0.0` names the broker
-  whoever calls, so while the Gateway of the Lab 3 stack is still the caller its mark-downs read "broker" (§10).
+  whoever calls (§10); Gateway `4.0.0` no longer calls it.
 - Marking a `down` instance again is a no-op `200` (no second log line or alert; the first reason stays).
 - `400 VALIDATION_ERROR` for anything but `"status": "down"` or a missing or empty `reason` (at most 500
-  characters); `404 NOT_FOUND` for an unknown id (it expired or deregistered; the Gateway logs it and moves on).
+  characters); `404 NOT_FOUND` for an unknown id (it expired or deregistered; the broker logs it, `sd.mark_down`, and
+  moves on).
 
 ### `GET /status`
 
@@ -304,10 +305,10 @@ VALIDATION_ERROR`. `503 LOGS_UNAVAILABLE` when the zip itself cannot be written.
 
 What a demo shows, with `docker compose logs -f service-discovery-service`: a service held at its
 `MAX_CONCURRENT_TASKS` through its `/dev/slow` endpoint gives `critical_load` within 10 s; `docker kill` gives
-`unreachable`, then `marked_down` (by health polling or by the Gateway, whichever comes first; `4.0.0` names the
-Gateway's mark-down "broker", §10) and `expired`,
-and `docker start` gives `recovered`; requests slower than the Gateway's timeout make the Gateway trip and mark
-the instance down. `docker stop` deregisters and raises nothing.
+`unreachable`, then `marked_down` (by health polling or by the broker, whichever comes first) and `expired`,
+and `docker start` gives `recovered`; an instance that stops replying to the requests it holds, or loses its broker
+stream while it holds them, makes the broker's breaker on it trip and mark it down (README "Circuit breaker").
+`docker stop` deregisters and raises nothing.
 
 ## 7. Limits and error codes
 
@@ -369,24 +370,20 @@ bot token are never logged.
 - **A new IP:** a heartbeat from another source IP (a recreated container keeping its hostname)
   updates `host`.
 - **A hung instance** that answers its own requests with `408` after its 5 s task timeout is not a failure for
-  the Gateway's breaker (a `4xx`); health polling catches it when its `/status` stops answering within 2 s.
+  the broker's breaker on that instance (README "Circuit breaker"); health polling catches it when its `/status`
+  stops answering within 2 s.
 - **`topics` after a restart** (`4.0.0`): the record is rebuilt from the instance's next `PUT`, so its `topics` are
   back only when that `PUT` carries them. An instance that sends `topics` with every heartbeat loses nothing.
 
-## 10. Lab 4 contract notes (#105 not merged yet)
+## 10. Lab 4 contract notes
 
-`4.0.0` follows the decisions posted on CPR #105 and #113; until the Lab 4 contract merges, the service README at
-`4.0.0` and this file are the reference for them. Where `4.0.0` is ahead of the README contract ("Service Discovery",
-"Logging"):
+`4.0.0` follows the Lab 4 contract (#105): README "Service Discovery", "Logging", "Logs download", "Circuit breaker"
+and "Monitoring" describe `topics` in the registration and on the record, `load` and `last_checked_at`, `?topic=` on
+the list, `GET /api/v1/topics`, `GET /api/v1/instances/prometheus`, `GET /metrics`, `POST /api/v1/alerts` with the
+`dead_letter` kind and the `alert.received` log event, `message-broker` as a known `service_name`, and the broker as
+the mark-down's only caller (`marked_down_by: broker`). No divergence is left. Beyond the contract:
 
-1. **Additive.** `topics` in the registration and on the record, `load` and `last_checked_at` on the record,
-   `?topic=` on the list, `GET /api/v1/topics`, `GET /api/v1/instances/prometheus`, `GET /metrics`,
-   `POST /api/v1/alerts` with the `dead_letter` alert kind and the `alert.received` log event, and `message-broker` as
-   a known `service_name` (the README still says any name but the eight services is `400`). A Lab 3 caller that
-   ignores unknown fields is not affected.
-2. **Mark-down.** The README says the Gateway marks instances down and names `marked_down_by` only for health
-   polling (`3.0.0` logged a Gateway mark-down as `gateway`). `4.0.0` records every mark-down as `marked_down_by: broker` and its alert as "marked down by the
-   broker", because from Lab 4 the broker is the endpoint's only caller. The endpoint is unchanged, so the Gateway of
-   the Lab 3 stack (`3.1.0` in the team compose) still marks down successfully, but its mark-downs read "broker" in
-   the log and in Telegram until the cutover of #113.
-3. **No API schema.** `/openapi.json` answers `404` from `4.0.0`; the contract never named it.
+1. **Mark-down naming.** `4.0.0` records every mark-down as `marked_down_by: broker` and its alert as "marked down by
+   the broker", whoever calls (`3.0.0` logged a Gateway mark-down as `gateway`). Since Gateway `4.0.0` no longer calls
+   it, this shows only for a mark-down sent by hand (Postman, `curl`).
+2. **No API schema.** `/openapi.json` answers `404` from `4.0.0`; the contract never named it.

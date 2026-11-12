@@ -2,9 +2,8 @@
 
 > **Audience:** developers and agents building the other services of *"Student ID, please"*
 > (Team 16, FAF.PAD21.1), or the gateway. Describes `4.0.0`: events and requests go through the
-> Message Broker (Lab 4), ahead of the CPR contract, which still describes the Lab 3 HTTP event push
-> until #105 merges. Where the implementation diverges from the CPR contract, the divergence is called
-> out explicitly in [§8](#8-divergences-from-the-cpr-contract).
+> Message Broker (Lab 4), as the CPR contract describes since #105. Where the implementation diverges
+> from the CPR contract, the divergence is called out explicitly in [§8](#8-divergences-from-the-cpr-contract).
 
 ---
 
@@ -129,7 +128,7 @@ is a one-glance diff.
 | `LOG_FILE_MAX_MB` / `LOG_FILE_KEEP` | `50` / `5` | no | The file rotates at this size; this many rotated files are kept next to the current one (`4.0.0`) |
 | `SERVICE_DISCOVERY_URL` | empty | no | Base URL of Service Discovery. Empty turns registration off |
 | `INSTANCE_ID` | `university-record-<hostname>` | no | Name of this instance in logs, `/status`, Service Discovery, the broker subscription and the outbox claims |
-| `INSTANCE_HOST` | unset | no | Address the Gateway should use, sent as `host` only when set (a run outside Docker) |
+| `INSTANCE_HOST` | unset | no | Address Service Discovery polls and Prometheus scrapes (the Gateway routed to it in Lab 3), sent as `host` only when set (a run outside Docker) |
 | `EVENT_PUSH_TIMEOUT` | `5` | no | Seconds one `Publish` to the broker may take (its gRPC deadline); the lease on a claimed outbox row is twice this plus 5 s |
 
 `APPLICANT_URL` and `CREDENTIAL_URL` are removed in `4.0.0`: the broker fans the events out.
@@ -273,7 +272,6 @@ cedilla form) - please confirm Applicant Service does the same.
 | 2 | **`courses.json` is byte-identical to the CPR's [`shared/courses.json`](../shared/courses.json)**, and the catalog's SHA-256 is logged at startup so a difference is a one-glance diff. Listed because every service that ships the catalog must stay in step with it | Applicant, Credential, Moderation |
 | 3 | **The `expelled` enrollment status is unreachable through events.** The shared applicant profile's `university_status` enum has no "expelled" value, so `actual.university_status` can never produce it - only this service's own `/applicants/next` generator can. Raised with the team as a gap in the shared identity model, not fixed unilaterally here | Anyone designing an "expelled student" scenario |
 | 4 | **`q` is required on `GET /records/{category}`**, per the contract - there is no way to browse the course catalog without a search term. Flagged to the team as worth making optional for `courses` specifically; not changed unilaterally | Junior Moderators wanting to browse |
-| 5 | **Ahead of the README contract (Lab 4).** `4.0.0` follows the Lab 4 briefs (#119) while the Lab 4 contract (#105) is not merged. The README still describes events pushed to `POST /api/v1/events` through the Gateway, `APPLICANT_URL`/`CREDENTIAL_URL` and Moderation's call through the Gateway; `4.0.0` removed that route and those variables, publishes to and consumes from the broker, and takes requests from `requests.university-record`. The broker's names (topics `events.<event_type>`, queue `requests.university-record`, the `Ack` outcomes, `x-service-token` as metadata) and the `topics` of the Service Discovery registration follow the broker's and Service Discovery's code. `Protos/broker.proto` is an unchanged copy of the broker repository's until the CPR has `shared/broker.proto` (#105). Choices to confirm on #105: an empty `MESSAGE_BROKER_URL` turns the broker off; a request the instance cannot serve is answered by the instance itself (`400` malformed, `408` local timeout, `500` local failure) | Applicant, Credential and Session `3.0.0`, whose pushes to `POST /api/v1/events` now get `404` (until their `4.x`); the Gateway, whose `POST /api/v1/university-record/events` route has no target any more (#110) |
 
 ---
 
@@ -298,6 +296,12 @@ cedilla form) - please confirm Applicant Service does the same.
 - **The broker is down.** The instance logs `broker.subscribe_failed` and subscribes again with backoff
   (1 s doubling to 30 s); its own events wait in the outbox, and the REST port, `/health` and `/status`
   keep answering.
+- **Peers still on `3.0.0` in the compose.** Until the Lab 4 deliveries of Applicant (#128), Credential
+  (#129) and Session (#130) merge, the compose runs their `3.0.0` images, which push their events to
+  `POST /api/v1/events` through the Gateway; Gateway `4.0.0` answers `404`, so no `applicant.initialized`,
+  `session.started` or `session.ended` of theirs reaches this service. An `applicant.initialized` this
+  service published meanwhile would reach only its own queue (the topic has a subscriber, this service,
+  so it keeps nothing for a later one); no service calls its `POST /applicants/next` yet, so none is.
 - **Ruleset/session ordering.** A junior can legitimately query before `session.started` has
   arrived; this reads as `403 CATEGORY_NOT_ASSIGNED` (a session this service has not
   heard of grants no scope to anyone) and is expected to resolve on retry.
@@ -404,7 +408,9 @@ service. Forward an instance of the team stack as above, so that both reach the 
 
 ## 12. Message Broker, logs and metrics (Lab 4)
 
-From `4.0.0`.
+From `4.0.0`, as CPR README "Event delivery", "Message Broker", "Authentication" ("Through the Message
+Broker"), "Logs download" and "Monitoring" describe it (#105). `Protos/broker.proto` is a
+byte-identical copy of the CPR's [`shared/broker.proto`](../shared/broker.proto).
 
 ### The subscription
 

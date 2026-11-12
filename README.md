@@ -1847,15 +1847,11 @@ The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a j
 - `session.ended` - from Server Moderation Session Service  
   Closes access for that session, so players cannot read records after the shift.
 
-> **Known gap (Lab 4, #119).** University Record Service `4.0.0` no longer exposes `POST /api/v1/events` and pushes
-> nothing through the Gateway: it publishes its own `applicant.initialized` once to the Message Broker's topic
-> `events.applicant.initialized`, receives `applicant.initialized`, `session.started` and `session.ended` from the
-> topics `events.<event_type>` and acks them, and takes requests from the broker's queue `requests.university-record`
-> (its REST port still serves every route). The text above and [Event delivery](#event-delivery) still describe the
-> Lab 3 push through the Gateway until the Lab 4 contract (#105) merges; until the broker (#113) and the `4.x` images
-> of Applicant, Credential and Session are deployed, their `3.0.0` pushes to University Record get `404`, and its own
-> `applicant.initialized` waits in its outbox. Details:
-> [`docs/UNIVERSITY_RECORD_SERVICE.md`](docs/UNIVERSITY_RECORD_SERVICE.md) §6 and §12.
+> **Known gap (Lab 4, #119).** Applicant, Credential and Session still run their `3.0.0` images in the compose until
+> their Lab 4 deliveries (#128, #129, #130) merge. They push their events to `POST /api/v1/events` through the
+> Gateway, which answers `404` from `4.0.0`, so University Record Service `4.0.0` receives none of their
+> `applicant.initialized`, `session.started` or `session.ended` meanwhile. Details:
+> [`docs/UNIVERSITY_RECORD_SERVICE.md`](docs/UNIVERSITY_RECORD_SERVICE.md) §9.
 
 
 #### Moderation Service

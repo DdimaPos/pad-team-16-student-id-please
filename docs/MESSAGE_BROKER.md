@@ -3,8 +3,8 @@
 > **Status:** `4.0.0`, the first release (Lab 4): the base (#103), the gRPC API (#106), the log file and `GET /logs`
 > (#112), request/reply, routing by load and a breaker per instance (#107), durable queues and the dead letter channel
 > (#108), `GET /metrics` (#126), thread-per-request and rerouting (#109). Image `d1vinexd/message-broker-service:4.0.0`.
-> The broker is not in `docker-compose.yml` yet: its block, with Prometheus and Grafana, is #113. The shared names
-> below run ahead of the README contract until #105 merges; see [§15](#15-divergences-from-the-contract).
+> Run by the team `docker-compose.yml` since #113, with Prometheus, Loki, Alloy and Grafana. The shared names below
+> are the README contract of #105; see [§15](#15-divergences-from-the-contract).
 
 ## 1. What this service is
 
@@ -12,7 +12,8 @@ The tenth component, from Lab 4. Services publish their events to topics without
 the services send requests to a service's queue; the broker stores the messages, picks the instance and keeps the
 circuit breakers. It owns topics, queues, subscriptions and delivery state. It owns no business data (an event's
 envelope passes through byte for byte) and not the instance registry (Service Discovery). Contract: CPR README
-"Communication Contract" (its Lab 4 part is #105) and "Logs download".
+"Message Broker", "Event delivery", "Load balancing", "Circuit breaker", "Logs download" and "Monitoring" (the Lab 4
+part of "Communication Contract", #105), and [`shared/broker.proto`](../shared/broker.proto).
 
 ## 2. Integration card
 
@@ -255,7 +256,8 @@ called service of `broker_request_duration_seconds` is therefore `exported_servi
 ## 9. gRPC API on `8071`
 
 `app/brokerpb/broker.proto` of the service repository, package `broker.v1`, plaintext HTTP/2 inside `student-id-net`.
-The services build their clients from byte-identical copies of this file (see [§15](#15-divergences-from-the-contract)).
+It is a byte-identical copy of the CPR's [`shared/broker.proto`](../shared/broker.proto), from which every component
+builds its client (README "Message Broker"; a change is made there first).
 Every call carries the metadata `x-service-token: <SERVICE_TOKEN>`: missing is `UNAUTHENTICATED`, wrong is
 `PERMISSION_DENIED`.
 
@@ -379,21 +381,16 @@ service README, "Logs"; the events an integrator meets most:
 
 ## 15. Divergences from the contract
 
-`4.0.0` runs ahead of the README contract, because the Lab 4 contract (#105) is not merged. Until it is, the decisions
-posted on #105 and the service README are the reference for the broker's shapes; once it merges, the contract wins
-where they differ.
+None. `4.0.0` is what the Lab 4 contract (#105) describes:
 
-1. **`broker.proto` is not in the CPR.** Its place is `shared/broker.proto`, which #105 adds; until then the services
-   build from byte-identical copies of the broker's `app/brokerpb/broker.proto`.
-2. **The README still describes Lab 3 delivery:** events pushed through the Gateway to each consumer's
-   `POST /api/v1/events`, and requests forwarded by the Gateway to an instance. The topics, queues, `Subscribe`, the
-   `Ack` outcomes, the attempt cap, the dead letter channel and request/reply above are not in the README's
-   "Communication Contract", "Event delivery" or "Every arrow in the diagram" yet.
-3. **The dead letter alert** uses Service Discovery's `POST /api/v1/alerts` (`kind: dead_letter`, Service Discovery
-   #111), which the README "Service Discovery" section does not list yet.
-4. **Requeue and discard** of a dead letter (#108's optional `POST .../requeue` and `DELETE`) are not in `4.0.0`; the
-   listing is read-only until #105 decides whether they come.
-5. **Not in the compose.** The broker's block, its volume and `MESSAGE_BROKER_URL` for the services come with #113.
+- [`shared/broker.proto`](../shared/broker.proto) is byte-identical to the broker's `app/brokerpb/broker.proto`.
+- README "Event delivery", "Message Broker", "Load balancing", "Circuit breaker" and "Every arrow in the diagram"
+  describe the topics, the queues, `Subscribe`, the `Ack` outcomes, the attempt cap, the dead letter channel and
+  request/reply above; README "Service Discovery" lists the dead letter alert (`POST /api/v1/alerts`,
+  `kind: dead_letter`).
+- The dead letter listing is read-only, as README "Event delivery" says: #108's optional requeue
+  (`POST .../requeue`) and discard (`DELETE`) are not offered.
+- The team compose runs the broker, its volume and `MESSAGE_BROKER_URL` for the Gateway and the services since #113.
 
 ## 16. Postman
 

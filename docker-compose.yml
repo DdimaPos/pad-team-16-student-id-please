@@ -146,7 +146,8 @@ services:
       ConnectionStrings__RulesDb: "Host=rules-postgres;Port=5432;Database=${RULES_POSTGRES_DB:-rules_db};Username=${RULES_POSTGRES_USER:-rules_user};Password=${RULES_POSTGRES_PASSWORD:?set RULES_POSTGRES_PASSWORD}"
       Dev__EnableTestEndpoints: ${RULES_ENABLE_DEV_ENDPOINTS:-true}
       # Task timeout and concurrent task limit (README "Task timeout and concurrent task limit"). Dev__EnableTestEndpoints
-      # mounts GET /api/v1/dev/slow?ms=, which demonstrates both. The service checks no token: the Gateway does.
+      # mounts GET /api/v1/dev/slow?ms=, which demonstrates both. The broker checks the service token of every call;
+      # the service itself checks X-Service-Token only on GET /logs.
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
       # Lab 3: each copy registers with Service Discovery directly (not through the Gateway) and

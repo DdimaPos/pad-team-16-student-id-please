@@ -113,7 +113,7 @@ Moderation Session Service keeps a shift in the lobby otherwise.
 | `LOG_LEVEL` | `info` | no | `debug`, `info`, `warn` or `error`. One JSON object per line on stdout and, from `4.0.0`, in `LOG_FILE` |
 | `SERVICE_DISCOVERY_URL` | empty | no | Base URL of Service Discovery. Empty turns registration off |
 | `INSTANCE_ID` | `server-rules-<hostname>` | no | Name of this instance in logs, `/status` and Service Discovery |
-| `INSTANCE_HOST` | unset | no | Address the Gateway should use, sent as `host` only when set (a run outside Docker) |
+| `INSTANCE_HOST` | unset | no | Address Service Discovery polls and Prometheus scrapes (the Gateway routed to it in Lab 3), sent as `host` only when set (a run outside Docker) |
 | `SERVICE_TOKEN` | - | with `SERVICE_DISCOVERY_URL` or `MESSAGE_BROKER_URL` | The stack's one token: sent as `X-Service-Token` to Service Discovery and, from `4.0.0`, as the gRPC metadata `x-service-token` to the broker, and the token `GET /logs` checks. No other route checks it |
 | `MESSAGE_BROKER_URL` | empty | yes in the team stack | `4.0.0`. The broker's gRPC target without a scheme (team stack: `message-broker-service:8071`). Empty turns the request consumer off, with one `broker.disabled` warning: no request reaches the instance through the broker |
 | `LOG_FILE` | `/var/log/server-rules/server-rules.jsonl` | no | `4.0.0`. The log file `GET /logs` reads; the image creates the directory for its non-root user. Empty: stdout only, and `GET /logs` answers `503 LOGS_UNAVAILABLE`. A path that cannot be written logs one `logs.file_unavailable` warning and leaves stdout only |
@@ -232,7 +232,6 @@ to grants/denies and can never "fail".
 | 2 | `version` is **one global monotonic sequence** shared across all five difficulties (not five independent sequences) - required because `GET /rulesets/{version}` takes no `difficulty` parameter, so a per-difficulty sequence would make that endpoint ambiguous | Anyone assuming version numbers are per-difficulty |
 | 3 | `Rules__StrictFactShape` defaults to **lenient**: an inconsistent fact (e.g. `major` present for `staff`) is nulled out with a warning, not rejected with `422`. Moderation Service builds these facts; a strict default would deadlock the whole decision flow at integration time over a field this service can safely ignore | Moderation Service |
 | 4 | The seeded rulesets for difficulties 1, 2, 4, 5 are **this service's own design** - only difficulty 3 is specified by the contract (verbatim). See the service's own README for the full seed content | Anyone expecting a specific ruleset at another difficulty |
-| 5 | **Ahead of the README contract (Lab 4).** The README still describes every request reaching this service through the Gateway with `X-Service-Token`; `4.0.0` takes them from the broker's queue `requests.server-rules` (§11), since the Lab 4 contract (#105) is not merged. The broker's names (the queue, `Subscribe` / `Reply` / `Ack`, `x-service-token` as metadata), the header policy (`X-Service-Token`, `Authorization`, hop-by-hop headers, `Host` and `Content-Length` dropped; a request id of 1 to 200 visible ASCII characters), the local `408` / `500` replies, the empty `topics` of the Service Discovery registration and the log events `broker.subscribed`, `broker.disabled`, `request.reply_failed` and `broker.ack_failed` follow the broker's and Service Discovery's code. `Protos/broker.proto` is a copy of the broker's `app/brokerpb/broker.proto`, unchanged, until the CPR has `shared/broker.proto` (#105). Nothing breaks meanwhile: the REST port still serves every route, so the Lab 3 Gateway keeps forwarding to it | Session and Moderation (they reach it through the broker from #115, #120), the Gateway (#110) |
 
 ---
 
@@ -259,16 +258,19 @@ to grants/denies and can never "fail".
 
 What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, prefix `server-rules`:
 
-- `GET /rulesets/current` and `POST /rulesets/{v}/evaluations`: service token only (Session and
+- Lab 2-3: `GET /rulesets/current` and `POST /rulesets/{v}/evaluations`: service token only (Session and
   Moderation call them). `GET /rulesets/{version}`: player JWT.
-- `/admin/*` and `/dev/*`: service token only, never on a player JWT alone. The service refuses a
+- Lab 2-3: `/admin/*` and `/dev/*`: service token only, never on a player JWT alone. The service refuses a
   request that carries `X-Player-Id`, as a second line.
-- This service checks no credential on its contract endpoints, so the Gateway is the only guard.
+- This service checks no credential on its contract endpoints: the Gateway checks a player's JWT and, from
+  Lab 4, the broker checks the service token of a service call (README "Authentication").
 - **Lab 4 (#110):** the Gateway keeps only `GET /rulesets/{version}` (player JWT) and `/health` of this
   service, and hands the player route to the broker's `requests.server-rules`; Session and Moderation
   reach this service through the broker, not the Gateway. `GET /logs` and `GET /metrics` are not
-  Gateway routes. #110 (IacovlevMaxim/gateway-service#15) is merged into the Gateway's `dev` and ships with its `4.0.0`; until the compose runs
-  that image the Lab 3 routes above keep working, since `4.0.0` still serves them on its REST port.
+  Gateway routes. #110 (IacovlevMaxim/gateway-service#15) shipped in the Gateway's `4.0.0`, which the
+  compose runs since #113, so the service-token routes above answer `404` at the Gateway: Session
+  `3.0.0`, still in the compose, gets `404` on `GET /rulesets/current` until its Lab 4 delivery (#130)
+  merges.
 - No CORS headers, no rate limiting, no `Idempotency-Key` support. `POST /evaluations` and
   `POST /admin/rulesets` are not idempotent - two identical requests create two things (a log
   line; a new ruleset version, respectively). Safe to retry: every `GET`, `PATCH`, `DELETE`.
@@ -312,7 +314,9 @@ own path (`/api/v1/...` without the `server-rules` prefix), since the Lab 4 Gate
 
 ## 11. Message Broker, logs and metrics (Lab 4)
 
-From `4.0.0`.
+From `4.0.0`, as CPR README "Message Broker", "Authentication" ("Through the Message Broker"), "Logs
+download" and "Monitoring" describe it (#105). `Protos/broker.proto` is a byte-identical
+copy of the CPR's [`shared/broker.proto`](../shared/broker.proto).
 
 ### The subscription
 

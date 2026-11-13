@@ -2311,7 +2311,9 @@ only required variable. From `4.0.0` (`d1vinexd/service-discovery-service:4.0.0`
 `http_sd_configs` targets, with the service token), `GET /metrics` and `POST /api/v1/alerts` (the broker's dead
 letters); it writes its log lines to `LOG_FILE` (default `/var/log/service-discovery/service-discovery.jsonl`, read
 back by `GET /logs`) and builds the whole system's logs download, `GET /api/v1/logs` (see [Logs download](#logs-download)).
-`/openapi.json` is no longer served. Details and the Prometheus scrape configuration:
+`/openapi.json` is no longer served. From `4.0.1` (`d1vinexd/service-discovery-service:4.0.1`, the compose's image, #156)
+it keeps an idle keep-alive connection 120 s instead of uvicorn's 5 s, the heartbeat interval, so heartbeats no longer
+fail now and then; the API is unchanged. Details and the Prometheus scrape configuration:
 [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md).
 
 `d1vinexd/server-rules-service` is published for `linux/amd64` and `linux/arm64`.

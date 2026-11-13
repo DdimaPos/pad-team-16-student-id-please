@@ -75,6 +75,27 @@
             }
           ],
           "request": { "method": "GET", "header": [], "url": "{{base_url}}/metrics" }
+        },
+        {
+          "name": "GET /api/v1/nope - an unknown path is 404",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/nope",
+            "description": "Answered in the shared error envelope, before the service token is looked at."
+          }
         }
       ]
     },
@@ -142,6 +163,32 @@
             "method": "GET",
             "header": [{ "key": "X-Service-Token", "value": "not-the-token" }],
             "url": "{{base_url}}/api/v1/topics"
+          }
+        },
+        {
+          "name": "POST /api/v1/topics - 405",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('405', () => pm.response.to.have.status(405));",
+                  "pm.test('METHOD_NOT_ALLOWED', () => pm.expect(pm.response.json().error.code).to.eql('METHOD_NOT_ALLOWED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/topics",
+            "description": "Topics exist because a subscriber names them over gRPC; the HTTP side only lists them."
           }
         }
       ]
@@ -289,6 +336,59 @@
           }
         },
         {
+          "name": "GET /api/v1/dead-letters?limit=abc - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.include('limit'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/dead-letters?limit=abc"
+          }
+        },
+        {
+          "name": "GET /api/v1/dead-letters?offset=2147483648 - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.include('offset'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/dead-letters?offset=2147483648",
+            "description": "offset is at most 2^31 - 1, the int32 of ListDeadLettersRequest on the gRPC side."
+          }
+        },
+        {
           "name": "GET /api/v1/dead-letters without a token: 403",
           "event": [
             {
@@ -431,6 +531,58 @@
             "method": "GET",
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }],
             "url": "{{base_url}}/logs?since=2026-11-05T10:00:00"
+          }
+        },
+        {
+          "name": "GET /logs - until not after since is 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('until'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/logs?since=2026-11-05T11:00:00Z&until=2026-11-05T10:00:00Z"
+          }
+        },
+        {
+          "name": "GET /logs - an unknown level is 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('names the field', () => pm.expect(pm.response.json().error.details.errors[0].field).to.eql('level'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/logs?level=loud"
           }
         }
       ]

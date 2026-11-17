@@ -110,6 +110,9 @@ services:
     networks:
       - student-id-net
 
+  # Lab 5 (#175): this block becomes rules-postgres-1..3 (primary and two hot standbys, pg-failover) and
+  # server-rules-service moves to 5.0.0 with the multi-host ConnectionStrings__RulesDb, following the pattern of
+  # #182; until then one node with a single-host string, which 5.0.0 also accepts.
   rules-postgres:
     image: postgres:17-alpine
     restart: unless-stopped

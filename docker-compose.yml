@@ -19,6 +19,19 @@ name: student-id-please
 
 x-reference-year: &reference_year "2026"
 
+# The members of Discord DMs' replica set (#164, #178): the template the three share.
+x-dms-mongo-member: &dms_mongo_member
+  image: mongo:7
+  restart: unless-stopped
+  entrypoint: ["bash", "/rs/node.sh"]
+  healthcheck:
+    test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  networks:
+    - student-id-net
+
 services:
   # Service Discovery (README "Service Discovery"): the registry every instance and the broker register with, the
   # broker routes from and Prometheus reads its targets from. One copy, registry in memory; after a restart every instance is
@@ -268,21 +281,57 @@ services:
     networks:
       - student-id-net
 
-  dms-mongo:
-    image: mongo:7
-    restart: unless-stopped
+  # Discord DMs' database (Lab 5, #164 pattern, #178): the replica set rs0 of three members, failover by MongoDB's own
+  # election (deployments/mongo-rs/README.md). Only dms-mongo-1 gets the root user; dms-mongo-init initiates the set
+  # once and creates etl_reader. The service lists the three members and names the set (replicaSet=rs0). Port 27019
+  # of dms-mongo-1 is for debugging only (directConnection=true).
+  dms-mongo-1:
+    <<: *dms_mongo_member
     environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?set MONGO_REPLICA_KEY}
       MONGO_INITDB_ROOT_USERNAME: ${DMS_MONGO_USER:-dms_user}
       MONGO_INITDB_ROOT_PASSWORD: ${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}
-    volumes:
-      - dms_mongodata:/data/db
     ports:
       - "27019:27017"
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+    volumes:
+      - dms_mongodata_1:/data/db
+      - ./deployments/mongo-rs:/rs:ro
+
+  dms-mongo-2:
+    <<: *dms_mongo_member
+    environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?set MONGO_REPLICA_KEY}
+    volumes:
+      - dms_mongodata_2:/data/db
+      - ./deployments/mongo-rs:/rs:ro
+
+  dms-mongo-3:
+    <<: *dms_mongo_member
+    environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?set MONGO_REPLICA_KEY}
+    volumes:
+      - dms_mongodata_3:/data/db
+      - ./deployments/mongo-rs:/rs:ro
+
+  dms-mongo-init:
+    image: mongo:7
+    restart: "no"
+    entrypoint: ["bash", "/rs/init.sh"]
+    environment:
+      MONGO_RS_MEMBERS: "dms-mongo-1 dms-mongo-2 dms-mongo-3"
+      MONGO_ROOT_USER: ${DMS_MONGO_USER:-dms_user}
+      MONGO_ROOT_PASSWORD: ${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}
+      MONGO_APP_DB: dms_db
+      ETL_READER_PASSWORD: ${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}
+    volumes:
+      - ./deployments/mongo-rs:/rs:ro
+    depends_on:
+      dms-mongo-1:
+        condition: service_healthy
+      dms-mongo-2:
+        condition: service_healthy
+      dms-mongo-3:
+        condition: service_healthy
     networks:
       - student-id-net
 
@@ -312,12 +361,12 @@ services:
         condition: service_healthy
       message-broker-service:
         condition: service_healthy
-      dms-mongo:
-        condition: service_healthy
+      dms-mongo-init:
+        condition: service_completed_successfully
       dms-redis:
         condition: service_healthy
     environment:
-      MONGODB_URI: "mongodb://${DMS_MONGO_USER:-dms_user}:${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}@dms-mongo:27017/dms_db?authSource=admin"
+      MONGODB_URI: "mongodb://${DMS_MONGO_USER:-dms_user}:${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}@dms-mongo-1:27017,dms-mongo-2:27017,dms-mongo-3:27017/dms_db?authSource=admin&replicaSet=rs0&retryWrites=true"
       # Required with several copies: a message stored by one copy reaches the players connected to the others.
       REDIS_URL: redis://dms-redis:6379/0
       DEV_ENDPOINTS: ${DMS_DEV_ENDPOINTS:-true}
@@ -702,7 +751,9 @@ volumes:
   rules_pgdata:
   university_record_pgdata:
   moderation_pgdata:
-  dms_mongodata:
+  dms_mongodata_1:
+  dms_mongodata_2:
+  dms_mongodata_3:
   player_pgdata:
   session_pgdata:
   applicant_pgdata:

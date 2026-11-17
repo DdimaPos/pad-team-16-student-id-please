@@ -355,6 +355,16 @@ MongoDB `dms_db`: `sessions` (members and scopes), `channels` (unique per sessio
 `visible_to`), `messages` (indexed by channel and time, newest first), `consumed_events` (dedup),
 `ws_tickets` (one-time tickets, removed on use and by a TTL index when they expire).
 
+**Replica set (Lab 5, #164, #178).** In the team stack `dms_db` lives on the replica set `rs0` of three members,
+`dms-mongo-1`, `dms-mongo-2` and `dms-mongo-3`, built with `deployments/mongo-rs/` of the CPR: a shared key file, the
+set initiated once by `dms-mongo-init` (which also creates the ETL's read-only `etl_reader`), and MongoDB's own
+election as the failover (5 s timeout). The service connects with
+`mongodb://<user>:<pw>@dms-mongo-1:27017,dms-mongo-2:27017,dms-mongo-3:27017/dms_db?authSource=admin&replicaSet=rs0&retryWrites=true`;
+the driver finds the primary and retries a write once across an election, so the image needs no change for it
+(`4.0.0` runs on it as it is). Measured on the team stack: a new primary 2 s after `docker stop` of the old one, the
+Postman collection green before, after the election and after the old primary rejoined as a secondary. `dms-redis`
+stays one node: it is Pub/Sub, not storage.
+
 ## Docker image, versioning and CI
 
 The image tag is the single line of the `VERSION` file; its MAJOR is the laboratory number, so every

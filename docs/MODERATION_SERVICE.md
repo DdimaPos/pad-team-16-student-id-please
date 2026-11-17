@@ -81,7 +81,7 @@ naming the variable.
 
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | - | yes | PostgreSQL connection string (pgx format) |
+| `DATABASE_URL` | - | yes | PostgreSQL connection string (pgx format). Lab 5, the team stack: every node of the cluster, `postgres://<user>:<pw>@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/moderation_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=2`; the driver connects to whichever node is the primary |
 | `SERVICE_TOKEN` | - | yes | The stack's one `X-Service-Token`: the `x-service-token` metadata of every call to the broker, sent to Service Discovery, and checked here on `/logs`, `/api/v1/admin/*` and `/api/v1/dev/*` |
 | `MESSAGE_BROKER_URL` | empty | no | The broker's gRPC address, `message-broker-service:8071` in the team stack. Every peer is called and every event published through it. Empty = the mock mode: the built-in mocks answer for every peer and receive the events. Replaces Lab 3's `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL` and `RULES_URL` |
 | `LOG_FILE` | `/var/log/moderation/moderation.jsonl` | no | The log file next to stdout, read by `GET /logs`. Set but empty = stdout only. Outside Docker, a writable path such as `./logs/moderation.jsonl` |
@@ -419,6 +419,23 @@ need is handled here:
 ## Storage
 
 PostgreSQL `moderation_db`: `decisions` (one row per applicant per session, immutable, with a `snapshot` jsonb column), `bans` (filled by ban decisions, searchable by student ID and name), `outbox` (the `decision.recorded` envelopes, oldest first) and `outbox_deliveries` (the state of every event for every consumer, and which instance holds or last held it). Migrations are embedded and applied at startup under an advisory lock; the demo seed runs under another one.
+
+**Replicated database (Lab 5, #164, #177).** In the team stack `moderation_db` runs as `moderation-postgres-1` (the
+first primary) and two hot standbys, `moderation-postgres-2` and `moderation-postgres-3`, built with
+`deployments/postgres-ha/` of the CPR; the `pg-failover` agent promotes the most advanced standby when the primary
+stops, and a commit waits for one standby, so a failover loses no decision that was answered.
+
+- **Connection.** The multi-host `DATABASE_URL` above; pgx tries the nodes in order and keeps only a writable one,
+  so the service follows a failover without a restart. The pool checks idle connections every 5 s.
+- **While no primary answers** (a few seconds during a failover) a store call answers `500 DEPENDENCY_UNAVAILABLE`
+  with `details.dependency: "postgres"`, never `500 INTERNAL_ERROR`, because the broker's breakers count every
+  `5xx` but that one; `GET /status` answers `503 degraded` and `/health/ready` is not ready. A decision is written
+  with its outbox row in one transaction, so either both exist or neither; the relay gives each pass a deadline and
+  publishes a pending `decision.recorded` once the new primary answers.
+- **The ETL** (#165) reads `decisions` as `etl_reader` (migration `0006`): every column but the audit `snapshot`;
+  nothing of `bans` or the outbox. Its watermark is `decided_at`.
+- **Measured** on the team stack: a standby promoted 5.8 s after `docker stop` of the primary, and the Postman
+  collection green before, after the failover and after the old primary rejoined as a standby.
 
 ## Docker image, versioning and CI
 

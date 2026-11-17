@@ -27,18 +27,19 @@ git submodule update --init --recursive
 - Gateway (`gateway-service`): shared - the repository is owned by Iacovlev Maxim, every member contributes through PRs.
 - Service Discovery (`service-discovery-service`, Lab 3): Titerez Vladislav; every member is a contributor and PRs need two approvals, as in the Gateway.
 - Message Broker (`message-broker-service`, Lab 4): Titerez Vladislav; every member is a contributor and PRs need two approvals, as in the Gateway.
+- ETL Service (`etl-service`, Lab 5): Titerez Vladislav; every member is a contributor and PRs need two approvals, as in the Gateway.
 
 ## Service Boundaries
 
 The system is decomposed following a data ownership principle: for every piece of state, exactly one service is the source of truth and the only service allowed to write it. Other services may read or trigger changes only through that owning service's API. This is why applicant-related data is split into three services (Applicant, Credential, University Record) rather than one - each owns a distinct category of data (identity, documents, hidden institutional records) with a different lifecycle and different access rules, even though they describe the same real-world person.
 
-No service calls another service, and no client calls a service, directly. A client reaches a service only through the [Gateway](#gateway); from Lab 4 the Gateway and every service reach a service only through the [Message Broker](#11-message-broker), as a request on its queue or an event on a topic (see [Communication Patterns](#communication-patterns)). Neither the Gateway nor the broker owns business state (see [9. Gateway](#9-gateway), [11. Message Broker](#11-message-broker)). The one exception, since Lab 3, is [Service Discovery](#10-service-discovery): every instance and the broker register with it directly, it polls every instance's `GET /status` and, from Lab 4, fetches every component's [`GET /logs`](#logs-download) directly, because the broker itself depends on the registry to know which instances exist.
+No service calls another service, and no client calls a service, directly. A client reaches a service only through the [Gateway](#gateway); from Lab 4 the Gateway and every service reach a service only through the [Message Broker](#11-message-broker), as a request on its queue or an event on a topic (see [Communication Patterns](#communication-patterns)). Neither the Gateway nor the broker owns business state (see [9. Gateway](#9-gateway), [11. Message Broker](#11-message-broker)). The one exception, since Lab 3, is [Service Discovery](#10-service-discovery): every instance and the broker register with it directly, it polls every instance's `GET /status` and, from Lab 4, fetches every component's [`GET /logs`](#logs-download) directly, because the broker itself depends on the registry to know which instances exist. From Lab 5 one more component reaches past the services: the [ETL Service](#12-etl-service) reads every service's database directly and read-only to load the data warehouse, and no business flow depends on it (see [Data Management](#data-management)).
 
 **Note on applicant initialization:** the topic allows any of Applicant, Credential, or University Record Service to be the first to encounter a new applicant. To keep this from turning into three services writing to each other's data, we resolve it as follows: whichever service is contacted first generates a shared `applicant_id` and pushes an `ApplicantInitialized` event carrying that ID plus the fields it was given to the other two services, which create their own record under the same `applicant_id`, populated only with the fields relevant to them. Each service still only ever writes its own record - there is no cross-service write, only event-driven record creation.
 
 **Note on applicant assignment to sessions:** the topic does not specify how a session acquires its `current_applicant_id`. We resolve this as: when the Moderator requests the next applicant, Server Moderation Session Service calls Applicant Service to generate the next applicant profile, and stores the returned `applicant_id` as `current_applicant_id` for that session.
 
-**Note on scoped access assignment:** the topic specifies that access to University Record Service categories (enrollment, email-groups, courses, fcim-logs) is distributed among Junior Moderators within a session, but does not say who assigns it. We resolve this as: Server Moderation Session Service, which already assigns player roles when a session is formed, also assigns each Junior Moderator a subset of record categories at that same point, and passes this mapping to University Record Service so it can enforce access per `player_id` + `session_id`.
+**Note on scoped access assignment:** the topic specifies that access to University Record Service categories (enrollment, email-groups, courses, fcim-logs) is distributed among Junior Moderators within a session, but does not say who assigns it. We resolve this as: Server Moderation Session Service, which already assigns player roles when a session is formed, also assigns each Junior Moderator a subset of record categories at that same point, and passes this mapping to University Record Service so it can enforce access per `player_id` + `session_id`. From Lab 5 the mapping travels as the `grant-scopes` step of the saga that starts the shift (see [Sagas](#sagas)).
 
 ### 1. Player Service
 
@@ -50,7 +51,7 @@ No service calls another service, and no client calls a service, directly. A cli
 
 - **Owns:** the moderation session/shift itself - `session_id`, assigned Moderator, assigned Junior Moderators and the record categories each of them may read, session status, shift difficulty, `ruleset_version` used by the shift, `current_applicant_id`, number of applications processed, session score, penalties, start/end timestamps
 - **Does NOT own:** applicant data, and does NOT make the admission decision - it only tracks that a decision is in progress and records the eventual outcome
-- **Interacts with:** Player Service (checks players and reads their level when they create or join a session, reports shift results), Server Rules Service (gets the ruleset for the shift when it starts), Moderation Service (Moderation reads the current applicant from it before recording a decision, and reports the outcome back), Discord DMs Service (supplies session membership so it can scope its own channels), Applicant Service (requests a new applicant profile per the assignment logic above), University Record Service (assigns each Junior Moderator's record-category scope when the session is formed)
+- **Interacts with:** Player Service (checks players and reads their level when they create or join a session, reports shift results), Server Rules Service (gets the ruleset for the shift when it starts), Moderation Service (Moderation reads the current applicant from it before recording a decision, and reports the outcome back), Discord DMs Service (supplies session membership so it can scope its own channels), Applicant Service (requests a new applicant profile per the assignment logic above), University Record Service (assigns each Junior Moderator's record-category scope when the session is formed); from Lab 5 it starts every shift as a saga that the Message Broker coordinates (see [Sagas](#sagas))
 
 ### 3. Applicant Service
 
@@ -91,9 +92,9 @@ No service calls another service, and no client calls a service, directly. A cli
 
 ### 9. Gateway
 
-- **Owns:** no data. It holds only the table of client routes (prefix => service), the credential checks and the task timeout and concurrent task limit at the entry point of the system. From Lab 4 it keeps one circuit breaker, on the Message Broker
+- **Owns:** no data. It holds only the table of client routes (prefix => service), the credential checks and the task timeout and concurrent task limit at the entry point of the system. From Lab 4 it keeps one circuit breaker, on the Message Broker. From Lab 5 it keeps a cache of client `GET` answers and of the authentication data in three cache nodes - copies whose owners stay the source of truth - and the list of revoked tokens, which only it writes (see [Caching](#caching))
 - **Does NOT own:** any service's data, the player accounts or the issuing of tokens (Player Service), the chat connection (Discord DMs Service carries it; the Gateway only negotiates it), the instance registry (Service Discovery), or the choice of an instance (the Message Broker)
-- **Interacts with:** the client, as its single point of entry; the Message Broker, to which it sends each client request as a `Request` to the owning service's queue and from which it gets the reply. See [Gateway](#gateway)
+- **Interacts with:** the client, as its single point of entry; the Message Broker, to which it sends each client request as a `Request` to the owning service's queue and from which it gets the reply; from Lab 5 the cache nodes `cache-1`, `cache-2`, `cache-3`. See [Gateway](#gateway)
 
 ### 10. Service Discovery
 
@@ -103,9 +104,15 @@ No service calls another service, and no client calls a service, directly. A cli
 
 ### 11. Message Broker
 
-- **Owns:** delivery (Lab 4) - the topics (`events.<event_type>`), the subscriptions and the queue of each subscribed service, the request queue of every service (`requests.<service>`), the delivery state of every message (attempts, acks) and the dead letter channel; the choice of the instance that gets a message and one circuit breaker per instance
-- **Does NOT own:** any business data (an event's envelope and a request's body pass through it byte for byte), the event catalog (each producer owns its events), or the instance registry (Service Discovery)
-- **Interacts with:** the Gateway and every service, over gRPC: each instance holds one `Subscribe` stream and sends its `Publish`, `Ack`, `Request` and `Reply` on the same connection; Service Discovery, where it registers, reads the `up` instances and their loads, marks a tripped instance `down` and posts its dead letter alerts. See [Message Broker](#message-broker)
+- **Owns:** delivery (Lab 4) - the topics (`events.<event_type>`), the subscriptions and the queue of each subscribed service, the request queue of every service (`requests.<service>`), the delivery state of every message (attempts, acks) and the dead letter channel; the choice of the instance that gets a message and one circuit breaker per instance; from Lab 5 the saga log - every saga it coordinates, its steps and their outcomes (see [Sagas](#sagas))
+- **Does NOT own:** any business data (an event's envelope and a request's body pass through it byte for byte), the event catalog (each producer owns its events), the instance registry (Service Discovery), or the effect of a saga step (each participant owns its own)
+- **Interacts with:** the Gateway and every service, over gRPC: each instance holds one `Subscribe` stream and sends its `Publish`, `Ack`, `Request` and `Reply` on the same connection; Service Discovery, where it registers, reads the `up` instances and their loads, marks a tripped instance `down` and posts its dead letter alerts; from Lab 5 Session, which starts a saga with `StartSaga`, and the saga participants (Session, University Record, Discord DMs), whose step routes it calls as requests. See [Message Broker](#message-broker)
+
+### 12. ETL Service
+
+- **Owns:** the data warehouse (Lab 5) - `warehouse_db`, a star schema of copies of the services' data built for analytics - and the record of its own runs and of how far it has read each source table
+- **Does NOT own:** any business data: every row in the warehouse is a copy whose owner stays the source of truth, and no business flow reads the warehouse
+- **Interacts with:** every service database, which it reads read-only as `etl_reader` from a standby (the one exception to the data rule, see [Data Management](#data-management)); Service Discovery, where it registers as `etl`; Grafana, whose "Analytics" dashboard reads the warehouse. See [Data warehouse and ETL](#data-warehouse-and-etl)
 
 ## Architecture Diagram
 
@@ -138,7 +145,7 @@ The red dotted lines are the monitoring of #113. Prometheus finds the instances 
 
 The green dashed line is the one client path that bypasses the Gateway: the chat WebSocket. The client first gets a one-time ticket and a WebSocket URL through the Gateway (see [Gateway](#gateway)), then connects to Discord DMs directly on port `8086`, so the Gateway is not kept busy carrying the chat.
 
-Each service owns its database, drawn beneath it, and no database is shared. Player, Session, Moderation, Server Rules, Applicant and University Record use PostgreSQL, Credential uses MongoDB, and Discord DMs uses MongoDB for messages and Redis for Pub/Sub. Session keeps everything in PostgreSQL ([`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md)), so its Redis cache in [Databases](#databases) is not drawn.
+Each service owns its database, drawn beneath it, and no database is shared. Player, Session, Moderation, Server Rules, Applicant and University Record use PostgreSQL, Credential uses MongoDB, and Discord DMs uses MongoDB for messages and Redis for Pub/Sub. Session keeps everything in PostgreSQL ([`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md)).
 
 ---
 
@@ -146,7 +153,7 @@ Each service owns its database, drawn beneath it, and no database is shared. Pla
 
 ### Languages
 
-The eight services use two languages, **Go** and **C#**. The Gateway, added in Lab 2, is written in **Python** - the language the lab requires for it - and so are Service Discovery (Lab 3) and the Message Broker (Lab 4).
+The eight services use two languages, **Go** and **C#**. The Gateway, added in Lab 2, is written in **Python** - the language the lab requires for it - and so are Service Discovery (Lab 3), the Message Broker (Lab 4) and the ETL Service (Lab 5).
 
 | #   | Service                           | Owner              | Language | Framework                 |
 | --- | --------------------------------- | ------------------ | -------- | ------------------------- |
@@ -161,10 +168,13 @@ The eight services use two languages, **Go** and **C#**. The Gateway, added in L
 | 9   | Gateway                           | whole team         | Python   | FastAPI + `httpx`         |
 | 10  | Service Discovery                 | Titerez Vladislav  | Python   | FastAPI + uvicorn + `httpx` |
 | 11  | Message Broker                    | Titerez Vladislav  | Python   | `grpcio` + FastAPI + uvicorn |
+| 12  | ETL Service                       | Titerez Vladislav  | Python   | FastAPI + uvicorn         |
 
 **Service Discovery (Lab 3) is Python 3.12**, the language the lab bans for the team, with FastAPI + uvicorn and `httpx` for the status polling and the Telegram alerts. Its registry is held in memory in its single copy, with no database: after a restart every instance is back in the registry within one heartbeat (5 s), so there is nothing worth persisting.
 
 **The Message Broker (Lab 4) is Python 3.12** for the same reason: the lab asks for the team's banned language or one not used in a service. It reuses Service Discovery's logging, status and breaker modules. `grpc.server` with a bounded thread pool serves its gRPC API on `8071` (one thread per RPC), FastAPI + uvicorn its HTTP side on `8070` (`/status`, `/logs`, `/metrics`, the topics and dead letter listings). **The limit:** the GIL runs one Python thread at a time, so the threads give concurrency for waiting on streams and on the disk, not parallel CPU work. A broker mostly waits, so this is acceptable here; the thread arithmetic is in [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) §12.
+
+**The ETL Service (Lab 5) is Python 3.12** as well: it reuses the logging, status, logs and metrics modules of Service Discovery and the broker, and its work - reading the new rows of every service database once a minute and upserting them into the warehouse - waits on the databases far more than it computes, so the GIL costs nothing here.
 
 **Why Go for six services.** Most of our services do the same kind of work: receive an HTTP request, call one or two other services, read or write their own database, and answer. Go is built for exactly this. It compiles to one small binary, starts in milliseconds, and goroutines make it simple to call several services at the same time (Moderation Service calls four at once). Go is also quick to learn, which matters because most of the team is picking it up during this course.
 
@@ -188,14 +198,14 @@ Every service runs in its own Docker container. From Lab 4 services reach each o
 
 ### Databases
 
-**Rule: every service has its own database, and no service ever connects to another service's database.** Why this rule exists is explained in Communication Contract, Data Management.
+**Rule: every service has its own database, and no service ever connects to another service's database.** Why this rule exists is explained in Communication Contract, Data Management. The one exception, from Lab 5, is the ETL Service, which reads every service database read-only to load the data warehouse; the same section explains why that is safe.
 
-We use three engines. PostgreSQL is the default. MongoDB and Redis are used only where there is a concrete reason.
+We use three engines for the services' data. PostgreSQL is the default. MongoDB and Redis are used only where there is a concrete reason. From Lab 5 the Gateway's cache runs on Valkey, the open fork of Redis 7.2 with the same protocol, and the data warehouse on PostgreSQL.
 
 | Service                   | Database                      | Engine            | Why this engine                                                                                                                                                                                                                                            |
 | ------------------------- | ----------------------------- | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Player                    | `player_db`                   | PostgreSQL        | Accounts, XP, shift history and the disciplinary log are tables with relations between them. When a shift ends, XP and history must update together, which needs a transaction.                                                                            |
-| Server Moderation Session | `session_db`, `session_cache` | PostgreSQL, Redis | History of shifts (who, when, score) goes to PostgreSQL. The state of the shift running right now (current applicant, counters) goes to Redis because it is read on every action and must be fast.                                                         |
+| Server Moderation Session | `session_db`                  | PostgreSQL        | Shifts (who, when, score), their players and roles, the current applicant and the counters are tables, and ending a shift must update them together. The first plan kept the running shift in Redis for speed; one indexed row read is fast enough, so Session never used Redis. |
 | Applicant                 | `applicant_db`                | PostgreSQL        | Every applicant has the same fields (name, student ID, major, year, status, courses). A fixed structure is a table.                                                                                                                                        |
 | Credential                | `credential_db`               | MongoDB           | Each applicant has a bundle of documents, and every document type has different fields. In a table this would be many empty columns. A document store keeps each bundle as one JSON document.                                                              |
 | Server Rules              | `rules_db`                    | PostgreSQL        | Rulesets are versioned, and each shift records which version it used, so versions must be queryable. Rule conditions are stored as JSONB so a new rule type does not need a schema change.                                                                 |
@@ -203,13 +213,32 @@ We use three engines. PostgreSQL is the default. MongoDB and Redis are used only
 | Moderation                | `moderation_db`               | PostgreSQL        | Each decision is an audit record: who decided, what, whether it was correct, which rules were broken. Queried by session, moderator and applicant. Never changed after it is written.                                                                      |
 | Discord DMs               | `dms_db`, `dms_pubsub`        | MongoDB, Redis    | Messages are appended and read back per channel in time order, which is what a Mongo collection with an index does. Redis Pub/Sub is not storage: it passes each new message to every running instance of the service so all connected players receive it. |
 | Service Discovery         | none                          | in memory         | The registry is rebuilt by the heartbeats within 5 s of a restart, and Service Discovery runs as one copy, so a database would add a dependency without keeping anything that matters.                                                                     |
-| Message Broker            | `/data/broker.db`             | SQLite (WAL)      | Messages, subscriptions and dead letters must survive a restart, but only the broker's one copy reads them. An embedded file on a named volume needs no server; a publish is on disk (`synchronous=FULL`) before it is answered. |
+| Message Broker            | `/data/broker.db`             | SQLite (WAL)      | Messages, subscriptions, dead letters and, from Lab 5, the saga log must survive a restart, but only the broker's one copy reads them. An embedded file on a named volume needs no server; a publish or a saga change is on disk (`synchronous=FULL`) before it is acted on. |
+| Gateway (Lab 5)           | the cache                     | Valkey 8          | A cache of `GET` answers and of the authentication data, spread over three nodes. Nothing in it is a source of truth, so it keeps nothing on disk; see [Caching](#caching). |
+| ETL Service (Lab 5)       | `warehouse_db`                | PostgreSQL 17     | A star schema for analytics across services: dimensions and facts are tables joined by keys. The ETL rebuilds it from the services; see [Data warehouse and ETL](#data-warehouse-and-etl). |
+
+**Copies (Lab 5).** Every service database runs as a primary and two replicas, so a database server that stops no longer takes its service down (see [Database replication](#database-replication)):
+
+| Database | Containers | How the copies work |
+| --- | --- | --- |
+| `player_db` | `player-postgres-1`, `player-postgres-2`, `player-postgres-3` | PostgreSQL: `-1` starts as the primary, `-2` and `-3` as hot standbys; streaming replication, synchronous to one standby; `pg-failover` promotes a standby when the primary stops |
+| `session_db` | `session-postgres-1`, `-2`, `-3` | the same |
+| `applicant_db` | `applicant-postgres-1`, `-2`, `-3` | the same |
+| `rules_db` | `rules-postgres-1`, `-2`, `-3` | the same |
+| `university_record_db` | `university-record-postgres-1`, `-2`, `-3` | the same |
+| `moderation_db` | `moderation-postgres-1`, `-2`, `-3` | the same |
+| `credential_db` | `credential-mongo-1`, `-2`, `-3` | MongoDB replica set `rs0`: the members elect a new primary when the primary stops |
+| `dms_db` | `dms-mongo-1`, `-2`, `-3` | the same |
+| `dms_pubsub` | `dms-redis` | not replicated: Pub/Sub keeps nothing that must survive |
+| `/data/broker.db` | `message-broker-service` (volume `broker_data`) | not replicated: one broker |
+| the cache | `cache-1`, `cache-2`, `cache-3` | not replicated: three shards of a cache; a lost node costs only cache misses (see [Cache sharding](#cache-sharding)) |
+| `warehouse_db` | `warehouse-postgres` | not replicated: the ETL rebuilds it |
 
 ---
 
 ## Communication Patterns
 
-A client sends every request to the **Gateway** over REST (`{gateway}/api/v1/<service>/...`, see [Gateway](#gateway)). From Lab 4 everything behind the Gateway travels through the **Message Broker** over gRPC: the Gateway hands a client's request to the broker, and a service calling another service, or announcing an event, talks only to the broker (see [Message Broker](#message-broker)). A caller never addresses a service or an instance directly (the exceptions are the calls of [Service Discovery](#service-discovery)). On that common path, components talk in three ways. Each way has one rule for when to use it.
+A client sends every request to the **Gateway** over REST (`{gateway}/api/v1/<service>/...`, see [Gateway](#gateway)). From Lab 4 everything behind the Gateway travels through the **Message Broker** over gRPC: the Gateway hands a client's request to the broker, and a service calling another service, or announcing an event, talks only to the broker (see [Message Broker](#message-broker)). A caller never addresses a service or an instance directly (the exceptions are the calls of [Service Discovery](#service-discovery) and, from Lab 5, the ETL's reads of the databases). On that common path, components talk in four ways. Each way has one rule for when to use it.
 
 ### Rule 1. You need an answer right now: a request (REST at the Gateway, gRPC through the broker)
 
@@ -227,6 +256,10 @@ The producer writes the event to its own outbox table in the same database trans
 
 Players chat in channels and must see new messages instantly. Discord DMs Service keeps one WebSocket connection open per player. No other service holds client connections. The connection is **negotiated through the Gateway but not carried by it**: the client asks the Gateway for a connection, gets back a WebSocket URL with a one-time ticket, and connects to Discord DMs Service directly, so the Gateway is not kept busy in the middle of every chat (see [`POST /api/v1/ws-tickets`](#post-apiv1ws-tickets---consumed-by-client)). Channel lists and message history are also available over REST, through the Gateway, so a client that reconnects can catch up.
 
+### Rule 4. Several services must change together or not at all: a saga, driven by the broker (Lab 5)
+
+Example: a shift starts. Session, University Record and Discord DMs must each change their own database - the session becomes active, the juniors get their record scopes, the channels exist - and a shift with only some of these is broken. No transaction can span three databases, and two-phase commit would hold locks in all three while a coordinator decides. Instead, Session asks the broker to run the saga `shift.start`: the broker calls each participant's step route in turn, as an ordinary request on its queue, writes every outcome to its saga log, and when a step fails calls the compensations of the steps already done, in reverse order. Each step commits on its own; the three databases agree at the end of the saga, not at every moment, and the moment in between has a name (`starting`). The full rules are under [Sagas](#sagas).
+
 ### Every arrow in the diagram and the rule it follows
 
 "`A => GW => MB => B`" means A calls the Gateway over REST, which sends the request through the Message Broker to one instance of B; "`A => MB => B`" is a request from a service through the broker; "`A -> events.x -> B`" is an event A publishes to the topic `events.x`, delivered to B's queue. Paths are the service's own paths; through the Gateway they carry the service prefix (`/api/v1/player/...`).
@@ -239,8 +272,9 @@ Players chat in channels and must see new messages instantly. Discord DMs Servic
 | Session picks the ruleset for a new shift                               | Request `GET /rulesets/current`             | Session => MB => Server Rules                                        | The shift cannot start without knowing its `ruleset_version`                                               |
 | Session requests the next applicant                                     | Request `POST /applicants/next`             | Session => MB => Applicant                                           | Needs the `applicant_id` now                                                                               |
 | Applicant is initialized (`ApplicantInitialized` in Service Boundaries) | Event `applicant.initialized`               | the service contacted first -> `events.applicant.initialized` -> the other two | Two listeners, no waiting, no cross-service writes                                               |
-| Session assigns record scopes to Junior Moderators                      | Event `session.started`                     | Session -> `events.session.started` -> University Record             | Membership and scopes travel together in one event                                                         |
-| Session supplies channel membership                                     | Events `session.started`, `session.ended`   | Session -> `events.session.started`, `events.session.ended` -> Discord DMs | Discord DMs creates and archives channels on its own                                                 |
+| A shift starts (Lab 5)                                                  | Saga `shift.start`                          | client => GW => MB => Session; Session => MB `StartSaga`; MB => Session, University Record, Discord DMs (the steps) | Three databases change together or not at all; see [Sagas](#sagas) |
+| Session assigns record scopes to Junior Moderators                      | Saga step `grant-scopes` (Lab 5)            | MB => University Record `POST /saga-steps/grant-scopes`              | The shift may not run without the juniors' access, and the broker undoes it when a later step fails |
+| Session supplies channel membership                                     | Saga step `create-channels` (Lab 5), event `session.ended` | MB => Discord DMs `POST /saga-steps/create-channels`; Session -> `events.session.ended` -> Discord DMs | The channels must exist before the shift is active; archiving them needs no answer |
 | Moderator submits a decision                                            | Request `POST /decisions`                   | client => GW => MB => Moderation                                     | The verdict must come back now                                                                             |
 | Session supplies the current applicant                                  | Request `GET /sessions/{id}`                | Moderation => MB => Session                                          | Moderation checks that the decision is about the current applicant and reads the shift's `ruleset_version` |
 | Moderation gathers data for the verdict                                 | Requests, three in parallel                 | Moderation => MB => Applicant, Credential, University Record         | All three answers are needed to know what is true about the applicant                                      |
@@ -249,7 +283,7 @@ Players chat in channels and must see new messages instantly. Discord DMs Servic
 | A player opens the chat                                                 | Request `POST /ws-tickets`, then WebSocket  | client => GW => MB => Discord DMs (ticket); client ↔ Discord DMs (socket) | The Gateway authorizes the connection but does not carry it                                           |
 | Players chat during a shift                                             | WebSocket (requests for history)            | client ↔ Discord DMs; history client => GW => MB => Discord DMs      | Push in real time                                                                                          |
 | An instance takes its requests and events (Lab 4)                       | gRPC `Subscribe` stream                     | every instance of the eight services => MB                           | The broker never dials a service; the stream carries its requests and events, and the instance answers on the same connection |
-| An instance registers and sends heartbeats (Lab 3)                      | REST `PUT /instances/{instance_id}`         | every instance of the eight services and the broker => Service Discovery directly | The broker needs the registry to route, so registration cannot go through it                |
+| An instance registers and sends heartbeats (Lab 3)                      | REST `PUT /instances/{instance_id}`         | every instance of the eight services, the broker and, from Lab 5, the ETL => Service Discovery directly | The broker needs the registry to route, so registration cannot go through it                |
 | An instance shuts down gracefully (Lab 3)                               | REST `DELETE /instances/{instance_id}`      | the instance => Service Discovery directly                           | Removes it from the registry at once instead of after the 15 s TTL                                         |
 | Service Discovery checks health and load (Lab 3)                        | REST `GET /status`                          | Service Discovery => every registered instance directly              | One specific instance is checked, which a queue cannot address                                             |
 | Service Discovery fetches the logs of the whole system (Lab 4)          | REST `GET /logs`                            | Service Discovery => every `up` instance, the broker and the Gateway directly | One specific instance is read, and `GET /logs` checks the service token itself                    |
@@ -258,18 +292,23 @@ Players chat in channels and must see new messages instantly. Discord DMs Servic
 | The broker reports a dead letter (Lab 4)                                | REST `POST /alerts`                         | MB => Service Discovery                                              | One alert hook, one Telegram bot and one cooldown for the whole system                                     |
 | Prometheus finds and scrapes every component (Lab 4)                    | REST `GET /instances/prometheus`, `GET /metrics` | Prometheus => Service Discovery; Prometheus => every component directly | The metrics of one specific instance; see [Monitoring](#monitoring)                         |
 | Service Discovery alerts the developers (Lab 3)                         | Telegram Bot API `sendMessage`              | Service Discovery => Telegram                                        | Critical load, an unreachable or removed instance, a recovery, a dead letter                               |
+| The Gateway answers a `GET` from its cache (Lab 5)                      | Cache read and write                        | GW => `cache-1`, `cache-2` or `cache-3` (one node per key); on a miss GW => MB => the owner | A ruleset, an applicant, their documents and a profile are read often and change rarely; see [Caching](#caching) |
+| The Gateway checks a token's player and revocation (Lab 5)              | Cache read; on a miss, request `GET /players/{id}` | GW => the cache; GW => MB => Player                          | A logged-out or deleted player's token must stop working at once, without asking Player on every request |
+| The ETL loads the warehouse (Lab 5)                                     | Read-only database reads                    | ETL => every service database (a standby) as `etl_reader`; ETL => `warehouse-postgres` | Analytics across services, without a join between them and without load on the primaries; see [Data warehouse and ETL](#data-warehouse-and-etl) |
+| `pg-failover` watches the PostgreSQL clusters (Lab 5)                   | SQL over the PostgreSQL protocol            | `pg-failover` => every PostgreSQL node                               | Promotes a standby when a primary stops; see [Database replication](#database-replication)                |
 
 ### Worked example: one applicant from start to finish
 
 Every client request below passes through the Gateway, which checks the caller's credential (see [Authentication](#authentication)), and every request and event between the components through the Message Broker.
 
 0. Each player logs in through Player Service and receives a JWT; the client sends it with every request.
-1. The Moderator asks for the next applicant. Session sends a request to Applicant through the broker. Applicant Service creates the applicant and publishes `applicant.initialized`; Credential and University Record receive it from their queues and create their own records under the same `applicant_id`.
-2. Junior Moderators look up records. The client calls University Record through the Gateway. Each player only sees the categories assigned to them in `session.started`.
-3. The team discusses in channels: each client obtains a ticket through the Gateway and holds a WebSocket open directly to Discord DMs.
-4. The Moderator submits a decision with `POST /api/v1/decisions`. Moderation Service asks Session (is this the current applicant, and which ruleset does the shift use?), then Applicant, Credential and University Record in parallel. From the records it builds the verified facts and sends them to Server Rules. All of these are requests through the broker. It computes the correct verdict, compares it with the Moderator's choice, stores the decision and replies.
-5. Moderation publishes `decision.recorded`; Session receives it, updates the score and counters.
-6. The shift ends. Session publishes `session.ended`; Player, Discord DMs and University Record each receive a copy. Player updates XP and history; Discord DMs archives the channels; University Record closes the juniors' access.
+1. The creator starts the shift (Lab 5). Session asks the broker to run the saga `shift.start`: Session marks the session `starting`, University Record stores the juniors' record scopes, Discord DMs creates the channels, and Session marks the session `active`. When a step fails, the broker undoes the steps already done and the session stays in the lobby.
+2. The Moderator asks for the next applicant. Session sends a request to Applicant through the broker. Applicant Service creates the applicant and publishes `applicant.initialized`; Credential and University Record receive it from their queues and create their own records under the same `applicant_id`.
+3. Junior Moderators look up records. The client calls University Record through the Gateway. Each player only sees the categories assigned to them when the shift started.
+4. The team discusses in channels: each client obtains a ticket through the Gateway and holds a WebSocket open directly to Discord DMs.
+5. The Moderator submits a decision with `POST /api/v1/decisions`. Moderation Service asks Session (is this the current applicant, and which ruleset does the shift use?), then Applicant, Credential and University Record in parallel. From the records it builds the verified facts and sends them to Server Rules. All of these are requests through the broker. It computes the correct verdict, compares it with the Moderator's choice, stores the decision and replies.
+6. Moderation publishes `decision.recorded`; Session receives it, updates the score and counters.
+7. The shift ends. Session publishes `session.ended`; Player, Discord DMs and University Record each receive a copy. Player updates XP and history; Discord DMs archives the channels; University Record closes the juniors' access.
 
 **Note on University Record access.** A player's request is limited to the categories assigned to that player in the session. Moderation Service needs all categories to compute the correct verdict, so it calls University Record's service-only endpoint through the broker, which authenticated Moderation by its service token (see [Through the Message Broker](#through-the-message-broker-lab-4)). University Record recognises the service call by the route and by the absence of `X-Player-Id`; the Gateway does not serve that route at all (see [Gateway](#gateway)). The token never reaches a client.
 
@@ -279,7 +318,7 @@ Every client request below passes through the Gateway, which checks the caller's
 
 ### Data Management
 
-**Rule: one database per service, and only the owning service writes to it.** If a service needs data it does not own, it either calls the owner's API (from Lab 4 a request through the broker) or listens to the owner's events. It never reads another service's tables.
+**Rule: one database per service, and only the owning service writes to it.** If a service needs data it does not own, it either calls the owner's API (from Lab 4 a request through the broker) or listens to the owner's events. It never reads another service's tables. The one exception is the ETL Service (Lab 5), below.
 
 Why:
 
@@ -290,10 +329,12 @@ Why:
 What it costs, and what we do about it:
 
 - **Data that crosses a boundary through events arrives a little later.** Credential Service learns about a new applicant a few milliseconds after Applicant Service creates it. Consumers are idempotent and keyed by the shared identifier, so order and repeats do not matter.
-- **No transaction can span two services.** A flow like "decision => session score => player XP" is a chain of events, not one transaction. Compensation for failures is a topic for the transactions laboratory.
+- **No transaction can span two services.** A flow like "decision => session score => player XP" is a chain of events, not one transaction. A flow that must change several databases together or not at all is a saga (Lab 5): each step commits in its own service, and a failed step is undone by compensating the steps before it, in reverse order, with no two-phase commit anywhere. The one such flow is the start of a shift (see [Sagas](#sagas)).
 - **No joins across services.** A service that needs a combined view asks each owner and combines the answers itself. Moderation Service does exactly this.
 
-**Permitted duplication.** A service may keep a read-only copy of another service's data if it needs it for auditing or speed, as long as the owner stays the source of truth. Moderation Service stores a snapshot of the applicant, credentials and rule version behind each verdict, so the decision can still be explained after the applicant or the rules have changed.
+**Permitted duplication.** A service may keep a read-only copy of another service's data if it needs it for auditing or speed, as long as the owner stays the source of truth. Moderation Service stores a snapshot of the applicant, credentials and rule version behind each verdict, so the decision can still be explained after the applicant or the rules have changed. The Gateway's cache (Lab 5) is a copy of the same kind, kept for seconds or minutes (see [Caching](#caching)).
+
+**The one exception: the ETL (Lab 5).** The [ETL Service](#data-warehouse-and-etl) reads every service database directly, read-only, as the role `etl_reader`, from a standby, and writes only to the data warehouse. Analytics needs the data of every service at once; asking every owner's API for all of its rows on a schedule would load the primaries and the broker with traffic no player waits for. The exception is safe because nothing is written through it and nothing depends on it: no service and no business flow reads the warehouse, and a stopped ETL costs only fresh analytics. Each owner decides what `etl_reader` may read, and never grants a secret: password hashes, emails, message text, audit snapshots and tickets stay unreadable.
 
 **Shared identifiers.** `player_id`, `session_id`, `applicant_id`, `decision_id`, `channel_id` and `message_id` are UUID v4 strings. `ruleset_version` is an integer that grows by one with every new ruleset - within one deployment: wiping Server Rules Service's database resets the counter to 1, which silently invalidates any `ruleset_version` a peer (Moderation Service) has snapshotted from before the reset. Do not drop that volume between demos. `applicant_id` is generated by whichever service initializes the applicant and is the same in Applicant, Credential and University Record.
 
@@ -304,7 +345,7 @@ Every event has the same envelope; only `payload` differs.
 ```json
 {
   "event_id": "4f0c2a8e-1c3b-4d0e-9a6f-2b7e8c9d1a23",
-  "event_type": "session.started",
+  "event_type": "session.ended",
   "occurred_at": "2026-09-09T14:32:10Z",
   "producer": "server-moderation-session-service",
   "version": 1,
@@ -315,7 +356,7 @@ Every event has the same envelope; only `payload` differs.
 | `event_type`            | Produced by                                                           | Delivered to                           | Payload (key fields)                                                                                                                        |
 | ----------------------- | --------------------------------------------------------------------- | -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
 | `applicant.initialized` | the first of Applicant, Credential, University Record to be contacted | the other two                          | `applicant_id`, `session_id`, `initialized_by`, `difficulty`, `claimed`, `actual` (each an [applicant profile](#shared-values) itself, not an object with a `profile` key)                                   |
-| `session.started`       | Server Moderation Session                                             | University Record, Discord DMs         | `session_id`, `moderator_id`, `junior_moderators[] { player_id, record_scopes[] }`, `ruleset_version`, `started_at`                         |
+| `session.started`       | retired in Lab 5 (Server Moderation Session `4.x` published it)       | nobody from Lab 5                      | Replaced by the saga `shift.start` (see [Sagas](#sagas)), whose payload has the same fields: `session_id`, `moderator_id`, `junior_moderators[] { player_id, record_scopes[] }`, `ruleset_version`, `started_at` |
 | `session.ended`         | Server Moderation Session                                             | Player, Discord DMs, University Record | `session_id`, `score`, `penalties`, `applications_processed`, `players[] { player_id, role, xp_delta, disciplinary_actions[] }`, `ended_at` |
 | `decision.recorded`     | Moderation                                                            | Server Moderation Session              | `decision_id`, `session_id`, `applicant_id`, `moderator_id`, `action`, `is_correct`, `expected_action`, `violated_rules[]`, `penalty`       |
 
@@ -331,8 +372,8 @@ From Lab 4 events travel from the producer to each consumer through the [Message
 
 | Name | Example | What |
 | --- | --- | --- |
-| Topic | `events.session.started` | `events.<event_type>`, one per event type in the catalog above. A producer names a topic, never a consumer |
-| Topic queue | `events.session.started.discord-dms` | `<topic>.<service>`, one per subscribed service, shared by all its instances (competing consumers) |
+| Topic | `events.session.ended` | `events.<event_type>`, one per event type in the catalog above. A producer names a topic, never a consumer |
+| Topic queue | `events.session.ended.discord-dms` | `<topic>.<service>`, one per subscribed service, shared by all its instances (competing consumers) |
 
 A topic matches `events(\.[a-z][a-z0-9_]*)+` and a service `[a-z][a-z0-9-]*`, each at most 200 characters. A message reaches each subscribed service once, whatever the number of its instances, and one instance of it; each queue's copy has its own `message_id`.
 
@@ -341,11 +382,10 @@ A topic matches `events(\.[a-z][a-z0-9_]*)+` and a service `[a-z][a-z0-9-]*`, ea
 | Topic | Published by | Subscribed by |
 | --- | --- | --- |
 | `events.applicant.initialized` | Applicant, Credential, University Record | Applicant, Credential, University Record (each ignores the events it produced itself) |
-| `events.session.started` | Session | University Record, Discord DMs |
 | `events.session.ended` | Session | Player, Discord DMs, University Record |
 | `events.decision.recorded` | Moderation | Session |
 
-Moderation and Server Rules subscribe to no topic; they take only requests.
+Moderation and Server Rules subscribe to no topic; they take only requests. `events.session.started` is retired in Lab 5: Session no longer publishes it, and University Record and Discord DMs no longer subscribe to it, because they get the same data as the input of their saga steps (see [Sagas](#sagas)).
 
 **Producer side.**
 
@@ -366,7 +406,7 @@ Moderation and Server Rules subscribe to no topic; they take only requests.
 - An instance holds at most its `max_concurrent_tasks` unanswered messages; the others wait in the queue. Among the connected instances the broker picks the least loaded one (see [Load balancing](#load-balancing)).
 - **Dead letters.** After `MESSAGE_MAX_ATTEMPTS` (`3`) failed attempts, or at once on `PERMANENT`, the copy goes to the broker's dead letter channel (`GET /api/v1/dead-letters` on the broker, read-only), is logged `broker.dead_lettered` and raises one `dead_letter` alert through Service Discovery to the developers. A dead letter stays until a person deals with it; it is never delivered again on its own.
 
-**Guarantees.** Delivery is at-least-once: a copy acked late, or acked by an instance that crashed before the ack arrived, is delivered again. There is **no ordering guarantee** between events, even from one producer: a consumer must cope, for example, with `session.ended` arriving before `session.started`. Messages, subscriptions and dead letters are durable on the broker's volume (see [Message Broker](#message-broker)).
+**Guarantees.** Delivery is at-least-once: a copy acked late, or acked by an instance that crashed before the ack arrived, is delivered again. There is **no ordering guarantee** between events, even from one producer: a consumer must cope, for example, with the `applicant.initialized` of a later applicant arriving before that of an earlier one. Messages, subscriptions and dead letters are durable on the broker's volume (see [Message Broker](#message-broker)).
 
 **Versions.** `version` in the envelope is bumped by one for a breaking payload change of that event. Consumers reject a version they do not know with `PERMANENT`.
 
@@ -376,9 +416,9 @@ Moderation and Server Rules subscribe to no topic; they take only requests.
 
 #### Gateway
 
-The Gateway is the single entry point of the system for clients (Lab 2). From Lab 4 it serves **only the client routes** below and sends each request through the [Message Broker](#message-broker); services never call it, and it calls no service directly. It owns no data and produces no events. Its own reference is [`docs/GATEWAY.md`](docs/GATEWAY.md).
+The Gateway is the single entry point of the system for clients (Lab 2). From Lab 4 it serves **only the client routes** below and sends each request through the [Message Broker](#message-broker); services never call it, and it calls no service directly. It owns no data and produces no events. From Lab 5 it answers some `GET`s from its cache and checks the cached authentication data before it sends a request (see [Caching](#caching)). Its own reference is [`docs/GATEWAY.md`](docs/GATEWAY.md).
 
-**Address.** Container `gateway-service`, port `8080` inside `student-id-net` (`http://gateway-service:8080`), published on host port `8080`. It reaches the broker at `MESSAGE_BROKER_URL` (`message-broker-service:8071`).
+**Address.** Container `gateway-service`, port `8080` inside `student-id-net` (`http://gateway-service:8080`), published on host port `8080`. It reaches the broker at `MESSAGE_BROKER_URL` (`message-broker-service:8071`) and, from Lab 5, the cache nodes at `CACHE_NODES` (`cache-1:6379,cache-2:6379,cache-3:6379`).
 
 **Route scheme.** `{gateway}/api/v1/<prefix>/<rest>` is sent to the service behind `<prefix>` as `/api/v1/<rest>` - the prefix segment is removed, so every service keeps the paths documented under [Endpoints](#endpoints). Example: `GET {gateway}/api/v1/server-rules/rulesets/7` reaches `GET /api/v1/rulesets/7` of one `server-rules` instance. The prefix also tells apart paths that exist in several services (`GET /applicants/{id}`, `/health`).
 
@@ -402,7 +442,7 @@ The REST port is where Service Discovery polls `GET /status` and fetches `GET /l
 | Prefix | Routes |
 | --- | --- |
 | every prefix | `GET /health` (public) |
-| `player` | `POST /auth/login` (public), `POST /players` (public, registration), `GET /players`, `GET`/`PATCH`/`DELETE /players/{player_id}`, `GET /players/{player_id}/profile`, `GET /players/{player_id}/shifts`, `GET /players/{player_id}/disciplinary-actions`, `GET`/`POST /players/{player_id}/friends`, `DELETE /players/{player_id}/friends/{friend_id}` |
+| `player` | `POST /auth/login` (public), `POST /auth/logout` (Lab 5, answered by the Gateway itself, see [Caching](#caching)), `POST /players` (public, registration), `GET /players`, `GET`/`PATCH`/`DELETE /players/{player_id}`, `GET /players/{player_id}/profile`, `GET /players/{player_id}/shifts`, `GET /players/{player_id}/disciplinary-actions`, `GET`/`POST /players/{player_id}/friends`, `DELETE /players/{player_id}/friends/{friend_id}` |
 | `session` | `GET`/`POST /sessions`, `GET`/`DELETE /sessions/{session_id}`, `POST /sessions/{session_id}/players`, `DELETE /sessions/{session_id}/players/{player_id}`, `POST /sessions/{session_id}/start`, `POST /sessions/{session_id}/applicants/next`, `POST /sessions/{session_id}/end`, `GET /sessions/{session_id}/decisions`, `GET /sessions/{session_id}/events` |
 | `applicant` | `GET /applicants/{applicant_id}` |
 | `credential` | `GET /applicants/{applicant_id}/documents` |
@@ -411,7 +451,7 @@ The REST port is where Service Discovery polls `GET /status` and fetches `GET /l
 | `moderation` | `GET`/`POST /decisions`, `GET /decisions/{decision_id}`, `GET /bans` |
 | `discord-dms` | `POST /ws-tickets`, `GET /sessions/{session_id}/channels`, `GET`/`POST /channels/{channel_id}/messages`, `PATCH /channels/{channel_id}/messages/{message_id}` |
 
-**Every other path answers `404 NOT_FOUND`**, before any credential is checked, and nothing is sent to the broker: `POST /events`, `/admin/*`, `/dev/*`, `/health/ready`, `/logs`, `/metrics` and every service-to-service route (`POST /applicants/next` of Applicant, Credential and University Record, `GET /applicants/{id}/documents/validation`, `GET /applicants/{id}/records`, `GET /rulesets/current`, `POST /rulesets/{version}/evaluations`, Applicant's and Credential's CRUD extensions, Session's `/deliveries`). A known path with a method it does not take is `404` too. The services keep those handlers for each other, reached through the broker. A path is matched as the service will read it: percent-decoded, case-insensitive, repeated and trailing slashes collapsed.
+**Every other path answers `404 NOT_FOUND`**, before any credential is checked, and nothing is sent to the broker: `POST /events`, `/admin/*`, `/dev/*`, `/health/ready`, `/logs`, `/metrics` and every service-to-service route (`POST /applicants/next` of Applicant, Credential and University Record, `GET /applicants/{id}/documents/validation`, `GET /applicants/{id}/records`, `GET /rulesets/current`, `POST /rulesets/{version}/evaluations`, Applicant's and Credential's CRUD extensions, Session's `/deliveries`, and from Lab 5 the saga step routes `/saga-steps/...` of Session, University Record and Discord DMs). A known path with a method it does not take is `404` too. The services keep those handlers for each other, reached through the broker. A path is matched as the service will read it: percent-decoded, case-insensitive, repeated and trailing slashes collapsed.
 
 **Sending a request.** Each request on a client route is one `Request` to the broker (see [Message Broker](#message-broker)): `service` (the prefix), a new `correlation_id`, the method, the service's path with the query string, the body, `request_id`, `caller: "gateway"`, `timeout_ms`, and three headers: `X-Request-ID`, `X-Player-Id` (set from the checked player token, never the caller's own) and the caller's `Content-Type`. No other header of the caller is sent. The broker puts it into `requests.<prefix>`, hands it to one instance and returns that instance's `Reply`; its status, headers and body reach the caller unchanged. `timeout_ms` is what is left of the Gateway's `10s` task timeout once the body has arrived, less a tenth (at most 250 ms), so the broker's own `408` comes before the Gateway gives up.
 
@@ -424,18 +464,22 @@ The REST port is where Service Discovery polls `GET /status` and fetches `GET /l
 | The task ran past the Gateway's timeout (`10s`), the broker's deadline included | `408 REQUEST_TIMEOUT`              |
 | The Gateway's own concurrent task limit is reached           | `429 TOO_MANY_REQUESTS`                               |
 | The broker is unreachable, or the Gateway's breaker on the broker is open | `503 SERVICE_UNAVAILABLE`, `details.service: "message-broker"` |
+| `POST /api/v1/player/auth/logout` with a valid player token (Lab 5) | `204 No Content`: the token's `jti` is revoked until the token expires (see [Caching](#caching)) |
+| A player token whose `jti` is revoked, or whose player is deleted (Lab 5) | `401 UNAUTHENTICATED` |
+| A cached route whose answer is in the cache (Lab 5) | The stored answer, with `X-Cache: HIT` |
+| `GET /cache/stats` with the service token (Lab 5) | `200 OK` with the cache nodes (see [Cache sharding](#cache-sharding)) |
 
 What the broker answers itself passes through unchanged, in the same envelope: `503 SERVICE_UNAVAILABLE` with `details.service` naming the prefix (no instance of the service, or every one skipped by its breaker), `408 REQUEST_TIMEOUT` (no reply in time) and `429 TOO_MANY_REQUESTS` (the broker's workers are taken). Callers treat `408`, `429` and `503` as "may be retried", except for the non-idempotent `POST`s listed under [API conventions](#api-conventions).
 
 **No retries.** The Gateway sends a request once. It never retries on its own, so a non-idempotent call such as `POST /decisions` is never duplicated by it.
 
-**One circuit breaker, on the broker.** The Gateway keeps one [circuit breaker](#circuit-breaker), on the broker, its only target, with a 35 s window (its task timeout `10s` x 3.5). A failure is a call that failed in transport (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, ...); a reply of any status is not, because the instances' breakers are the broker's. The Gateway no longer reads Service Discovery and never names an instance.
+**One circuit breaker, on the broker.** The Gateway keeps one [circuit breaker](#circuit-breaker), on the broker, its only target, with a 35 s window (its task timeout `10s` x 3.5). A failure is a call that failed in transport (`UNAVAILABLE`, `DEADLINE_EXCEEDED`, ...); a reply of any status is not, because the instances' breakers are the broker's. The Gateway no longer reads Service Discovery and never names an instance. From Lab 5 it also keeps one breaker per cache node (see [Caching](#caching)); a cache node that fails never fails a request.
 
 #### Message Broker
 
-The Message Broker (Lab 4) carries every request and every event between the components: the Gateway's requests on behalf of clients, the requests one service makes to another, and every event. It owns topics, queues, subscriptions and delivery state, and no business data. Its own reference is [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md).
+The Message Broker (Lab 4) carries every request and every event between the components: the Gateway's requests on behalf of clients, the requests one service makes to another, and every event. It owns topics, queues, subscriptions and delivery state, and no business data; from Lab 5 it also coordinates the sagas and owns their log (see [Sagas](#sagas)). Its own reference is [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md).
 
-**Address.** Container `message-broker-service`, one copy. gRPC on `8071` (plaintext HTTP/2 inside `student-id-net`): every service and the Gateway set `MESSAGE_BROKER_URL=message-broker-service:8071`, a `host:port` without a scheme. HTTP on `8070` (`http://message-broker-service:8070`): `GET /health`, `GET /status`, `GET /logs`, `GET /metrics`, and with the service token `GET /api/v1/topics` and `GET /api/v1/dead-letters`. It registers with Service Discovery as `message-broker`, which is also its `service` in `/status` and in its log lines.
+**Address.** Container `message-broker-service`, one copy. gRPC on `8071` (plaintext HTTP/2 inside `student-id-net`): every service and the Gateway set `MESSAGE_BROKER_URL=message-broker-service:8071`, a `host:port` without a scheme. HTTP on `8070` (`http://message-broker-service:8070`): `GET /health`, `GET /status`, `GET /logs`, `GET /metrics`, and with the service token `GET /api/v1/topics`, `GET /api/v1/dead-letters` and, from Lab 5, `GET /api/v1/sagas` and `GET /api/v1/sagas/{saga_id}`. It registers with Service Discovery as `message-broker`, which is also its `service` in `/status` and in its log lines.
 
 **The gRPC contract is [`shared/broker.proto`](shared/broker.proto)** (package `broker.v1`), the one file every client is generated from. Each component keeps a byte-identical copy in its own repository, because a submodule build cannot reach the CPR; a change is made here first. Every call carries the metadata `x-service-token: <SERVICE_TOKEN>` (see [Through the Message Broker](#through-the-message-broker-lab-4)): missing is `UNAUTHENTICATED`, wrong is `PERMISSION_DENIED`.
 
@@ -447,6 +491,8 @@ The Message Broker (Lab 4) carries every request and every event between the com
 | `Request(service, correlation_id, method, path, headers, body, request_id, caller, timeout_ms)` | the Gateway; a service calling another | Blocks until one instance of `service` replies, the timeout passes or no instance can take it |
 | `Reply(reply, message_id)` | the instance that got a request | Its `status`, `headers` and `body`, passed to the caller unchanged |
 | `ListTopics()`, `ListDeadLetters(limit, offset)` | developers, tools | The same listings as the HTTP side |
+| `StartSaga(saga_type, saga_id, payload, wait, request_id, caller)` (Lab 5) | a service that starts a saga: Session | Writes the saga to the saga log and runs its steps. With `wait`, answers when the saga is terminal or just before the call's deadline, with its state at that moment. A repeated `saga_id` returns the existing saga. See [Sagas](#sagas) |
+| `GetSaga(saga_id)` (Lab 5) | Session, developers, tools | The saga with its steps; `NOT_FOUND` for an unknown id |
 
 **Request and reply.** A request is put into `requests.<service>`, delivered to one instance as `Delivery.request`, and answered with `Reply`. It is never stored, never acked and never sent twice blindly, since a non-`GET` may already have run. Its headers pass through except `X-Service-Token` and `Authorization`, which never leave the broker. What the broker answers itself is a normal `ServiceReply` in the shared error envelope, never a gRPC error:
 
@@ -466,7 +512,7 @@ The Message Broker (Lab 4) carries every request and every event between the com
 
 **Durability.** Messages, subscriptions and dead letters live in SQLite (WAL) at `MESSAGE_STORE_PATH` (`/data/broker.db`) on a named volume, committed before the call that changed them returns. After a restart the broker rebuilds its queues before it takes a call, and the instances reconnect on their own: an acked copy is never delivered again, one delivered but not acked goes out again. An acked copy is deleted after `MESSAGE_RETENTION_HOURS` (`24`). Above `MESSAGE_QUEUE_MAX_DEPTH` (`10000`) messages in a queue or `MESSAGE_MAX_TOPICS` (`1000`) topics a publish is refused (`RESOURCE_EXHAUSTED`) and changes nothing, so the producer's outbox retries. When the disk cannot be written, `Publish`, `Subscribe` and `Ack` answer `UNAVAILABLE` and `GET /status` answers `503 degraded`.
 
-**Threads.** One thread per RPC from a bounded pool (`GRPC_MAX_WORKERS`, `64`): a stream holds one for its whole life, a `Request` until its reply. `GRPC_RESERVED_WORKERS` (`16`) are kept for `Reply`, `Ack` and `Publish`, so a burst of waiting requests never starves the answers. One more RPC than the pool is `RESOURCE_EXHAUSTED`.
+**Threads.** One thread per RPC from a bounded pool (`GRPC_MAX_WORKERS`, `64`): a stream holds one for its whole life, a `Request` until its reply. `GRPC_RESERVED_WORKERS` (`16`) are kept for `Reply`, `Ack` and `Publish`, so a burst of waiting requests never starves the answers. One more RPC than the pool is `RESOURCE_EXHAUSTED`. From Lab 5 a waiting `StartSaga` holds one like a waiting `Request`, and each saga step the coordinator has in flight holds one more from the same budget, so a shift start being set up holds two (see [Sagas](#sagas)).
 
 #### Service Discovery
 
@@ -481,7 +527,7 @@ Service Discovery (Lab 3) keeps the registry of running instances: which instanc
 
 **Instance identity.**
 
-- `service_name` is the Gateway prefix: `player`, `session`, `applicant`, `credential`, `server-rules`, `university-record`, `moderation`, `discord-dms`, and from Lab 4 `message-broker` for the broker. Any other value is `400 VALIDATION_ERROR`.
+- `service_name` is the Gateway prefix: `player`, `session`, `applicant`, `credential`, `server-rules`, `university-record`, `moderation`, `discord-dms`, from Lab 4 `message-broker` for the broker, and from Lab 5 `etl` for the ETL Service. Any other value is `400 VALIDATION_ERROR`.
 - `instance_id` is `<service_name>-<hostname>` (letters, digits, `.`, `_`, `-`, at most 200 characters), the hostname read from the OS (`os.Hostname()`, `Dns.GetHostName()`, `socket.gethostname()`), which in Docker is the container id prefix: `player-3f4e2a9b1c7d`. A restarted container keeps its id, so an instance marked `down` stays `down` until health polling recovers it. An optional `INSTANCE_ID` variable overrides it for runs outside Docker.
 - `host` is the source IP of the registration or heartbeat request, unless the body carries `host` (set from the optional `INSTANCE_HOST` variable, for a service running outside Docker). A heartbeat from a new IP updates it.
 - `port` is the REST port, where Service Discovery polls `GET /status` (Discord DMs: `8096`, not its WebSocket port; the broker: `8070`, its HTTP side).
@@ -491,7 +537,7 @@ Service Discovery (Lab 3) keeps the registry of running instances: which instanc
 ```json
 {
   "service_name": "session", "port": 8080, "version": "4.0.0",
-  "topics": { "publishes": ["events.session.started", "events.session.ended"], "subscribes": ["events.decision.recorded"] }
+  "topics": { "publishes": ["events.session.ended"], "subscribes": ["events.decision.recorded"] }
 }
 ```
 
@@ -506,7 +552,7 @@ Service Discovery (Lab 3) keeps the registry of running instances: which instanc
   "version": "4.0.0",
   "status": "up",
   "last_seen_at": "2026-11-09T12:00:00.123Z",
-  "topics": { "publishes": ["events.session.started", "events.session.ended"], "subscribes": ["events.decision.recorded"] },
+  "topics": { "publishes": ["events.session.ended"], "subscribes": ["events.decision.recorded"] },
   "load": null,
   "last_checked_at": null,
   "ttl_seconds": 15
@@ -546,7 +592,7 @@ Service Discovery (Lab 3) keeps the registry of running instances: which instanc
 
 Only `up` instances are listed. `service` omitted lists every service; an unknown service, or one with no `up` instance, answers `200` with `{ "instances": [] }`. `topic` (Lab 4) keeps only the instances whose registration subscribes to it.
 
-**Topics - `GET /api/v1/topics`** (service token, Lab 4). Every topic named in a registration, with the services (not instances) on each side, `down` instances included, because an outage does not change who means to listen: `{ "topics": [{ "name": "events.session.started", "publishers": ["session"], "subscribers": ["discord-dms", "university-record"] }] }`. The broker's own `GET /api/v1/topics` is the source of truth for queues.
+**Topics - `GET /api/v1/topics`** (service token, Lab 4). Every topic named in a registration, with the services (not instances) on each side, `down` instances included, because an outage does not change who means to listen: `{ "topics": [{ "name": "events.session.ended", "publishers": ["session"], "subscribers": ["discord-dms", "player", "university-record"] }] }`. The broker's own `GET /api/v1/topics` is the source of truth for queues.
 
 **Prometheus targets - `GET /api/v1/instances/prometheus`** (service token, Lab 4). Every `up` instance of every service and the broker, in the Prometheus `http_sd_configs` format: `[{ "targets": ["172.18.0.12:8080"], "labels": { "service": "player", "instance_id": "player-3f4e2a9b1c7d" } }]`. See [Monitoring](#monitoring).
 
@@ -577,20 +623,260 @@ Sets the instance `down` and keeps the record (`DELETE` stays for graceful shutd
 
 **Metrics.** Service Discovery serves `GET /metrics` like every component (see [Monitoring](#monitoring)). Details: [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md).
 
+#### Caching
+
+Lab 5 (#167, decision 1 of #163). The Gateway keeps a cache in front of the broker for the client `GET`s that are read often and change rarely, and for the authentication data. Only the Gateway uses it: the services add no cache of their own (Server Rules keeps its in-memory one), and a cached answer is a copy whose owner stays the source of truth (see [Data Management](#data-management)).
+
+**Nodes.** Three Valkey 8 nodes, `cache-1`, `cache-2` and `cache-3` (`valkey/valkey:8-alpine`, port `6379` inside `student-id-net`, not published on the host), listed in the Gateway's `CACHE_NODES` (`cache-1:6379,cache-2:6379,cache-3:6379`). Valkey is the open fork of Redis 7.2, with the same protocol and clients. Each node runs with `--save "" --appendonly no --maxmemory 64mb --maxmemory-policy allkeys-lru`: it writes nothing to disk, and when it is full it drops its least recently used keys. A key lives on exactly one node, chosen by consistent hashing (see [Cache sharding](#cache-sharding)).
+
+**What is cached.** Only a `200` answer of a `GET` on these routes; every other status, method and route passes through untouched:
+
+| Route at the Gateway | TTL | Key holds the calling player | Invalidated by |
+| --- | --- | --- | --- |
+| `GET /api/v1/server-rules/rulesets/{version}` | 1 h | no | nothing: a ruleset version never changes |
+| `GET /api/v1/applicant/applicants/{applicant_id}` | 5 min | no | nothing: the claimed profile does not change after creation |
+| `GET /api/v1/credential/applicants/{applicant_id}/documents` | 5 min | no | nothing: the documents do not change after creation |
+| `GET /api/v1/player/players/{player_id}/profile` | 30 s | yes | a successful `PATCH` or `DELETE /api/v1/player/players/{player_id}` through the Gateway, which deletes that player's cached profiles |
+
+Never cached: sessions, decisions, bans, records, channels, messages, and any answer that is not a `200`.
+
+- **Key:** `gw:v1:<prefix>:<service path>`, then `?<query, parameters sorted by name>` when the request has a query string, then `:p=<player_id>` on a per-player route (the calling player). Example: `gw:v1:applicant:/api/v1/applicants/5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13`. **Value:** the status, the headers the Gateway would pass on, and the body.
+- **`X-Cache`** on every answer of a cached route: `HIT` (from the cache), `MISS` (sent to the broker, and stored when it is a `200`) or `BYPASS` (the cache was skipped, below). The Gateway counts them in `gateway_cache_requests_total{route,result}`.
+- **Fail open.** A cache error, or a cache call that takes more than **50 ms**, skips the cache for that request, which goes to the broker as if nothing were cached, and is logged `cache.unavailable` (`warn`). The Gateway keeps one [circuit breaker](#circuit-breaker) per cache node (the Lab 3 rules: 3 failures within its window, then one trial call); a node whose breaker is open is skipped (see [Cache sharding](#cache-sharding)). The cache never fails a request.
+
+**Authentication data.** The JWT's signature and `exp` are still checked first, locally (see [Authentication](#authentication)). Then two cached checks:
+
+- **The player still exists.** `auth:player:<player_id>` holds `1` (exists) or `0` (deleted or unknown) for 60 s. On a miss the Gateway sends `GET /players/{player_id}` to Player through the broker, with `X-Player-Id` set to the token's `sub`: `200` stores `1`, `404` stores `0`, and any other answer stores nothing and lets the request go on (fail open). `0` answers `401 UNAUTHENTICATED`. A successful `DELETE /api/v1/player/players/{player_id}` through the Gateway sets `auth:player:<player_id>` to `0` at once, so the deleted player's tokens stop working before they expire.
+- **The token was not revoked.** `POST /api/v1/player/auth/logout`, with a valid player token, is answered by the Gateway itself and calls no service: it stores `auth:revoked:<jti>` with a TTL of the token's `exp` minus now, and answers `204 No Content`. A token whose `jti` is revoked answers `401 UNAUTHENTICATED`. A token without `jti` (issued before Player Service `5.0.0`) cannot be revoked and is accepted until it expires.
+- The token itself is never stored. Both checks fail open like the rest of the cache: while the node that holds a key does not answer, or after it restarted or evicted the key, a revocation or a deletion is not seen, and the token works until its `exp` (at most 1 h after it was issued).
+
+**Why.** The four routes are the reads a client repeats during a shift, and none of their answers changes while it is kept, so a hit saves the broker, a service and its database without serving anything stale; the profile, which can change, is kept 30 s and dropped on a change through the Gateway. Logout and the deletion of a player need state that the Gateway can check on every request without asking Player every time: a cached answer of Player's `GET /players/{id}` and a short-lived list of revoked tokens.
+
+#### Cache sharding
+
+Lab 5 (#166, decision 2 of #163). The Gateway spreads the keys over the cache nodes with its own consistent hashing ring; the nodes are plain, independent Valkey servers that know nothing of each other.
+
+**The ring.**
+
+- The position of a key is `hash(key)`: the first 8 bytes of its MD5 digest, read as a big-endian unsigned 64-bit integer.
+- Every node of `CACHE_NODES` gets **160 virtual nodes**: the point of virtual node `i` (`0` to `159`) of node `n` (its `host:port`, for example `cache-1:6379`) is `hash(f"{n}#{i}")`.
+- A key belongs to the node that owns the first point clockwise from `hash(key)`, wrapping around after the largest point.
+- A node whose breaker is open is skipped: its keys go to the next point clockwise that belongs to a node that answers, so only that node's keys move, and they come back when it answers again. A moved key is a cache miss, read again from its owner.
+
+**`GET /cache/stats`** on the Gateway (Lab 5), with the service token, which the Gateway checks itself (`403 SERVICE_TOKEN_REQUIRED`, `401 INVALID_SERVICE_TOKEN`). It is not a client route; it is called inside `student-id-net`:
+
+```json
+{
+  "nodes": [
+    { "node": "cache-1:6379", "state": "up", "keys": 123, "hits": 456, "misses": 78 }
+  ],
+  "vnodes": 160
+}
+```
+
+One entry per node of `CACHE_NODES`. `state` is `up`, or `down` while the node's breaker is open; `keys` is the number of keys on the node, `hits` and `misses` its lookups since it started (`null` while `down`).
+
+**Why consistent hashing, not `hash % N`.** With `hash(key) % N`, adding a fourth node moves every key whose remainder changes, about 3 keys in 4, and the cache starts over. On the ring the fourth node takes over about a quarter of the points, so about a quarter of the keys move, all of them to the new node; removing a node moves only that node's keys. Many virtual nodes per node keep the shares close to even, where one point per node could leave one node with most of the keys.
+
+**Why not Redis Cluster.** Redis Cluster splits the key space into 16384 hash slots (`CRC16(key) % 16384`) and assigns ranges of slots to master nodes. A client that asks the wrong node gets `MOVED` (or `ASK` while a slot is being migrated) and asks again, so it needs a cluster-aware client, and adding a master means resharding: moving slots to it, key by key. Each master can have replicas, and the cluster fails over to one on its own; a command on several keys works only when they share a slot, which hash tags (`{...}`) force. That is more than a cache which may lose everything needs: at least six nodes (three masters with a replica each) and a cluster client in the Gateway, for keys the Gateway can always read again from their owners. The ring needs neither, and the Gateway's breakers already handle a node that stops. The research behind this choice is in #166.
+
+#### Database replication
+
+Lab 5 (#164, decision 3 of #163). Every service database runs as a **primary and two replicas**, so a database server that stops no longer takes its service down: six PostgreSQL clusters and two MongoDB replica sets. Their containers are `<db>-1`, `<db>-2` and `<db>-3`, named after the container of Lab 4 (`player-postgres`, `session-postgres`, `applicant-postgres`, `rules-postgres`, `university-record-postgres`, `moderation-postgres`, `credential-mongo`, `dms-mongo`), with one named volume each (see [Databases](#databases)). Not replicated: the broker's SQLite (one broker), `dms-redis` (Pub/Sub, not storage), the cache nodes (a cache) and the warehouse (the ETL rebuilds it).
+
+**PostgreSQL**, on the official `postgres` image (16 or 17, as each service uses today), with the scripts of `deployments/postgres-ha/` in this repository (#164):
+
+- **Streaming replication.** `<db>-1` starts as the primary; `<db>-2` and `<db>-3` start as hot standbys, cloned from the current primary with `pg_basebackup -R` when their data directory is empty. A standby answers reads and refuses writes.
+- **Synchronous to one standby:** `synchronous_standby_names = 'ANY 1 (*)'` and `synchronous_commit = on`, with `wal_log_hints = on` from the first start (for `pg_rewind`). A commit is acknowledged only once one standby has it, and the failover promotes the standby with the highest received LSN, so no acknowledged commit is lost; with asynchronous replication a hard stop could drop one, for example the XP of an ended shift. One standby may be down without blocking writes.
+- **Roles.** The primary's init script creates `replicator` (`REPLICATION`, password `REPLICATION_PASSWORD`) and `etl_reader` (`LOGIN`, password `ETL_READER_PASSWORD`, no table rights; each service grants it what the ETL may read, see [Data warehouse and ETL](#data-warehouse-and-etl)).
+- **Failover: `pg-failover`**, one container for every cluster (the official image with the scripts of `deployments/postgres-ha/`; the clusters come from one list in its configuration). It checks every primary every 2 s. After 3 failed checks it promotes the standby with the highest received LSN (`SELECT pg_promote()`), re-points the other standby to it (`ALTER SYSTEM SET primary_conninfo`, `SELECT pg_reload_conf()`), and turns the old primary, when it comes back, into a standby of the new one (`pg_rewind`, or a fresh `pg_basebackup` when the rewind fails), so there are never two primaries. A failover of one cluster touches no other. It logs `failover.check_failed`, `failover.promoted`, `failover.repointed` and `failover.rejoined` in the shared format.
+
+**MongoDB**, with the scripts of `deployments/mongo-rs/` (#164): three `mongo:7` members started with `--replSet rs0` and a shared `keyFile` (required once authentication is on). An init step runs `rs.initiate` once with the three members and creates `etl_reader` with `read` on the service's database. When the primary stops, the other two elect a new one; the old primary rejoins as a secondary.
+
+**Target:** writes work again within 15 s after a primary stops.
+
+**How a service connects.** It lists all three nodes and finds the primary itself, with no proxy in between:
+
+| Driver | Connection string |
+| --- | --- |
+| pgx (Go) | `postgres://<user>:<pw>@<db>-1:5432,<db>-2:5432,<db>-3:5432/<name>?sslmode=disable&target_session_attrs=read-write&connect_timeout=2` |
+| Npgsql (C#) | `Host=<db>-1,<db>-2,<db>-3;Port=5432;Database=<name>;Username=<user>;Password=<pw>;Target Session Attributes=read-write;Timeout=3;Host Recheck Seconds=2` - Npgsql caches each host's role for about 10 s by default, and the recheck keeps a failover short |
+| MongoDB | `mongodb://<user>:<pw>@<db>-1:27017,<db>-2:27017,<db>-3:27017/<name>?replicaSet=rs0&authSource=admin` - retryable writes stay on (the drivers' default) |
+
+The ETL reads with `target_session_attrs=prefer-standby` and `readPreference=secondaryPreferred` instead.
+
+**What every service does:**
+
+- Connects with the string above, and lets its pool drop broken connections and open new ones (the pgx pool and Npgsql do this; no connection is kept forever). Migrations at startup reach only the primary (`read-write`). A service that finds no primary at startup may exit; the compose `restart` brings it back.
+- While no primary answers, answers **`500 DEPENDENCY_UNAVAILABLE`** with `details.dependency` naming the database, never `500 INTERNAL_ERROR`: the broker's breakers count every `5xx` but that one (see [Circuit breaker](#circuit-breaker)), so `INTERNAL_ERROR` would trip the breakers of every copy and keep the service out for 35 s after its database is back. Meanwhile `GET /status` answers `503 degraded` and `/health/ready` is not ready.
+- Expects Service Discovery to list every copy `down` for 20 to 40 s around a failover (3 failed checks, then 3 good ones). That is fine: the broker avoids an unlisted instance only while another instance of the service is listed, so it still routes to them (see [Load balancing](#load-balancing)), and Grafana shows the gap.
+- Acks a consumed event only after it is applied, so an event that meets a failover is delivered again. The broker tries 3 times, 5 s apart (see [Event delivery](#event-delivery)), so a failover must keep writes out for well under 10 s, or the event goes to the dead letter channel.
+- Knows that the pattern's init scripts run only on an empty data directory: converting a database to it means new volumes, and the service's seed data is created again.
+
+**Why this design.** The official images and one small agent the team can read: Patroni would add etcd and two more components to every cluster, and the Bitnami repmgr images are no longer maintained in their free form. Multi-host connection strings need no proxy, which would be one more component that can stop. Synchronous replication to any one of two standbys keeps every acknowledged commit while one standby may still be down.
+
+#### Data warehouse and ETL
+
+Lab 5 (#165, decision 4 of #163). The ETL Service copies the data of every service into one data warehouse, so a question that spans services (which moderators decide wrongly, on which applicants, in which shifts) is one query, with no join across services and no load on the databases that serve the game.
+
+**The warehouse.** `warehouse-postgres` (PostgreSQL 17, database `warehouse_db`, password `WAREHOUSE_PASSWORD`, host port `5440`), one node and not replicated: the ETL can rebuild it from the services. A star schema, created by the ETL's own versioned migrations, every table with a `loaded_at` column:
+
+| Table | One row per | From |
+| --- | --- | --- |
+| `dim_player` | player | Player (never an email or a password hash) |
+| `dim_applicant` | applicant | Applicant, Credential and University Record, merged by `applicant_id` (never an email) |
+| `dim_ruleset` | ruleset version | Server Rules |
+| `dim_date` | calendar day | generated |
+| `fact_decision` | decision | Moderation, joined with its session (Session) and its moderator (Player) |
+| `fact_shift` | ended shift | Session |
+| `fact_message` | channel of a session | Discord DMs: the number of messages, never their text |
+| `etl_watermark` | source table | `(source, table_name, watermark, updated_at)`: how far each source table has been read |
+| `etl_run` | run | the runs `GET /api/v1/runs` lists |
+
+`docs/ETL_SERVICE.md` (#165) lists the source of every column.
+
+**The ETL Service.** `etl-service` (Lab 5): prefix and `service` name `etl`, Python 3.12, HTTP on `8075`, published on host port `8075`, image `d1vinexd/etl-service`, repository owned by Titerez Vladislav and shared like the broker. It serves `/health`, `/status`, `/logs` and `/metrics` like every component and registers with Service Discovery as `etl`, with `topics: { "publishes": [], "subscribes": [] }`. It is not behind the Gateway and uses no queue of the broker.
+
+- **A run** starts every `ETL_INTERVAL_SECONDS` (`60`) and on `POST /api/v1/runs`, never two at once. It extracts the new rows of each source table from its watermark, transforms them into the star schema and upserts them by their natural key: a run is idempotent, and a run with no new source rows loads nothing.
+- **Reads** every service database read-only, as `etl_reader`, from a standby (`target_session_attrs=prefer-standby`, `readPreference=secondaryPreferred`), and never writes to one. A source that is down is skipped, named in the run's result and read on the next run; the other sources still load.
+- **Watermarks.** Several services set `created_at` and `updated_at` from their own clock, to the second, before the transaction commits, so the ETL reads `>=` the stored watermark and lets the upsert absorb the overlap.
+
+**What every service provides**, in its own migrations or init step (#171 to #178):
+
+- A grant to `etl_reader` of what the ETL reads, and nothing more: column grants where a table holds secrets, which are never readable (password hashes, emails, message text, audit snapshots, tickets). In PostgreSQL the migration must not break a database without the pattern (CI, a plain local run), so it creates the role when it is missing before it grants:
+
+  ```sql
+  DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'etl_reader') THEN CREATE ROLE etl_reader NOLOGIN; END IF;
+  END $$;
+  GRANT SELECT (<columns>) ON <table> TO etl_reader;
+  ```
+
+  `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO etl_reader` is added only where every column of a future table may be read. MongoDB's `read` role covers the whole database, so there the ETL itself reads only the fields it needs (no emails, no document `fields`, no message `content`).
+- A watermark column on every table the ETL reads, one that only grows (`created_at`, `updated_at` or an increasing id). A new one on a table that already has rows gets `DEFAULT now()`, and `updated_at` stays current on every update (in the code or by a trigger).
+
+**Endpoints**, with the service token, which the ETL checks itself (`403 SERVICE_TOKEN_REQUIRED`, `401 INVALID_SERVICE_TOKEN`); they are called inside `student-id-net`, not through the Gateway:
+
+- `POST /api/v1/runs` starts a run now: `202 Accepted` with `{ "run_id": "0b6f7c3e-2a1d-4c5b-9e8f-7a6b5c4d3e2f" }`, or `409 RUN_IN_PROGRESS` with `details.run_id` while one runs.
+- `GET /api/v1/runs?limit=&offset=` lists the runs, newest first: `200 OK` with `{ "items": [ ... ], "total": 12 }`, every item a run:
+
+  ```json
+  {
+    "run_id": "0b6f7c3e-2a1d-4c5b-9e8f-7a6b5c4d3e2f",
+    "trigger": "schedule",
+    "status": "partial",
+    "started_at": "2026-11-27T12:00:00Z",
+    "ended_at": "2026-11-27T12:00:02Z",
+    "duration_ms": 2140,
+    "rows": { "dim_applicant": 12, "fact_decision": 9, "fact_shift": 1 },
+    "failed_sources": [ { "source": "credential", "error": "no member of the replica set answered" } ]
+  }
+  ```
+
+  `trigger` is `schedule` or `manual`; `status` is `running`, `succeeded`, `partial` (some sources failed, the others loaded) or `failed`; `rows` counts the rows upserted per warehouse table.
+
+**Analytics.** The Grafana dashboard "Analytics" reads `warehouse_db` through a PostgreSQL datasource: the decisions per day and the accuracy per moderator, the applicants by status and difficulty, the average shift score and the messages per session.
+
+**Why.** The ETL is the one component that reads other services' databases; [Data Management](#data-management) says why that is safe. Reading from standbys keeps the load off the primaries, and the watermarks keep a run small: every minute it reads only what changed.
+
+#### Sagas
+
+Lab 5 (#168, #172, #176, #178; decision 5 of #163). A **saga** is a flow that changes several services' databases together: each step commits in its own service, and when a step fails, the steps already done are undone by their **compensations**, in reverse order. The Message Broker is the coordinator; the participants only answer requests.
+
+**Instead of two-phase commit.** Grade 9 replaces grade 8: there is no two-phase commit anywhere. Two-phase commit holds locks in every participant from "prepare" until the coordinator decides, so the slowest participant holds up the others, and a coordinator that dies between the two phases leaves them blocked with their locks held; it also needs prepared transactions in every engine. A saga holds no lock across services and blocks no participant, because every step is an ordinary local transaction. The cost is that the state between the steps is visible, so it is named (`starting`) and refused where it matters.
+
+**`shift.start`**, the one saga: the start of a shift changes the databases of Session, University Record and Discord DMs, and until Lab 4 one of them failing could leave a shift `active` with no record access or no channels.
+
+| # | Step | Service (prefix) | Does | Compensation |
+| --- | --- | --- | --- | --- |
+| 1 | `shift-begin` | `session` | the session `lobby` -> `starting`; stores the roles, the record scopes and the ruleset | back to `lobby`, clears them |
+| 2 | `grant-scopes` | `university-record` | stores each junior's `record_scopes` for the session | removes them |
+| 3 | `create-channels` | `discord-dms` | creates the session's channels and every player's access to them | deletes those channels |
+| 4 | `shift-confirm` | `session` | `starting` -> `active` | none: the point of no return |
+
+Its payload is what `session.started` carried until Lab 4:
+
+```json
+{
+  "session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+  "moderator_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+  "junior_moderators": [
+    { "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "record_scopes": ["enrollment", "courses"] },
+    { "player_id": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21", "record_scopes": ["email-groups", "fcim-logs"] }
+  ],
+  "ruleset_version": 7,
+  "started_at": "2026-09-10T18:05:00Z"
+}
+```
+
+**Starting a saga**, over gRPC (see [`shared/broker.proto`](shared/broker.proto)):
+
+- `StartSaga(saga_type, saga_id, payload, wait, request_id, caller)` returns the `Saga`. `saga_id` is a UUID chosen by the caller (Session: a new one for every start); a second `StartSaga` with the same `saga_id` runs nothing again and returns that saga. `payload` is the JSON payload. With `wait = true` the broker answers when the saga is terminal, or just before the call's deadline with its state at that moment; a caller that goes away stops the wait, never the saga.
+- `GetSaga(saga_id)` returns the `Saga`, or `NOT_FOUND`.
+- Over HTTP on the broker, with the service token: `GET /api/v1/sagas?state=&limit=&offset=` (`{ "items": [ ... ], "total": 3 }`, newest first) and `GET /api/v1/sagas/{saga_id}` (`404 SAGA_NOT_FOUND` for an unknown id), each saga as the proto `Saga` in JSON, with `null` for what has not happened yet:
+
+```json
+{
+  "saga_id": "6f1d2c3b-4a5e-4f6a-8b7c-9d0e1f2a3b4c",
+  "saga_type": "shift.start",
+  "state": "compensated",
+  "failed_step": "create-channels",
+  "reason": "500 INTERNAL_ERROR from discord-dms",
+  "steps": [
+    { "step": "shift-begin", "service": "session", "state": "compensated", "attempts": 1, "last_status": 200, "last_error": null, "started_at": "2026-11-27T12:00:00.010Z", "ended_at": "2026-11-27T12:00:00.890Z" },
+    { "step": "grant-scopes", "service": "university-record", "state": "compensated", "attempts": 1, "last_status": 200, "last_error": null, "started_at": "2026-11-27T12:00:00.080Z", "ended_at": "2026-11-27T12:00:00.640Z" },
+    { "step": "create-channels", "service": "discord-dms", "state": "failed", "attempts": 1, "last_status": 500, "last_error": "INTERNAL_ERROR", "started_at": "2026-11-27T12:00:00.150Z", "ended_at": "2026-11-27T12:00:00.420Z" },
+    { "step": "shift-confirm", "service": "session", "state": "pending", "attempts": 0, "last_status": null, "last_error": null, "started_at": null, "ended_at": null }
+  ],
+  "started_at": "2026-11-27T12:00:00.000Z",
+  "updated_at": "2026-11-27T12:00:00.890Z"
+}
+```
+
+Saga `state`: `running`, `compensating`, `completed`, `compensated`, `failed`. Step `state`: `pending`, `done`, `failed`, `compensated`.
+
+**Running a step.** Each step is a `Request` through the broker on the participant's queue (`requests.<prefix>`, `caller: "message-broker"`, no `X-Player-Id`, `timeout_ms` `2000`): `POST /api/v1/saga-steps/{step}`, and for its compensation `POST /api/v1/saga-steps/{step}/compensate`, both with the body `{ "saga_id": "6f1d2c3b-...", "saga_type": "shift.start", "step": "grant-scopes", "payload": { ... } }` and the answer `200 OK` with `{ "saga_id": "6f1d2c3b-...", "step": "grant-scopes", "state": "done" }` (`"compensated"` for a compensation), or the shared error envelope:
+
+| Answer | The coordinator |
+| --- | --- |
+| `2xx` | records the step `done` (or `compensated`) and goes on |
+| `408`, `429`, `503`, `500 DEPENDENCY_UNAVAILABLE` (nothing was changed) | tries again, 3 times, 2 s apart; after that the step has `failed` |
+| anything else | the step has `failed` |
+
+- A failed step starts the compensation of every step already done, in reverse order, and the saga ends `compensated`. A compensation is retried until it succeeds; one that never does leaves the saga `failed`, with one `dead_letter` alert naming the saga sent to Service Discovery.
+- **`shift-confirm` is the point of no return.** Once steps 1 to 3 are done the saga only goes forward: `shift-confirm` is retried like a compensation until it succeeds (it cannot fail for a business reason, since the session is `starting` and owned by this saga), so a session is never compensated after it became `active`.
+- **The saga log** lives in the broker's SQLite with `synchronous=FULL`: the saga and its first step are written before the first call, and every change before it is acted on. After a restart the broker resumes every saga that is not terminal once its participants have subscribed again: a running saga runs its next step, a compensating one goes on compensating. A step cut short by the broker stopping is resumed, never counted as failed.
+
+**The participants**, Session, University Record and Discord DMs, answer the step routes:
+
+- **Idempotent by `(saga_id, step)`**, through a small table (or collection) `saga_steps(saga_id, step, state, updated_at)` in the participant's own database, written in the same transaction as the step's effect. A step that comes again answers `200` again without being done twice; a compensation of a step that was never done records a tombstone and answers `200`; a step that arrives after its own compensation answers `409 SAGA_STEP_COMPENSATED` and changes nothing.
+- A participant whose database is failing over answers `500 DEPENDENCY_UNAVAILABLE`, so the coordinator retries instead of compensating.
+- The step routes are service-only. They are not Gateway routes (`404` through it, with no Gateway change); through the broker they are recognised as service calls by the missing `X-Player-Id`, like every service-only route. The broker never passes `X-Service-Token` on, so they are not guarded by the token.
+
+**Session's side.** `POST /sessions/{session_id}/start` checks the request, computes the roles, the scopes and the ruleset, commits nothing, and calls `StartSaga` with `wait` and a 4 s deadline, inside its 5 s task timeout: `200` when the saga is `completed`, `409 SHIFT_START_FAILED` when it is `compensated`, `202 Accepted` with the session in `starting` when it is still running (the saga then moves the session to `active` or back to `lobby` on its own), and `500 DEPENDENCY_UNAVAILABLE` when the broker cannot start it. See [`POST /api/v1/sessions/{session_id}/start`](#post-apiv1sessionssession_idstart---consumed-by-client).
+
+**`session.started` is retired.** Session no longer publishes it. University Record and Discord DMs get the same data as the input of their steps, no longer subscribe to `events.session.started`, and drop it from the `topics` of their Service Discovery registration. `session.ended` and every other event are unchanged.
+
+**Demonstration.** Discord DMs' `POST /api/v1/dev/saga-steps/fail-next` makes the next `create-channels` answer `500 INTERNAL_ERROR` once, so the saga compensates steps 2 and 1 and the session stays in the lobby.
+
+**Visibility.** The broker logs `saga.started`, `saga.step_done`, `saga.step_failed`, `saga.compensating`, `saga.compensated`, `saga.completed` and `saga.failed` with the `saga_id`, and serves `broker_sagas_total{type,state}` and `broker_saga_step_duration_seconds{type,step}` (never with a `saga_id` label).
+
+**Out of scope:** the other flows that touch several databases. A decision raising a session's score is a chain of events that can arrive late but never half done, and a new applicant in three services is created from one idempotent event.
+
 #### API conventions
 
 These apply to every endpoint listed in the next section.
 
 - Base path `/api/v1` inside every service; through the Gateway, `/api/v1/<prefix>` (see [Gateway](#gateway)). Resource names are plural nouns. JSON fields are `snake_case`. Timestamps are ISO 8601 in UTC. Identifiers are UUID strings.
 - Lists are paginated with `?limit=&offset=` and return `{ "items": [], "total": 0 }`.
-- A `POST` that creates something (`POST /applicants/next`, `POST /sessions`, `POST /decisions`) is not idempotent. Callers must not retry it automatically on a timeout, and the Gateway never does.
+- A `POST` that creates something (`POST /applicants/next`, `POST /sessions`, `POST /decisions`) is not idempotent. Callers must not retry it automatically on a timeout, and the Gateway never does. The saga step routes (Lab 5) are idempotent by `(saga_id, step)`, which is what lets the broker retry them (see [Sagas](#sagas)).
 - Every service exposes `GET /health`. It needs no credential.
-- Every service, the Gateway, Service Discovery and the Message Broker expose `GET /status` (Lab 3), see [Status endpoint](#status-endpoint), `GET /logs` and `GET /metrics` (Lab 4), see [Logs download](#logs-download) and [Monitoring](#monitoring), and log as [Logging](#logging) says.
+- Every service, the Gateway, Service Discovery, the Message Broker and, from Lab 5, the ETL Service expose `GET /status` (Lab 3), see [Status endpoint](#status-endpoint), `GET /logs` and `GET /metrics` (Lab 4), see [Logs download](#logs-download) and [Monitoring](#monitoring), and log as [Logging](#logging) says.
 - `X-Request-ID` is read from the request or generated (uuid4), echoed in the response, and **forwarded on every outbound call**; from Lab 4 it travels as `request_id` (and the `X-Request-ID` header of a request) with every `Request` and `Publish` to the broker (see [Logging](#logging)).
 
 ##### Status endpoint
 
-`GET /status` (Lab 3) exists at the root of every service, the Gateway, Service Discovery and the Message Broker, next to `/health`; `/health` and `/health/ready` stay as they are. Service Discovery calls it directly, not through the Gateway.
+`GET /status` (Lab 3) exists at the root of every service, the Gateway, Service Discovery, the Message Broker and, from Lab 5, the ETL Service, next to `/health`; `/health` and `/health/ready` stay as they are. Service Discovery calls it directly, not through the Gateway.
 
 ```json
 {
@@ -603,19 +889,19 @@ These apply to every endpoint listed in the next section.
 }
 ```
 
-- `200` with `"status": "up"`; `503` with the same body and `"status": "degraded"` when the instance's own database (PostgreSQL, MongoDB) does not answer a ping. A component without a database (Gateway, Service Discovery) is always `up`.
-- `service` is the Gateway prefix (see [Gateway](#gateway)); Service Discovery uses `service-discovery`, the Gateway `gateway`, the broker `message-broker`. `instance_id` as registered (see [Service Discovery](#service-discovery)).
+- `200` with `"status": "up"`; `503` with the same body and `"status": "degraded"` when the instance's own database (PostgreSQL, MongoDB) does not answer a ping - from Lab 5 also while no primary of it answers (see [Database replication](#database-replication)). A component without a database (Gateway, Service Discovery) is always `up`.
+- `service` is the Gateway prefix (see [Gateway](#gateway)); Service Discovery uses `service-discovery`, the Gateway `gateway`, the broker `message-broker`, the ETL Service `etl` (Lab 5). `instance_id` as registered (see [Service Discovery](#service-discovery)).
 - `in_flight` is the number of requests holding a concurrent-limit slot right now; `max_concurrent_tasks` is the configured `MAX_CONCURRENT_TASKS`. The load is `in_flight / max_concurrent_tasks`.
 - No credential. **Exempt from the concurrent task limit** and not counted in `in_flight`. Its access log line is `debug`.
 - No other field is added, except by Discord DMs, which adds `ws_connections` (the WebSocket connections this instance holds), and the broker, which adds `grpc_in_flight` and `grpc_max_workers` (its gRPC threads in use, streams included, which are not part of its load); its `503 degraded` means its store cannot write.
 
 ##### Logging
 
-Every component - the eight services, the Gateway, Service Discovery and the Message Broker - logs the same way (Lab 3).
+Every component - the eight services, the Gateway, Service Discovery, the Message Broker and, from Lab 5, the ETL Service - logs the same way (Lab 3).
 
 - **One JSON object per line on stdout**, `snake_case` keys. Level from `LOG_LEVEL` (`debug`, `info`, `warn`, `error`; default `info`).
 - **The same lines in a rotating file** (Lab 4, #112), read back by `GET /logs`: see [Logs download](#logs-download) below.
-- **Every line carries** `time` (ISO 8601 UTC with milliseconds and `Z`), `level` (lowercase), `service` (the Gateway prefix; `gateway`, `service-discovery`, `message-broker`), `instance_id`, `version`, `event` (a stable name from the list below) and `msg`.
+- **Every line carries** `time` (ISO 8601 UTC with milliseconds and `Z`), `level` (lowercase), `service` (the Gateway prefix; `gateway`, `service-discovery`, `message-broker`, from Lab 5 `etl`), `instance_id`, `version`, `event` (a stable name from the list below) and `msg`.
 - **`duration_ms` is an integer number of milliseconds** in every component. Applicant's `latency_ms`, Player's and Session's `duration` and any `Elapsed` are renamed.
 - **`request_id`**: the `X-Request-ID` of the request being handled, printed on every line produced while handling it and forwarded on every outbound call. An outbox row stores the `request_id` of the request that created the event, and the relay sends it as `request_id` with the `Publish` (a new one is generated when it is missing); the broker hands it to every consumer in the `Delivery`.
 
@@ -636,6 +922,8 @@ Every component - the eight services, the Gateway, Service Discovery and the Mes
 
 From Lab 4 the Gateway adds `target` (the prefix) and `correlation_id` to its `http.request` lines and never names an instance (the broker logs it), and the breaker events of its breaker on the broker (`breaker.half_open` included). The Message Broker logs `broker.published`, `broker.subscribed` / `broker.unsubscribed`, `broker.delivered`, `broker.acked`, `broker.ack_refused`, `broker.redelivered`, `broker.rerouted`, `broker.dead_lettered`, `broker.alert_sent` / `broker.alert_failed` / `broker.alert_dropped`, `request.sent`, `request.replied`, `request.timeout`, `request.lost`, `request.no_instance`, `request.refused`, `request.cancelled`, `breaker.opened` / `breaker.half_open` / `breaker.closed` (with `target_instance`), `sd.mark_down`, `sd.disabled` and `store.unavailable` / `store.recovered` / `store.expired` / `store.in_memory`; a service is named there by `service_name` and an instance by `instance`, and a message body is never logged ([`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) §14). Service Discovery adds `registry.registered` (`after_expiry` for a return), `registry.expired`, `registry.deregistered`, `registry.marked_down`, `registry.recovered`, `health.unreachable`, `health.reachable`, `health.critical`, `health.load_recovered`, `health.error`, `health.checked` (`debug`), `alert.emitted` (`debug`), `alert.subscriber_failed`, `notify.sent`, `notify.failed`, `notify.skipped`, `notify.dropped`, `notify.disabled` and `alert.received` (a `POST /api/v1/alerts` of the broker); the levels are in `docs/SERVICE_DISCOVERY.md`.
 
+From Lab 5 the broker also logs the saga events of [Sagas](#sagas) (`saga.started`, `saga.step_done`, `saga.step_failed`, `saga.compensating`, `saga.compensated`, `saga.completed`, `saga.failed`, each with the `saga_id`), the Gateway logs `cache.unavailable` (`warn`) when it skips a cache node, and `pg-failover` logs `failover.check_failed`, `failover.promoted`, `failover.repointed` and `failover.rejoined` (see [Database replication](#database-replication)).
+
 **Never logged:** `Authorization`, `X-Service-Token`, `JWT_SECRET`, passwords, the Telegram bot token (it is part of the Telegram URL, so exception messages are sanitized), full request or response bodies, query strings (a `q` of `GET /records/{category}` holds a name, student ID or email, and `?ticket=` a one-time ticket), and applicant personal data other than `applicant_id`.
 
 > **Known gap (Player).** Player Service `4.0.0` logs a request delivered by the broker as `broker.request`
@@ -651,13 +939,13 @@ Example line:
 
 ##### Logs download
 
-Lab 4 (#112): the logs of any instance, or of the whole system, can be downloaded without a shell on the Docker host. Every component (the eight services, the Gateway, Service Discovery and the Message Broker) does the same three things. The reference implementation is `app/logfile.py` of Service Discovery, the broker and the Gateway.
+Lab 4 (#112): the logs of any instance, or of the whole system, can be downloaded without a shell on the Docker host. Every component (the eight services, the Gateway, Service Discovery, the Message Broker and, from Lab 5, the ETL Service) does the same three things. The reference implementation is `app/logfile.py` of Service Discovery, the broker and the Gateway.
 
 **1. The log file.** Every line written to stdout is also written, unchanged, to `LOG_FILE`.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `LOG_FILE` | `/var/log/<service>/<service>.jsonl` (`<service>` as in the `service` field: `player`, ..., `gateway`, `service-discovery`, `message-broker`) | Empty: stdout only, and `GET /logs` answers `503 LOGS_UNAVAILABLE` |
+| `LOG_FILE` | `/var/log/<service>/<service>.jsonl` (`<service>` as in the `service` field: `player`, ..., `gateway`, `service-discovery`, `message-broker`, `etl`) | Empty: stdout only, and `GET /logs` answers `503 LOGS_UNAVAILABLE` |
 | `LOG_FILE_MAX_MB` | `50` | The file rotates at this size |
 | `LOG_FILE_KEEP` | `5` | Rotated files kept next to the current one |
 
@@ -696,10 +984,10 @@ unzip logs.zip && jq -c 'select(.request_id == "<id>")' *.jsonl | jq -sc 'sort_b
 
 ##### Circuit breaker
 
-Every component that calls another keeps circuit breakers (Lab 3, moved in Lab 4): **the broker one per instance**, the Gateway and every service **one on the broker**, their only target from Lab 4 (a service uses it for its requests and its relay's publishes), and Service Discovery one per polled instance and one for Telegram.
+Every component that calls another keeps circuit breakers (Lab 3, moved in Lab 4): **the broker one per instance**, the Gateway and every service **one on the broker**, their only target from Lab 4 (a service uses it for its requests and its relay's publishes), Service Discovery one per polled instance and one for Telegram, and from Lab 5 the Gateway one per cache node (see [Caching](#caching)).
 
 - **A failure of an instance (the broker's breakers)** is no reply within the request's timeout, the loss of the instance's stream while it held the request, or any `5xx` reply **except a `500 DEPENDENCY_UNAVAILABLE`**. Any `4xx`, `408`, `422` and `429` included, is **not** a failure.
-- **`500 DEPENDENCY_UNAVAILABLE` is not a failure** of the instance that answers it: that instance is alive and reports that a service *it* calls failed, whose own instances are counted by their own breakers. Counting it would trip every healthy caller of an unavailable service. An instance whose own database is down answers it too (Applicant and Credential, `details.dependency` naming the database); that case is caught by health polling, since its `GET /status` answers `503 degraded`. Likewise a hung service answers its own `408` after its `5s` task timeout, before the broker's timeout, which is not a failure either: health polling takes it out when its `/status` stops answering within 2 s.
+- **`500 DEPENDENCY_UNAVAILABLE` is not a failure** of the instance that answers it: that instance is alive and reports that a service *it* calls failed, whose own instances are counted by their own breakers. Counting it would trip every healthy caller of an unavailable service. An instance whose own database is down answers it too (Applicant and Credential, and from Lab 5 every service while no primary of its database answers, `details.dependency` naming the database); that case is caught by health polling, since its `GET /status` answers `503 degraded`. Likewise a hung service answers its own `408` after its `5s` task timeout, before the broker's timeout, which is not a failure either: health polling takes it out when its `/status` stops answering within 2 s.
 - **A failure of the broker (the Gateway's and a service's breaker)** is a call that failed in transport: `UNAVAILABLE` (the broker unreachable), `DEADLINE_EXCEEDED`, `INTERNAL` and the like. A reply of any status is **not**: a `503` or `408` the broker answers about a service says nothing against the broker, and the instances' breakers are the broker's. A call the broker refused (`UNAUTHENTICATED`, `PERMISSION_DENIED`, `INVALID_ARGUMENT`) is not either.
 - **Trip:** 3 failures within a sliding window of task timeout x 3.5: **35 s** in the broker (the Gateway's `10s` x 3.5) and the Gateway, **17.5 s** in a service and Service Discovery. No new variable: the window is `HTTP_REQUEST_TIMEOUT` x 3.5 (the broker's `REQUEST_BREAKER_WINDOW_SECONDS`).
 - **While open:** the broker sends no request to the instance (`503 SERVICE_UNAVAILABLE` when no instance is left; an event falls back to any connected instance); the Gateway answers `503 SERVICE_UNAVAILABLE` with `details.service: "message-broker"`; a service answers its synchronous call with `500 DEPENDENCY_UNAVAILABLE`, `details.dependency` naming the target, without calling, logged `breaker.rejected`, and its relay leaves its events pending.
@@ -733,7 +1021,7 @@ From Lab 4 the broker chooses the instance for every message, requests and event
 
 Lab 4 (#113): Prometheus scrapes every component and Grafana shows it.
 
-**`GET /metrics`** on every component's HTTP port (the eight services, the Gateway, Service Discovery and the broker): the Prometheus text format, no credential, outside the concurrent task limit and the task timeout, its `http.request` line at `debug`. It is not a Gateway route (`404`). No series carries a body, a token, an id of a player or applicant, or a raw path.
+**`GET /metrics`** on every component's HTTP port (the eight services, the Gateway, Service Discovery, the broker and, from Lab 5, the ETL Service): the Prometheus text format, no credential, outside the concurrent task limit and the task timeout, its `http.request` line at `debug`. It is not a Gateway route (`404`). No series carries a body, a token, an id of a player or applicant, or a raw path.
 
 | Series | Who | What |
 | --- | --- | --- |
@@ -746,6 +1034,8 @@ Lab 4 (#113): Prometheus scrapes every component and Grafana shows it.
 | `broker_messages_total{queue,outcome}` | the broker | `published`, `delivered`, `acked`, `retried`, `redelivered`, `rejected`, `dead_lettered` |
 | `broker_redeliveries_total`, `broker_dead_letters_total` | the broker | Redeliveries (retried and redelivered), dead letters |
 | `broker_request_duration_seconds{service}` (histogram) | the broker | From a `Request` to its reply, per called service |
+| `gateway_cache_requests_total{route,result}` (Lab 5) | the Gateway | Lookups of the cached routes: `hit`, `miss`, `bypass` (see [Caching](#caching)) |
+| `broker_sagas_total{type,state}`, `broker_saga_step_duration_seconds{type,step}` (histogram) (Lab 5) | the broker | Sagas by type and state, and how long each step took (see [Sagas](#sagas)) |
 
 - `route` is the route's template (`/api/v1/sessions/{session_id}`), `unmatched` for an unknown path, and a method outside the standard ones is `OTHER`, so a caller cannot grow the number of series.
 - A component may add series of its own (Discord DMs `websocket_connections`); it lists them in its `docs/` reference.
@@ -803,12 +1093,12 @@ A client's credentials are checked **at the Gateway, and only there**. Services 
 | A player (client) | `Authorization: Bearer <jwt>` | A JWT issued by Player Service's [`POST /api/v1/auth/login`](#post-apiv1authlogin---consumed-by-client) |
 | Another service (Lab 2-3) | `X-Service-Token: <token>` | One shared secret, the same value in every component (`SERVICE_TOKEN` in `.env`). From Lab 4 no service calls the Gateway: the token travels as the broker's gRPC metadata, below |
 
-**The JWT.** Signed with HS256 using the shared secret `JWT_SECRET`, known only to Player Service (which signs) and the Gateway (which verifies). Claims: `sub` = the player's `player_id` (UUID), `iat`, `exp`. The Gateway rejects a token with a bad signature, an expired `exp` or a non-UUID `sub`.
+**The JWT.** Signed with HS256 using the shared secret `JWT_SECRET`, known only to Player Service (which signs) and the Gateway (which verifies). Claims: `sub` = the player's `player_id` (UUID), `iat`, `exp` and, from Lab 5, `jti`, a new UUID for every token, which logout revokes. The Gateway rejects a token with a bad signature, an expired `exp` or a non-UUID `sub`, and from Lab 5 a token whose `jti` is revoked or whose player is deleted, from its cached authentication data (see [Caching](#caching)). A token without `jti` (issued before Player Service `5.0.0`) cannot be revoked and is accepted until it expires.
 
 **What the Gateway does before forwarding:**
 
 1. A request to a public route (below) is forwarded without a credential check.
-2. Otherwise it validates the credential the route accepts (table below). Missing, unusable or expired player token: `401 UNAUTHENTICATED`. Wrong service token: `401 INVALID_SERVICE_TOKEN`. A service-only route without a service token: `403 SERVICE_TOKEN_REQUIRED`. In all three cases no service is called.
+2. Otherwise it validates the credential the route accepts (table below). Missing, unusable, expired or (Lab 5) revoked player token, or one whose player is deleted: `401 UNAUTHENTICATED`. Wrong service token: `401 INVALID_SERVICE_TOKEN`. A service-only route without a service token: `403 SERVICE_TOKEN_REQUIRED`. In all three cases no service is called.
 3. It **removes** `Authorization` and `X-Service-Token`, and removes any `X-Player-Id` the caller sent.
 4. For a request authenticated with a player token, it sets **`X-Player-Id: <sub>`**. A request authenticated with the service token carries no `X-Player-Id`.
 
@@ -823,7 +1113,7 @@ From Lab 4 a service calls another one, and the Gateway forwards a client's requ
 1. **The service token is gRPC metadata, never a header.** Every call to the broker (`Publish`, `Subscribe`, `Ack`, `Request`, `Reply`, `ListTopics`, `ListDeadLetters`) carries the metadata `x-service-token: <SERVICE_TOKEN>`. Missing is `UNAUTHENTICATED`, wrong is `PERMISSION_DENIED`, and nothing is queued or delivered. The Gateway is one such caller: it checks the client's credential as above, then calls the broker with the metadata.
 2. **No credential in a request's headers.** `ServiceRequest.headers` never carry `X-Service-Token` or `Authorization`: the Gateway removes them (step 3 above) and a calling service never adds them. A service that receives `X-Service-Token` among a request's headers drops it and never treats it as a credential.
 3. **`X-Player-Id` comes only from the Gateway**, for a request authenticated with a player token (step 4 above). A service calling another sends no `X-Player-Id`. On a route that is not public, a request without it is therefore a service call; this is how Server Rules and University Record already tell the two apart. The inference holds only because the Gateway lets a client through without a credential on the public routes below and nowhere else (#110 keeps it that way): on a public route (`POST /auth/login`, `POST /players`) a request without `X-Player-Id` is a client with no credential at all, not a trusted caller. `ServiceRequest.caller` names the calling component (`gateway`, `moderation`, ...) for the logs and is not a credential.
-4. **A route that checks `X-Service-Token` itself cannot be reached through the broker**, because no request there carries the token. It is called directly inside `student-id-net`, with the header, and the component checks it like Service Discovery does: every component's `GET /logs` ([Logs download](#logs-download), #112), and the admin and dev routes a service keeps off the Gateway (#110).
+4. **A route that checks `X-Service-Token` itself cannot be reached through the broker**, because no request there carries the token. It is called directly inside `student-id-net`, with the header, and the component checks it like Service Discovery does: every component's `GET /logs` ([Logs download](#logs-download), #112), and the admin and dev routes a service keeps off the Gateway (#110). From Lab 5 the same holds for the Gateway's `GET /cache/stats`, the ETL's `/api/v1/runs` and Discord DMs' `POST /api/v1/dev/saga-steps/fail-next`.
 
 **Public routes** (no credential): `POST /api/v1/player/auth/login`, `POST /api/v1/player/players` (registration, beyond the contract), `GET /health` of the Gateway and `GET /api/v1/<prefix>/health`.
 
@@ -832,9 +1122,9 @@ Which credential each contract endpoint accepts, enforced by the Gateway:
 | Accepts                | Endpoints                                                                                                                                                                                                                                           |
 | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **None (public)**      | `POST /auth/login` (Player), the health checks                                                                                                                                                                                                      |
-| **Service token only** | `POST /applicants/next` (Applicant, Credential, University Record), `GET /applicants/{id}/documents/validation`, `GET /applicants/{id}/records`, `GET /rulesets/current`, `POST /rulesets/{version}/evaluations`, `POST /events` (every consumer, Lab 2-3) |
+| **Service token only** | `POST /applicants/next` (Applicant, Credential, University Record), `GET /applicants/{id}/documents/validation`, `GET /applicants/{id}/records`, `GET /rulesets/current`, `POST /rulesets/{version}/evaluations`, `POST /events` (every consumer, Lab 2-3), the saga step routes `POST /saga-steps/{step}` and `.../compensate` of Session, University Record and Discord DMs (Lab 5, called by the broker) |
 | **Player or service**  | `GET /players/{id}`, `GET /sessions/{id}`, `GET /applicants/{id}` (Applicant)                                                                                                                                                                       |
-| **Player only**        | every other contract endpoint: the session actions, `GET /applicants/{id}/documents`, `GET /rulesets/{version}`, `GET /records/{category}`, `POST`/`GET /decisions`, `GET /bans`, `POST /ws-tickets`, the Discord DMs channel and message endpoints |
+| **Player only**        | every other contract endpoint: `POST /auth/logout` (Lab 5, answered by the Gateway), the session actions, `GET /applicants/{id}/documents`, `GET /rulesets/{version}`, `GET /records/{category}`, `POST`/`GET /decisions`, `GET /bans`, `POST /ws-tickets`, the Discord DMs channel and message endpoints |
 
 `GET /ws` (Discord DMs) is not reached through the Gateway at all; it takes a ticket.
 
@@ -855,13 +1145,15 @@ These codes are shared by every service and the Gateway, and mean the same every
 | Status | `code`                   | Who                                             | When                                                                                                                                                  |
 | ------ | ------------------------ | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `400`  | `VALIDATION_ERROR`       | service, Gateway                                | Anything malformed: a body that is not JSON or misses a field, a path id that is not a UUID, a bad query parameter. `details` names the field         |
-| `401`  | `UNAUTHENTICATED`        | Gateway (service when `X-Player-Id` is missing) | A route that needs a calling player got no valid player token: missing, malformed, bad signature, expired                                             |
+| `401`  | `UNAUTHENTICATED`        | Gateway (service when `X-Player-Id` is missing) | A route that needs a calling player got no valid player token: missing, malformed, bad signature, expired, revoked or of a deleted player (Lab 5)                                             |
 | `401`  | `INVALID_SERVICE_TOKEN`  | Gateway; Service Discovery; `GET /logs` of any component | `X-Service-Token` is present but wrong                                                                                                                |
 | `401`  | `INVALID_CREDENTIALS`    | Player Service                                  | `POST /auth/login` only: unknown username or wrong password                                                                                           |
 | `403`  | `SERVICE_TOKEN_REQUIRED` | Gateway; Service Discovery; `GET /logs` of any component | A service-only route was called without `X-Service-Token`                                                                                             |
 | `404`  | `NOT_FOUND`              | service, Gateway                                | No such route, or (Gateway) no such prefix. A missing resource uses its own code (`SESSION_NOT_FOUND`, ...)                                           |
 | `405`  | `METHOD_NOT_ALLOWED`     | service                                         | Known path, wrong method. From Lab 4 the Gateway answers `404` instead (see [Gateway](#gateway))                                                     |
 | `408`  | `REQUEST_TIMEOUT`        | service, Gateway, broker                        | The task ran longer than the [task timeout](#task-timeout-and-concurrent-task-limit) and was stopped. **Nothing was changed**                         |
+| `409`  | `SHIFT_START_FAILED`     | Session                                         | `POST /sessions/{id}/start` (Lab 5): the saga `shift.start` was compensated. `details.failed_step` names the step that failed; the session is back in the `lobby` |
+| `409`  | `SAGA_STEP_COMPENSATED`  | Session, University Record, Discord DMs         | A saga step arrived after its own compensation (Lab 5). **Nothing was changed.** See [Sagas](#sagas) |
 | `422`  | `INVALID_EVENT`          | service                                         | Lab 2-3 `POST /events` only; from Lab 4 the `PERMANENT` outcome of an `Ack` - see [Event delivery](#event-delivery)                                  |
 | `429`  | `TOO_MANY_REQUESTS`      | service, Gateway, broker                        | The [concurrent task limit](#task-timeout-and-concurrent-task-limit) is reached. **Nothing was changed.** Comes with `Retry-After` (seconds)          |
 | `500`  | `DEPENDENCY_UNAVAILABLE` | service                                         | A service or database this endpoint needs did not answer, or answered `408`/`429`/`502`/`5xx`. **Nothing was changed.** `details.dependency` names it |
@@ -914,7 +1206,7 @@ These values are used by more than one service, so they are defined once here.
 | document `validation_status`                           | `valid`, `expired`, `forged`, `inconsistent`, `incomplete`                                                                                                                             |
 | record `category`                                      | `enrollment` (enrollment list and current academic year), `email-groups` (Outlook group lists), `courses` (existing courses and semester schedule), `fcim-logs` (FCIM server messages) |
 | decision `action`                                      | `accept`, `reject`, `flag`, `ban`                                                                                                                                                      |
-| session `status`                                       | `lobby` (players are joining), `active` (the shift is running), `ended`                                                                                                                |
+| session `status`                                       | `lobby` (players are joining), `starting` (Lab 5: the saga `shift.start` is setting the shift up), `active` (the shift is running), `ended`                                                                                                                |
 | server channels (what an accepted applicant may enter) | `general`, `dark-memes`, `groapa`, `teachers`, `alumni`; a ruleset may add more                                                                                                        |
 | moderator channels (in Discord DMs)                    | `general-mod-chat`, `enrollment-check`, `faculty-check`, `course-registration`                                                                                                         |
 | `difficulty`                                           | integer from `1` (easy) to `5` (hard)                                                                                                                                                  |
@@ -1089,9 +1381,11 @@ None. Player Service never calls other services; it only receives `session.ended
 
 **Usage.**
 
-- The token is signed with HS256 using `JWT_SECRET`, shared only with the Gateway. Claims: `sub` = `player_id`, `iat`, `exp` (`expires_in` seconds later). See [Authentication](#authentication).
+- The token is signed with HS256 using `JWT_SECRET`, shared only with the Gateway. Claims: `sub` = `player_id`, `iat`, `exp` (`expires_in` seconds later) and, from Lab 5, `jti`, a new UUID for every token. See [Authentication](#authentication).
 - The client sends it as `Authorization: Bearer <access_token>` on every later request. The Gateway validates it and passes the player on as `X-Player-Id`; no service ever sees the token.
 - Errors: `401 INVALID_CREDENTIALS` for an unknown username or a wrong password - the same code for both, so the answer does not reveal which usernames exist.
+
+**Logout (Lab 5).** `POST {gateway}/api/v1/player/auth/logout` is answered by the Gateway itself and never reaches Player Service: it revokes the token's `jti` until the token expires and answers `204` (see [Caching](#caching)). Player Service only adds the `jti` claim.
 
 ###### Level and XP
 
@@ -1134,8 +1428,10 @@ email.
 - `POST /api/v1/applicants/next` - available in Applicant Service, via `{gateway}/api/v1/applicant`  
   Creates the next applicant. The returned `applicant_id` becomes the session's `current_applicant_id`.
 - Publish to `events.<event_type>` (Lab 4; Lab 2-3: `POST /api/v1/events` of University Record, Discord DMs and Player Service)  
-  Pushes `session.started` (University Record, Discord DMs) and `session.ended` (Player, Discord DMs,
-  University Record), as described in [Event delivery](#event-delivery).
+  Pushes `session.ended` (Player, Discord DMs, University Record), as described in [Event delivery](#event-delivery).
+  `session.started` (University Record, Discord DMs) is retired in Lab 5.
+- `StartSaga` and `GetSaga` of the Message Broker (gRPC, Lab 5)  
+  Starts the saga `shift.start` when the shift starts, and waits for it (see [Sagas](#sagas)).
 
 ##### Exposed API endpoints
 
@@ -1187,7 +1483,7 @@ Several endpoints below return the **session object**:
 }
 ```
 
-While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `current_applicant_id` are `null` and `junior_moderators` is empty.
+While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `current_applicant_id` are `null` and `junior_moderators` is empty. From Lab 5 a session in `starting` already has its `moderator_id`, `junior_moderators` and `ruleset_version`, stored by the saga's first step.
 
 ###### `POST /api/v1/sessions` - consumed by Client
 
@@ -1211,7 +1507,7 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 
 ###### `POST /api/v1/sessions/{session_id}/start` - consumed by Client
 
-**Description.** The creator starts the shift. Session assigns the roles, splits the record categories between the Junior Moderators, picks the ruleset and produces `session.started`.
+**Description.** The creator starts the shift. Session assigns the roles, splits the record categories between the Junior Moderators and picks the ruleset, then runs the saga `shift.start` through the broker (Lab 5): the session becomes `starting`, University Record stores the juniors' scopes, Discord DMs creates the channels, and the session becomes `active` (see [Sagas](#sagas)). Until Lab 4 it produced `session.started` instead.
 
 **Payload.**
 
@@ -1223,7 +1519,7 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 
 `moderator_id` must be one of the session's players. Everyone else becomes a Junior Moderator.
 
-**Response.** `200 OK` with the session object (`status: "active"`).
+**Response.** `200 OK` with the session object (`status: "active"`). From Lab 5 also `202 Accepted` with the session object (`status: "starting"`) when the saga is still running after 4 s: the saga then moves the session to `active` or back to `lobby` on its own, and the client reads [`GET /api/v1/sessions/{session_id}`](#get-apiv1sessionssession_id---consumed-by-moderation-service-client).
 
 **Usage.**
 
@@ -1231,7 +1527,9 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 - `difficulty` is the average level of the players, rounded and kept between 1 and 5. Session sends it to `GET /api/v1/rulesets/current` and stores the returned `version` as `ruleset_version`.
 - The four record categories are handed out in turn: with 4 juniors each gets one category, with 2 juniors each gets two, and with 3 juniors one of them gets two. The Moderator gets no category.
 - If Server Rules does not answer, the session stays in the lobby.
-- Errors: `403 NOT_SESSION_CREATOR`, `409 SESSION_NOT_IN_LOBBY`, `409 NOT_ENOUGH_PLAYERS`, `422 MODERATOR_NOT_IN_SESSION`.
+- From Lab 5 Session commits nothing before the saga: it checks the request and computes the roles, the scopes and the ruleset (the Rules call through the broker stays), then calls `StartSaga` with `wait` and a 4 s deadline, inside its own 5 s task timeout, without holding a lock on the session row (`shift-begin` updates it). `completed` answers `200`; `compensated` answers `409 SHIFT_START_FAILED` with `details.failed_step` and the session back in the lobby; still running answers `202`; when the broker cannot start the saga, `500 DEPENDENCY_UNAVAILABLE` and nothing changes.
+- While a session is `starting`, joining, leaving, the next applicant, ending and a second start answer `409` with the existing codes (`SESSION_NOT_IN_LOBBY`, `SESSION_NOT_ACTIVE`), and a player in a `starting` session counts as being in a session.
+- Errors: `403 NOT_SESSION_CREATOR`, `409 SESSION_NOT_IN_LOBBY`, `409 NOT_ENOUGH_PLAYERS`, `409 SHIFT_START_FAILED`, `422 MODERATOR_NOT_IN_SESSION`.
 
 ###### `POST /api/v1/sessions/{session_id}/applicants/next` - consumed by Client
 
@@ -1303,31 +1601,22 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 
 **Response.** `200 OK` with the session object. `404 SESSION_NOT_FOUND` if the session does not exist.
 
+###### `POST /api/v1/saga-steps/shift-begin` and `POST /api/v1/saga-steps/shift-confirm` - consumed by the Message Broker
+
+**Description.** Lab 5: the two steps of the saga `shift.start` that Session runs (see [Sagas](#sagas)). `shift-begin` moves the session from `lobby` to `starting` and stores the moderator, the junior moderators with their record scopes and the ruleset version from the payload; its compensation, `POST /api/v1/saga-steps/shift-begin/compensate`, moves the session back to `lobby` and clears them. `shift-confirm` moves the session from `starting` to `active`; it has no compensation.
+
+**Payload.** `{ "saga_id": "...", "saga_type": "shift.start", "step": "shift-begin", "payload": { ... } }`, the payload as in [Sagas](#sagas).
+
+**Response.** `200 OK` with `{ "saga_id": "...", "step": "shift-begin", "state": "done" }` (`"compensated"` for the compensation).
+
+**Usage.** Only the broker calls these routes: they are service calls, without `X-Player-Id`, and not Gateway routes. Idempotent by `(saga_id, step)`. `shift-begin` on a session that is no longer in the lobby fails with `409 SESSION_NOT_IN_LOBBY`, which ends the saga `compensated`. Errors: `404 SESSION_NOT_FOUND`, `409 SESSION_NOT_IN_LOBBY`, `409 SAGA_STEP_COMPENSATED`.
+
 ##### Events
 
 **Produced:**
 
-- `session.started` - pushed to University Record Service, Discord DMs Service  
-  A shift has started. University Record learns which categories each junior may read, and Discord DMs learns who is in the session so it can create the channels.
-
-  ```json
-  {
-    "session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
-    "moderator_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
-    "junior_moderators": [
-      {
-        "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10",
-        "record_scopes": ["enrollment", "courses"]
-      },
-      {
-        "player_id": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21",
-        "record_scopes": ["email-groups", "fcim-logs"]
-      }
-    ],
-    "ruleset_version": 7,
-    "started_at": "2026-09-10T18:05:00Z"
-  }
-  ```
+- `session.started` - retired in Lab 5  
+  Session `4.x` published it when a shift started, so that University Record could store the juniors' categories and Discord DMs create the channels. From Lab 5 the same data is the payload of the saga `shift.start` (see [Sagas](#sagas)), and University Record and Discord DMs get it as the input of their steps.
 
 - `session.ended` - pushed to Player Service, Discord DMs Service, University Record Service  
   The shift is over. Player Service updates progression, Discord DMs archives the channels and University Record closes the juniors' access. The payload is the same as the response of `POST /api/v1/sessions/{session_id}/end` above, without `status`.
@@ -1400,7 +1689,7 @@ While the session is in the `lobby`, `moderator_id`, `ruleset_version` and `curr
 }
 ```
 
-`404 APPLICANT_NOT_FOUND` if the applicant does not exist. This can also happen for a moment if another service created the applicant and the event has not arrived yet.
+`404 APPLICANT_NOT_FOUND` if the applicant does not exist. This can also happen for a moment if another service created the applicant and the event has not arrived yet. Through the Gateway, a `200` may come from its cache for up to 5 min (Lab 5): the claimed profile does not change after creation (see [Caching](#caching)).
 
 ##### Events
 
@@ -1530,7 +1819,7 @@ card, a claimed university address brings a mailbox printout, claimed current en
 confirmation, and claimed courses bring a registration. An honest outsider brings nothing
 (`"documents": []`).
 
-**Usage.** When Applicant Service creates the applicant, the documents are created from the `applicant.initialized` event. That means that just after a new applicant appears, this endpoint may answer `404 APPLICANT_NOT_FOUND` for a moment. The client then tries again.
+**Usage.** When Applicant Service creates the applicant, the documents are created from the `applicant.initialized` event. That means that just after a new applicant appears, this endpoint may answer `404 APPLICANT_NOT_FOUND` for a moment. The client then tries again. Through the Gateway, a `200` may come from its cache for up to 5 min (Lab 5, see [Caching](#caching)).
 
 ###### `GET /api/v1/applicants/{applicant_id}/documents/validation` - consumed by Moderation Service
 
@@ -1665,7 +1954,7 @@ A rule of kind `admission` decides whether a person may join at all. A rule of k
 
 **Payload.** None.
 
-**Response.** `200 OK` with the ruleset object. `404 RULESET_NOT_FOUND` if the version does not exist.
+**Response.** `200 OK` with the ruleset object. `404 RULESET_NOT_FOUND` if the version does not exist. Through the Gateway, a `200` may come from its cache for up to 1 h (Lab 5): a ruleset version never changes (see [Caching](#caching)).
 
 ###### `POST /api/v1/rulesets/{version}/evaluations` - consumed by Moderation Service
 
@@ -1725,7 +2014,7 @@ None. Server Rules neither produces nor receives events.
 - Publish to `events.<event_type>` (Lab 4; Lab 2-3: `POST /api/v1/events` of Applicant Service and Credential Service)  
   Pushes `applicant.initialized` when University Record met the applicant first, as described in
   [Event delivery](#event-delivery). University Record makes no other call; it learns about
-  sessions from the events Session pushes to it.
+  sessions from the saga step `grant-scopes` (Lab 5) and the `session.ended` event.
 
 ##### Exposed API endpoints
 
@@ -1789,7 +2078,7 @@ Fields of one record in each category:
 
 **Usage.**
 
-- The calling player (`X-Player-Id`) must have `category` in their `record_scopes` for this `session_id` (received with `session.started`). Otherwise the answer is `403 CATEGORY_NOT_ASSIGNED`. The Moderator has no categories.
+- The calling player (`X-Player-Id`) must have `category` in their `record_scopes` for this `session_id` (stored by the saga step `grant-scopes` when the shift started; received with `session.started` until Lab 4). Otherwise the answer is `403 CATEGORY_NOT_ASSIGNED`. The Moderator has no categories.
 - After `session.ended`, every request for that session gets `403 SESSION_ENDED`.
 - An empty `items` list is a valid answer: it means the records know nothing about what was searched, which is often the clue.
 - `group` is derived from `student_id`, and `year` and `enrolled_since` must agree with the
@@ -1834,7 +2123,17 @@ The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a j
 
 `courses` is different: it is one entry **per course the applicant claims**, in claimed order, saying whether that course exists in the catalog and whether the claimed student is registered for it - a course that does not exist has no catalog record to return, so `exists: false` with `title: null` is the only way to represent it. This is why its shape (`code`, `title`, `exists`, `registered`) differs from the `courses` category record returned by `GET /records/courses`.
 
-**Usage.** This endpoint gives full read access to all categories, so it is only for services: the Gateway forwards it only with a valid service token, and the request arrives without `X-Player-Id` (see the note on University Record access above). University Record applies no scope check here. `404 APPLICANT_NOT_FOUND` if the applicant does not exist.
+**Usage.** This endpoint gives full read access to all categories, so it is only for services: it is not a Gateway route, services reach it through the broker, and the request arrives without `X-Player-Id` (see the note on University Record access above). University Record applies no scope check here. `404 APPLICANT_NOT_FOUND` if the applicant does not exist.
+
+###### `POST /api/v1/saga-steps/grant-scopes` - consumed by the Message Broker
+
+**Description.** Lab 5: the step `grant-scopes` of the saga `shift.start` (see [Sagas](#sagas)). Stores the `record_scopes` of every junior in the payload's `junior_moderators` for its `session_id`; from then on their searches are checked against these scopes, as `session.started` made them until Lab 4. Its compensation, `POST /api/v1/saga-steps/grant-scopes/compensate`, removes them.
+
+**Payload.** `{ "saga_id": "...", "saga_type": "shift.start", "step": "grant-scopes", "payload": { ... } }`, the payload as in [Sagas](#sagas).
+
+**Response.** `200 OK` with `{ "saga_id": "...", "step": "grant-scopes", "state": "done" }` (`"compensated"` for the compensation).
+
+**Usage.** Only the broker calls it: a service call, without `X-Player-Id`, and not a Gateway route. Idempotent by `(saga_id, step)`. Errors: `409 SAGA_STEP_COMPENSATED`.
 
 ##### Events
 
@@ -1847,8 +2146,8 @@ The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a j
 
 - `applicant.initialized` - from Applicant Service or Credential Service  
   Creates the university's records from `actual`, the truth. An outsider gets no enrollment record, and someone who lies about their year has their real year on record. This is how the juniors can find the lie. An event whose `initialized_by` is `university-record-service` is ignored if it arrives.
-- `session.started` - from Server Moderation Session Service  
-  Stores the `record_scopes` of every junior for this session. From now on, their searches are checked against these scopes.
+- `session.started` - retired in Lab 5  
+  The juniors' `record_scopes` arrive with the saga step `grant-scopes` instead, and University Record no longer subscribes to `events.session.started`.
 - `session.ended` - from Server Moderation Session Service  
   Closes access for that session, so players cannot read records after the shift.
 
@@ -1870,7 +2169,7 @@ The `enrollment`, `email_groups` and `fcim_logs` lists hold the same records a j
 - Publish to `events.<event_type>` (Lab 4; Lab 2-3: `POST /api/v1/events` of Server Moderation Session Service)  
   Pushes `decision.recorded`, as described in [Event delivery](#event-delivery).
 
-Every one of these calls goes through the Gateway and carries `X-Service-Token`, never the Moderator's own token or `X-Player-Id`.
+Every one of these calls is a request through the broker, authenticated by the service token as gRPC metadata, never with the Moderator's own token or `X-Player-Id`.
 
 ##### Exposed API endpoints
 
@@ -2027,15 +2326,14 @@ Further rules:
 
 **Received:** none.
 
-The published image (`2.0.0`) implements this section: the relay pushes `decision.recorded` to Session's
-`POST /api/v1/events` through the Gateway and `GET /api/v1/admin/events` shows the delivery state - see
-[`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md).
+Moderation Service `4.0.0` implements this section, its relay publishing `decision.recorded` to
+`events.decision.recorded` - see [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md).
 
 #### Discord DMs Service
 
 ##### Consumed API endpoints
 
-None. Discord DMs never calls other services. Everything it needs about a session arrives with `session.started` and `session.ended`, pushed through the Gateway.
+None. Discord DMs never calls other services. Everything it needs about a session arrives through the broker: the input of its saga step `create-channels` (Lab 5) and the `session.ended` event.
 
 ##### Exposed API endpoints
 
@@ -2141,7 +2439,7 @@ The client sends `message.send`. The server stores the message and pushes `messa
 }
 ```
 
-**Usage.** Who can see which channel is worked out from `session.started`:
+**Usage.** Who can see which channel is worked out from the input of the saga step `create-channels` (Lab 5; `session.started` until Lab 4), with its `moderator_id` and each junior's `record_scopes`:
 
 | Channel               | Who can see it                                                         |
 | --------------------- | ---------------------------------------------------------------------- |
@@ -2169,19 +2467,39 @@ The client sends `message.send`. The server stores the message and pushes `messa
 
 **Usage.** History stays readable after the shift ends, because the channels are archived, not deleted.
 
+###### `POST /api/v1/saga-steps/create-channels` - consumed by the Message Broker
+
+**Description.** Lab 5: the step `create-channels` of the saga `shift.start` (see [Sagas](#sagas)). Creates the four channels of the session and the access mapping of every player from the payload's `moderator_id` and each junior's `record_scopes`, as `session.started` made them until Lab 4. Its compensation, `POST /api/v1/saga-steps/create-channels/compensate`, deletes those channels.
+
+**Payload.** `{ "saga_id": "...", "saga_type": "shift.start", "step": "create-channels", "payload": { ... } }`, the payload as in [Sagas](#sagas).
+
+**Response.** `200 OK` with `{ "saga_id": "...", "step": "create-channels", "state": "done" }` (`"compensated"` for the compensation).
+
+**Usage.** Only the broker calls it: a service call, without `X-Player-Id`, and not a Gateway route. Idempotent by `(saga_id, step)`. Errors: `409 SAGA_STEP_COMPENSATED`.
+
+###### `POST /api/v1/dev/saga-steps/fail-next` - consumed by developers
+
+**Description.** Lab 5, for the demonstration of a compensated saga: the next `create-channels`, on whichever copy gets it, answers `500 INTERNAL_ERROR` once, so the saga compensates steps 2 and 1 and the session stays in the lobby. The switch is stored in MongoDB or Redis, not in one process.
+
+**Payload.** None.
+
+**Response.** `204 No Content`.
+
+**Usage.** Checks `X-Service-Token` itself (`403 SERVICE_TOKEN_REQUIRED`, `401 INVALID_SERVICE_TOKEN`), like the other dev routes, and is called on an instance's REST port inside `student-id-net`; it is not a Gateway route.
+
 ##### Events
 
 **Produced:** none.
 
 **Received:**
 
-- `session.started` - from Server Moderation Session Service  
-  Creates the four channels of the session and the access mapping of every player, using `moderator_id` and each junior's `record_scopes`.
+- `session.started` - retired in Lab 5  
+  The channels and the access mapping are created by the saga step `create-channels` instead, and Discord DMs no longer subscribes to `events.session.started`.
 - `session.ended` - from Server Moderation Session Service  
   Archives the channels of the session (they become read-only) and closes its WebSocket connections.
 
-The published image (`2.0.0`) implements this section: `POST /api/v1/events`, `POST /api/v1/ws-tickets`
-and the ticket-only `GET /api/v1/ws` - see [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md).
+Discord DMs Service `4.0.0` implements this section, with its events delivered by the broker - see
+[`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md).
 
 ---
 
@@ -2258,7 +2576,7 @@ the demo and the developers), Prometheus (`9090`) and Grafana (`3000`). Every se
 (verifies), and lives in `.env` next to `SERVICE_TOKEN`.
 
 **Host ports are allocated in this table.** Check it before adding a service block, and take the next
-free number: `8080` and `8086` (`dms-ws-proxy`) are taken above (`-` means not published), `8090` by Service Discovery (Lab 3), `8070` and `8071` by the Message Broker (Lab 4), `9090` by Prometheus and `3000` by Grafana (Lab 4), and the database containers
+free number: `8080` and `8086` (`dms-ws-proxy`) are taken above (`-` means not published), `8090` by Service Discovery (Lab 3), `8070` and `8071` by the Message Broker (Lab 4), `9090` by Prometheus and `3000` by Grafana (Lab 4), `8075` by the ETL Service and `5440` by `warehouse-postgres` (Lab 5; the cache nodes publish none), and the database containers
 hold `5433`-`5438`, `6380`, `27018` and `27019`. Every service listens on `8080` inside its own container except Applicant and
 Credential, which listen on `8081` and `8082`, Moderation, which listens on `8085`, and Discord DMs, which
 listens on `8096` for REST and on `8086` for the WebSocket.
@@ -2300,9 +2618,7 @@ dependencies are stubs and whether the broker stream is open, so a demo cannot l
 than it is. The per-peer URLs of Lab 2-3 (`PLAYER_SERVICE_URL`, `RULES_SERVICE_URL`,
 `APPLICANT_SERVICE_URL`, `UNIVERSITY_RECORD_SERVICE_URL`, `DISCORD_DMS_SERVICE_URL`) are removed.
 
-One thing differs from this contract and is worth knowing before integrating. It uses **PostgreSQL
-only** - the Databases table above also assigns it Redis for live shift state, which is not
-implemented.
+It uses **PostgreSQL only**, as [Databases](#databases) says.
 
 `d1vinexd/service-discovery-service` is published for `linux/amd64` and `linux/arm64`; `SERVICE_TOKEN` is its
 only required variable. From `4.0.0` (`d1vinexd/service-discovery-service:4.0.0`) it also accepts the Message Broker
@@ -2348,6 +2664,14 @@ Broker at `MESSAGE_BROKER_URL` (`message-broker-service:8071` in the compose) an
 but its own routes; it serves only the client's routes, writes its log lines to `LOG_FILE` (default
 `/var/log/gateway/gateway.jsonl`, read back by `GET /logs`) and serves `GET /metrics`, which Prometheus scrapes as a
 static target. It does not register with Service Discovery.
+
+**The data layer (Lab 5).** From Lab 5 the compose also runs `cache-1`, `cache-2` and `cache-3` (Valkey 8, no host
+port; see [Caching](#caching)), `warehouse-postgres` (host port `5440`) and `etl-service` (host port `8075`; see
+[Data warehouse and ETL](#data-warehouse-and-etl)), `pg-failover` (no port; see
+[Database replication](#database-replication)), and every service database as `<db>-1`, `<db>-2` and `<db>-3`, with
+one named volume each. New variables in `.env`: `CACHE_NODES` (the Gateway's, `cache-1:6379,cache-2:6379,cache-3:6379`),
+`REPLICATION_PASSWORD`, `ETL_READER_PASSWORD`, `WAREHOUSE_PASSWORD` and `ETL_INTERVAL_SECONDS` (`60`). Their rows in the
+table above come with the compose (#170) and with each service's delivery (#171 to #178).
 
 The root [`docker-compose.yml`](docker-compose.yml) in this repository runs all of the
 above (plus their own database containers) on the shared `student-id-net` network, referencing
@@ -2505,9 +2829,9 @@ Closes #(issue)
 
 ## Versioning Strategy
 
-Every image - the eight services, the Gateway, Service Discovery and the Message Broker - is versioned `MAJOR.MINOR.PATCH`, where **MAJOR is the laboratory number** (Lab 2 grading requires the tag to follow the lab):
+Every image - the eight services, the Gateway, Service Discovery, the Message Broker and the ETL Service - is versioned `MAJOR.MINOR.PATCH`, where **MAJOR is the laboratory number** (Lab 2 grading requires the tag to follow the lab):
 
-- **MAJOR** = the lab the release belongs to. Every image of Lab 2 is `2.x.y`, starting at `2.0.0`; every image of Lab 3 is `3.x.y`, starting at `3.0.0`; every image of Lab 4 is `4.x.y`, starting at `4.0.0` (the broker's first release is `4.0.0`).
+- **MAJOR** = the lab the release belongs to. Every image of Lab 2 is `2.x.y`, starting at `2.0.0`; every image of Lab 3 is `3.x.y`, starting at `3.0.0`; every image of Lab 4 is `4.x.y`, starting at `4.0.0` (the broker's first release is `4.0.0`); every image of Lab 5 is `5.x.y`, starting at `5.0.0` (the ETL Service's first release is `5.0.0`).
 - **MINOR** (e.g. `2.0.0` => `2.1.0`): a new feature within the lab.
 - **PATCH** (e.g. `2.1.0` => `2.1.1`): a bug fix within the lab.
 

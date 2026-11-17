@@ -355,6 +355,23 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// session.started reaches University Record through the outbox relay and the broker: wait until it knows the junior's category",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/university-record/records/{{junior_category}}?session_id={{session_id}}&q={{student_id}}\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"junior_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () =>",
+                  "  pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "    if ((err || res.code !== 200) && Date.now() < deadline) setTimeout(poll, 500);",
+                  "  });",
+                  "poll();"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",

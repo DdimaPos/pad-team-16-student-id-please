@@ -3,7 +3,7 @@
     "name": "Discord DMs Service",
     "_postman_id": "1f8c3a2d-7b4e-4c5f-9a6d-2e3f4a5b6c7d",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Discord DMs Service through the Gateway. Set base_url to the Gateway (http://localhost:8080) and service_token to the stack's SERVICE_TOKEN; every request carries the service prefix /api/v1/discord-dms. The Setup folder delivers session.started through POST /events as Session's relay would, so every run gets a fresh session. The WebSocket itself is opened outside Postman: folder 3 prints the ws_url to connect to directly."
+    "description": "Discord DMs Service. The player routes go through the Gateway: set base_url to the Gateway (http://localhost:8080); they carry the service prefix /api/v1/discord-dms, and the Gateway hands them to the Message Broker (Lab 4). The routes that are not Gateway routes (/health/ready, /status, /metrics, /logs, /api/v1/admin/*, /api/v1/dev/*) go to one copy directly through service_url, with service_token on /logs, /admin and /dev. The Setup folder applies session.started through POST /api/v1/dev/events (DEV_ENDPOINTS), the handler a broker delivery goes through, so every run gets a fresh session. The WebSocket itself is opened outside Postman: folder 3 prints the ws_url to connect to directly."
   },
   "variable": [
     {
@@ -19,7 +19,7 @@
     {
       "key": "service_token",
       "value": "change_me_too",
-      "description": "The stack's SERVICE_TOKEN; the Gateway checks it on POST /events, /admin/* and /dev/*"
+      "description": "The stack's SERVICE_TOKEN; the service checks it itself on /logs, /api/v1/admin/* and /api/v1/dev/*, which are called on a copy directly, not through the Gateway"
     },
     {
       "key": "moderator_id",
@@ -68,7 +68,7 @@
     {
       "key": "service_url",
       "value": "http://localhost:8096",
-      "description": "The REST port of one copy, reached directly like Service Discovery does (the development stack publishes 8096; in the team stack use `docker compose port` of a copy or run the request from inside the network)"
+      "description": "The REST port of one copy, reached directly like Service Discovery does (port 8096, never published: run the request from inside student-id-net, http://discord-dms-service:8096, or forward a host port to one copy)"
     }
   ],
   "item": [
@@ -180,10 +180,10 @@
       ]
     },
     {
-      "name": "1. Setup: session.started through POST /events",
+      "name": "1. Setup: session.started through POST /dev/events",
       "item": [
         {
-          "name": "session.started arrives (dev: the broker's event handler, DEV_ENDPOINTS) (what Session's relay sends through the Gateway)",
+          "name": "session.started arrives (dev: the broker's event handler, DEV_ENDPOINTS) (what Session's relay publishes to the broker)",
           "request": {
             "method": "POST",
             "header": [
@@ -197,7 +197,7 @@
               }
             ],
             "url": "{{service_url}}/api/v1/dev/events",
-            "description": "Same handler a broker consumer will use. Creates the four channels of {{session_id}} with the access mapping.",
+            "description": "The same handler as a delivery from the broker. Creates the four channels of {{session_id}} with the access mapping.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"event_id\": \"{{started_event_id}}\",\n  \"event_type\": \"session.started\",\n  \"occurred_at\": \"2026-09-10T18:05:00Z\",\n  \"producer\": \"server-moderation-session-service\",\n  \"version\": 1,\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11\",\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-09-10T18:05:00Z\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ]\n  }\n}",
@@ -684,7 +684,7 @@
           "response": []
         },
         {
-          "name": "a ticket without a session_id: 400 VALIDATION_ERROR",
+          "name": "a ticket for a session_id that is not a UUID: 400 VALIDATION_ERROR",
           "event": [
             {
               "listen": "test",
@@ -1518,7 +1518,7 @@
               }
             ],
             "url": "{{service_url}}/api/v1/dev/slow?ms=7000",
-            "description": "The Gateway allows 10 s, the service 5 s: the service gives up first and the Gateway passes its 408 through unchanged."
+            "description": "The Gateway allows 10 s, the service 5 s: called on the copy directly (/dev/* is not a Gateway route), the service's own task timeout stops it with 408; through the Gateway the service would still give up first."
           },
           "response": []
         },

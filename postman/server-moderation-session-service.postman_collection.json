@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Server Moderation Session Service",
-    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded comes from the broker -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway, except the DIRECT CALLS below. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`.\n\nDIRECT CALLS. The Lab 4 Gateway serves only the client routes (README \"Gateway\") and answers 404 on every other path. These go to one instance directly through {{session_direct_url}}, with the instance's own paths: GET /health/ready, GET /status, GET /logs, GET /metrics, GET /api/v1/sessions/{id}/deliveries, PUT /api/v1/sessions/{id} (the 405, with X-Player-Id) and GET /api/v1/dev/slow. GET /logs and /deliveries send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. POST /session/events stays on the Gateway to show that no client can push an event.\n\nLAB 4 (4.0.0). decision.recorded arrives from the Message Broker (topic events.decision.recorded), not on POST /events, which is removed; the service's calls to Player, Server Rules and Applicant go through the broker too, so the flow needs those services on the broker: Server Rules and Applicant run 4.0.0 in the CPR compose, Player from its 4.0.0 delivery (#114); or run the session without MESSAGE_BROKER_URL, on its stubs. Postman cannot send the broker's gRPC calls: publish decision.recorded with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711).\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
+    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded comes from the broker -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway, except the DIRECT CALLS below. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`.\n\nDIRECT CALLS. The Lab 4 Gateway serves only the client routes (README \"Gateway\") and answers 404 on every other path. These go to one instance directly through {{session_direct_url}}, with the instance's own paths: GET /health/ready, GET /status, GET /logs, GET /metrics, GET /api/v1/sessions/{id}/deliveries, PUT /api/v1/sessions/{id} (the 405, with X-Player-Id) and GET /api/v1/dev/slow. GET /logs and /deliveries send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. POST /session/events stays on the Gateway to show that no client can push an event.\n\nLAB 4 (4.0.0). decision.recorded arrives from the Message Broker (topic events.decision.recorded), not on POST /events, which is removed; the service's calls to Player, Server Rules and Applicant go through the broker too, so the flow needs those services on the broker: Server Rules, Applicant and Player run 4.0.0 in the CPR compose; or run the session without MESSAGE_BROKER_URL, on its stubs. Postman cannot send the broker's gRPC calls: publish decision.recorded with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711).\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -83,22 +83,22 @@
     {
       "key": "jwt_moderator",
       "value": "",
-      "description": "Minted by the collection's pre-request script from moderator_id."
+      "description": "Stored by the 'auth' folder's login of the moderator."
     },
     {
       "key": "jwt_junior_a",
       "value": "",
-      "description": "Minted from junior_a_id."
+      "description": "Stored by the 'auth' folder's login of the first junior."
     },
     {
       "key": "jwt_junior_b",
       "value": "",
-      "description": "Minted from junior_b_id."
+      "description": "Stored by the 'auth' folder's login of the second junior."
     },
     {
       "key": "jwt_solo",
       "value": "",
-      "description": "Minted from solo_player_id."
+      "description": "Stored by the 'auth' folder's login of the solo player."
     },
     {
       "key": "moderator_username",
@@ -177,7 +177,7 @@
                 "ready"
               ]
             },
-            "description": "Readiness. Reports Postgres plus each of the three services this one calls, saying which are real ('configured') and which are answered in-process ('stub'). Not a client route: the Lab 4 Gateway answers 404 on /health/ready, so it goes to one instance directly."
+            "description": "Readiness. Reports Postgres plus each of the three services this one calls, as `stub` or `not_probed` with its circuit breaker state, and `broker`, the state of the broker stream. Not a client route: the Lab 4 Gateway answers 404 on /health/ready, so it goes to one instance directly."
           },
           "response": [],
           "event": [
@@ -781,7 +781,7 @@
     },
     {
       "name": "caller identity",
-      "description": "Proves how this service decides which player a request acts for, without creating anything: each request either fails authentication outright, or gets past it to a Player Service lookup that 404s. Safe to run at any point.\n\nThe primary mechanism is `Authorization: Bearer <jwt>` with the player id in the `sub` claim, unverified - matching University Record Service. `X-Player-Id` is kept as a fallback because a bare UUID is easier to type into curl than a JWT.",
+      "description": "Proves how this service decides which player a request acts for, without creating anything: each request either fails authentication outright, or gets past it to a Player Service lookup that 404s. Safe to run at any point.\n\nThe Gateway validates `Authorization: Bearer <jwt>`, removes it and forwards the player id as `X-Player-Id`; the service reads that header and nothing else, and validates no token. The 401s here therefore come from the Gateway.",
       "item": [
         {
           "name": "no token at all -> 401 UNAUTHENTICATED (Gateway)",
@@ -834,7 +834,7 @@
                 "sessions"
               ]
             },
-            "description": "A token present but unusable is refused rather than falling through to the fallback header: silently masking a bad token with a stale id would make the failure impossible to diagnose."
+            "description": "A token present but unusable is refused by the Gateway with 401 before the request reaches the service; the Gateway never forwards an X-Player-Id it could not take from a valid token."
           },
           "event": [
             {
@@ -1156,7 +1156,7 @@
                 "{{session_id}}"
               ]
             },
-            "description": "Returns the current state of a session. Moderation Service calls this before recording every decision, to check that the session is active, that the caller is its Moderator, that the applicant is the current one, and which ruleset version the shift uses. It takes no identity header: its caller is a service, not a person."
+            "description": "Returns the current state of a session. Moderation Service calls this before recording every decision, to check that the session is active, that the caller is its Moderator, that the applicant is the current one, and which ruleset version the shift uses. On the instance it needs no identity header (Moderation reads it through the broker); through the Gateway it is a player route, so this request sends the moderator's token."
           },
           "response": [],
           "event": [
@@ -1340,7 +1340,7 @@
                 "events"
               ]
             },
-            "description": "BEYOND CONTRACT. The envelopes this service published for the session, oldest first - the order they happened in, and the order the relay sends them in. A row from here can be posted to Player Service's own dev endpoint unchanged."
+            "description": "BEYOND CONTRACT. The envelopes this service published for the session, oldest first - the order they happened in, and the order the relay sends them in. Each row is an envelope the relay publishes, unchanged, to the broker topic events.<event_type>; GET /sessions/{id}/deliveries shows how each publish went."
           },
           "response": [],
           "event": [
@@ -1622,7 +1622,7 @@
     },
     {
       "name": "error codes",
-      "description": "Every error code the CPR contract lists for this service, plus the ones the header-based caller identity introduces. These are independent of the flow folders above except where noted, and none of them change anything.",
+      "description": "Every error code the CPR contract lists for this service, plus the Gateway's 401 for a missing or invalid player token. These are independent of the flow folders above except where noted, and none of them change anything.",
       "item": [
         {
           "name": "GET /sessions/{unknown} -> 404 SESSION_NOT_FOUND",
@@ -1715,7 +1715,7 @@
                 "sessions"
               ]
             },
-            "description": "The contract says a player's request carries their JWT and the endpoint takes player_id from it. No token issuer exists yet, so the id arrives in the X-Player-Id header. This is a stand-in for the JWT's sub claim, not authentication."
+            "description": "The contract says a player's request carries their JWT and the endpoint takes player_id from it. Player Service issues that JWT; without one the Gateway answers 401 itself and the request never reaches the service."
           },
           "response": [],
           "event": [
@@ -2033,7 +2033,7 @@
     },
     {
       "name": "sessions (beyond contract)",
-      "description": "Read and admin endpoints that are NOT in the CPR contract. Nothing else in the system calls them; they exist for the Lab 1 CRUD requirement and to make the outbox inspectable while the relay does not exist.",
+      "description": "Read and admin endpoints that are NOT in the CPR contract. Nothing else in the system calls them; they exist for the Lab 1 CRUD requirement and to make the outbox inspectable next to the relay's deliveries.",
       "item": [
         {
           "name": "GET /sessions -> 200 (all)",

@@ -18,6 +18,21 @@ git clone https://github.com/DdimaPos/pad-team-16-student-id-please.git
 git submodule update --init --recursive
 ```
 
+## Quick start
+
+The whole system runs from published Docker Hub images; no service repository has to be cloned (see
+[Deployments](#deployments) for every container, its image and host port).
+
+```bash
+docker network create student-id-net   # once: the compose joins this external network
+cp .env.example .env                   # then put real values in .env; never commit it
+docker compose up -d                   # the Gateway answers at http://localhost:8080
+```
+
+Grafana is at http://localhost:3000 (user `admin`, `GRAFANA_ADMIN_PASSWORD`), Prometheus at http://localhost:9090,
+Service Discovery at http://localhost:8090 and the broker at http://localhost:8070. The Postman collections in
+[`postman/`](postman) run against this stack; `lab4-shift` plays a whole shift through the Gateway.
+
 ## Module ownership list
 
 - Postoronca Dumitru: `player service` and `server moderation session service`;
@@ -2207,6 +2222,7 @@ need to clone the (private) service repository to run one.
 | Loki (Lab 4)                      | [`grafana/loki`](https://hub.docker.com/r/grafana/loki) `3.7.9`                                                 | -         | Its built-in single-binary configuration; named volume `loki_data` |
 | Alloy (Lab 4)                     | [`grafana/alloy`](https://hub.docker.com/r/grafana/alloy) `v1.21.0`                                             | -         | `monitoring/alloy/config.alloy`; the Docker socket, read-only |
 | Grafana (Lab 4)                   | [`grafana/grafana`](https://hub.docker.com/r/grafana/grafana) `12.4.14`                                         | `3000`    | `GRAFANA_ADMIN_PASSWORD` (user `admin`); provisioning and dashboards from `monitoring/grafana`; named volume `grafana_data` |
+| Cache nodes (Lab 5)               | [`valkey/valkey`](https://hub.docker.com/r/valkey/valkey) `8-alpine`, three containers `cache-1`, `cache-2`, `cache-3` | -         | No persistence, `--maxmemory 64mb --maxmemory-policy allkeys-lru`; the Gateway reaches them at `CACHE_NODES` (#167, #166) |
 
 **One service token for the whole stack.** Every variable above that holds a service token
 (`SERVICE_TOKEN`) is set to the same value,

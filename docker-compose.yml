@@ -1,7 +1,8 @@
 # Team-wide compose - references PUBLISHED Docker Hub images only, never `build:`. Any
 # teammate can run this without cloning anyone's (private) service repository. It covers
 # the Gateway, all 8 services, Service Discovery, the Message Broker and the monitoring (Lab 4, #113):
-# Prometheus, Loki, Alloy and Grafana. Clients reach the system through the Gateway; from Lab 4 every request and
+# Prometheus, Loki, Alloy and Grafana; from Lab 5 also the Gateway's cache nodes and the replicated databases.
+# Clients reach the system through the Gateway; from Lab 4 every request and
 # event between the components travels through the Message Broker (README "Message Broker", "Event delivery").
 # New blocks follow the same pattern, referencing a published image and joining the same
 # `student-id-net` network.
@@ -597,6 +598,46 @@ services:
       timeout: 3s
       retries: 5
       start_period: 15s
+    networks:
+      - student-id-net
+
+  # Cache nodes of the Gateway (Lab 5, #166, #167, #170; README "Caching", "Cache sharding"): three Valkey nodes (the
+  # open fork of Redis 7.2, same protocol and clients), no persistence - a cache, so losing a node loses nothing -, 64 MB
+  # each with LRU eviction. The Gateway places every key on one node by a consistent hashing ring over CACHE_NODES
+  # (cache-1:6379,cache-2:6379,cache-3:6379). Not published on the host: only the Gateway talks to them.
+  cache-1:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - student-id-net
+
+  cache-2:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - student-id-net
+
+  cache-3:
+    image: valkey/valkey:8-alpine
+    restart: unless-stopped
+    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+    healthcheck:
+      test: ["CMD", "valkey-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
     networks:
       - student-id-net
 

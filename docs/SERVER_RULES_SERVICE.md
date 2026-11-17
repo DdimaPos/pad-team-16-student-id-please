@@ -20,6 +20,7 @@
 9. [Gateway requirements](#9-gateway-requirements)
 10. [Recipes for testing against it](#10-recipes-for-testing-against-it)
 11. [Message Broker, logs and metrics (Lab 4)](#11-message-broker-logs-and-metrics-lab-4)
+12. [Replicated database, failover and the ETL (Lab 5)](#12-replicated-database-failover-and-the-etl-lab-5)
 
 ---
 
@@ -36,7 +37,8 @@ service, publishes no event, consumes no event, and stores nothing about applica
   `difficulty`.
 - **Does not own:** the admission decision itself (Moderation Service), any applicant data.
 - **Calls:** no other service. Its only outbound connections are the registration with Service
-  Discovery and, from `4.0.0`, one subscription stream to the Message Broker.
+  Discovery, from `4.0.0` one subscription stream to the Message Broker, and its own database, from
+  `5.0.0` the primary of the three nodes of `rules_db` (§12).
 - **Is called by:** Server Moderation Session Service (`GET /rulesets/current` - on the
   critical path of every shift start), Moderation Service (`POST /rulesets/{v}/evaluations`),
   the game client (`GET /rulesets/{version}`). From `4.0.0` these requests arrive from the broker's
@@ -51,16 +53,16 @@ service, publishes no event, consumes no event, and stores nothing about applica
 | **Language / framework** | C# / .NET 10, ASP.NET Core minimal APIs |
 | **Container port** | `8080` (mapped to host `8083` by convention) |
 | **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/server-rules/...` |
-| **Health** | `GET /health` (liveness), `GET /health/ready` (readiness) |
-| **Database** | PostgreSQL, `rules_db` (own container, host port `5434`) |
+| **Health** | `GET /health` (liveness, never touches the database), `GET /health/ready` (readiness; from `5.0.0` it also checks the database and reports `components.postgres.status`, §12) |
+| **Database** | PostgreSQL 17, `rules_db`. From `5.0.0` (Lab 5, #175) replicated: `rules-postgres-1` (the first primary), `rules-postgres-2` and `rules-postgres-3` (hot standbys), reached with a multi-host Npgsql connection string and no proxy; the ETL Service reads it as `etl_reader` - see [§12](#12-replicated-database-failover-and-the-etl-lab-5). The team compose publishes host port `5434` of `rules-postgres-1` for debugging |
 | **Events** | none - this service neither produces nor receives events, and from `4.0.0` subscribes to no broker topic |
 | **Message Broker** | One gRPC `Subscribe` stream to `MESSAGE_BROKER_URL` as service `server-rules`, no topic; the broker delivers the requests of the queue `requests.server-rules` on it (`4.0.0`) - see [§11](#11-message-broker-logs-and-metrics-lab-4) |
 | **Logs** | One JSON object per line on stdout, and the same lines in the rotating `LOG_FILE`, read back by `GET /logs` (`4.0.0`) |
 | **Metrics** | `GET /metrics`, Prometheus text format, no credential (`4.0.0`) |
 | **Circuit breaker** | None: the service calls no other service, through the broker or otherwise |
 | **Authentication** | Lab 3: checked by the Gateway, not here: `GET /rulesets/current`, `POST /rulesets/{v}/evaluations` and `/admin/*` only with the service token, `GET /rulesets/{version}` with a player JWT. From `4.0.0` the broker checks the token as gRPC metadata of every call and never passes it on. The contract endpoints validate no token. The routes called directly, never through the broker or the Gateway, check `X-Service-Token` themselves (CPR README "Authentication" > "Through the Message Broker", rule 4): `GET /logs` (`4.0.0`) and, from `4.0.1` (#150), `/admin/*` and `/dev/*`: `403 SERVICE_TOKEN_REQUIRED` without it, `401 INVALID_SERVICE_TOKEN` when wrong, compared in constant time with `SERVICE_TOKEN`; an empty `SERVICE_TOKEN` matches no token, so those routes stay closed. `/admin/*` and `/dev/*` refuse a request that carries `X-Player-Id` first (`403 SERVICE_TOKEN_REQUIRED`), even with the right token |
-| **Docker image** | `d1vinexd/server-rules-service:4.0.1` (also tagged `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64`. `4.0.1` (#150) changes only the token check of `/admin/*` and `/dev/*`; the contract routes, the broker subscription, `/logs` and `/metrics` are those of `4.0.0` |
-| **Architecture** | Clean Architecture, five projects: `Domain` (pure - the condition DSL, evaluator, channel resolver), `Repositories` (interfaces), `Services` (use cases), `Infrastructure` (EF Core + Npgsql), `Api` (minimal APIs; from `4.0.0` also `Messaging`, the broker consumer and the loopback dispatch, and the log file and metrics in `Observability`) |
+| **Docker image** | `d1vinexd/server-rules-service:5.0.0` (also tagged `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64`, published by CI when the release reaches `main`. `5.0.0` (#175) runs on the replicated database: the multi-host connection, `500 DEPENDENCY_UNAVAILABLE` for a database outage, `/health/ready` checking the database, a create that never reuses a `version`, `rulesets.updated_at` and the `etl_reader` grants, and a startup that waits for a primary (§12). The contract routes, the broker subscription, `/logs`, `/metrics` and the token check are those of `4.0.1` (#150, the token check of `/admin/*` and `/dev/*`). The team compose runs `5.0.0` |
+| **Architecture** | Clean Architecture, five projects: `Domain` (pure - the condition DSL, evaluator, channel resolver), `Repositories` (interfaces), `Services` (use cases), `Infrastructure` (EF Core + Npgsql; from `5.0.0` also `Persistence/DatabaseFailure`, which tells a database outage from a bug, and the startup initializer that waits for a primary), `Api` (minimal APIs; from `4.0.0` also `Messaging`, the broker consumer and the loopback dispatch, and the log file and metrics in `Observability`) |
 
 ---
 
@@ -73,15 +75,19 @@ docker network create student-id-net   # once, if it does not already exist
 docker run -d --name server-rules-service --network student-id-net \
   -p 8083:8080 \
   -e ConnectionStrings__RulesDb="Host=<postgres-host>;Port=5432;Database=rules_db;Username=rules_user;Password=<password>" \
-  d1vinexd/server-rules-service:4.0.1
+  d1vinexd/server-rules-service:5.0.0
 ```
+
+Against the replicated database list every node and let Npgsql find the primary (§12):
+`Host=rules-postgres-1,rules-postgres-2,rules-postgres-3;Port=5432;Database=rules_db;Username=rules_user;Password=<password>;Target Session Attributes=read-write;Timeout=1;Host Recheck Seconds=2`,
+the contract's string (CPR README "Database replication"). A single `Host=` stays valid for a run against one PostgreSQL.
 
 Without `MESSAGE_BROKER_URL` the instance takes no request from the broker and logs one
 `broker.disabled` warning; its REST port answers as before.
 
 Or use the team compose in the CPR root (`docker-compose.yml`), which wires this service and
-its own `rules-postgres` container together on `student-id-net`, with `MESSAGE_BROKER_URL`
-`message-broker-service:8071`.
+its database together on `student-id-net`, with `MESSAGE_BROKER_URL` `message-broker-service:8071`:
+`5.0.0` on `rules-postgres-1..3` with the multi-host string (§12) and `pg-failover`.
 
 ### From source (development)
 
@@ -93,11 +99,14 @@ cp .env.example .env        # fill in real values
 docker compose up -d        # builds from source, starts its own postgres
 ```
 
-On startup the service applies EF Core migrations and seeds five rulesets (one per
+The service's own compose runs one PostgreSQL node with a single-host string. On startup the
+service applies EF Core migrations and seeds five rulesets (one per
 difficulty 1-5) if the table is empty - this is a correctness requirement, not a
 convenience: the contract defines no endpoint to create a ruleset, and
 `GET /rulesets/current` must never fail to answer for a valid difficulty, since Server
-Moderation Session Service keeps a shift in the lobby otherwise.
+Moderation Session Service keeps a shift in the lobby otherwise. From `5.0.0` the migrations and
+the seed reach only the primary, and while none answers the startup waits for one for up to 60 s
+(§12).
 
 ---
 
@@ -105,7 +114,7 @@ Moderation Session Service keeps a shift in the lobby otherwise.
 
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
-| `ConnectionStrings__RulesDb` | - | **yes** | Npgsql connection string |
+| `ConnectionStrings__RulesDb` | - | **yes** | Npgsql connection string. In the team stack from `5.0.0` the multi-host string `Host=rules-postgres-1,rules-postgres-2,rules-postgres-3;Port=5432;Database=rules_db;Username=...;Password=...;Target Session Attributes=read-write;Timeout=1;Host Recheck Seconds=2` (CPR README "Database replication", the Npgsql row); a single `Host=` stays valid for a local run. The pool cap of 20 (unless the string sets `Maximum Pool Size`) is per host and keeps every key of the string. See [§12](#12-replicated-database-failover-and-the-etl-lab-5) |
 | `HTTP_REQUEST_TIMEOUT` | `5` | no | Task timeout in seconds (`5` or `5s`): a longer request is cancelled and answered `408 REQUEST_TIMEOUT`. `/health*` and `/status` are exempt, and from `4.0.0` `/logs` and `/metrics` |
 | `MAX_CONCURRENT_TASKS` | `100` | no | Concurrent task limit: one more request is refused at once with `429 TOO_MANY_REQUESTS` and `Retry-After: 1`, no work done. From `4.0.0` requests from the broker count too, and it is also the `max_concurrent_tasks` of the broker subscription. `/health*` and `/status` are exempt, and from `4.0.0` `/logs` and `/metrics`. The team compose sets `64` |
 | `Dev__EnableTestEndpoints` | `false` | no | Mounts `GET /api/v1/dev/slow?ms=` (service-only, with `X-Service-Token` from `4.0.1`, sleeps `ms` milliseconds, at most a minute) to demonstrate the two limits above. The team compose enables it |
@@ -154,7 +163,7 @@ same holds for `/api/v1/dev/*`. **Never exposed to players.**
 
 | Method | Path | Notes |
 | --- | --- | --- |
-| `POST` | `/admin/rulesets` | Create a new version. Body: `difficulty`, `notes?`, `rules[]`, or `clone_from_version` + a `rules[]` patch (rules matching an existing `rule_id` are replaced, others carry over, new ones are appended) |
+| `POST` | `/admin/rulesets` | Create a new version (`201`). Body: `difficulty`, `notes?`, `rules[]`, or `clone_from_version` + a `rules[]` patch (rules matching an existing `rule_id` are replaced, others carry over, new ones are appended). From `5.0.0` a create is never applied twice and never reuses a `version`, also across a failover; `version` may skip numbers, and a create that failed during a failover may have been committed - see §12 |
 | `GET` | `/admin/rulesets?difficulty=&active=&limit=&offset=` | List - the contract has no list endpoint at all |
 | `GET` | `/admin/rulesets/{version}` | Full detail **including the jsonb conditions**, which the public endpoint deliberately omits |
 | `PATCH` | `/admin/rulesets/{version}` | **Only `is_active` and `notes`.** Rules are never patched - a rule change is always a new version, since Moderation snapshots `ruleset_version` behind every verdict |
@@ -170,23 +179,26 @@ Standard envelope `{ "error": { "code", "message", "details" } }`. Codes used:
 `RULESET_NOT_FOUND` (404), `LAST_ACTIVE_RULESET` (409), `SERVICE_TOKEN_REQUIRED` (403, `/admin/*` and
 `/dev/*` called with `X-Player-Id`, or from `4.0.1` without `X-Service-Token`), `INVALID_SERVICE_TOKEN`
 (401, `/admin/*` and `/dev/*` with a wrong `X-Service-Token`, `4.0.1`), `REQUEST_TIMEOUT` (408), `TOO_MANY_REQUESTS` (429, with
-`Retry-After`), `INTERNAL_ERROR` (500). The Gateway answers `401` / `403` for a missing or wrong credential
-before the service is called.
+`Retry-After`), `DEPENDENCY_UNAVAILABLE` (500, from `5.0.0`: the database did not answer,
+`details.dependency: "postgres"`, §12), `INTERNAL_ERROR` (500, from `5.0.0` only a bug: a constraint
+violation or any other server error that is not an outage). The Gateway answers `401` / `403` for a
+missing or wrong credential before the service is called.
 
 From `4.0.0`, `GET /logs` adds `SERVICE_TOKEN_REQUIRED` (403, no `X-Service-Token`),
 `INVALID_SERVICE_TOKEN` (401, a wrong one), `VALIDATION_ERROR` (400, a bad window) and
 `LOGS_UNAVAILABLE` (503, no log file). A request from the broker that cannot be dispatched locally is
 answered by the instance itself in the same envelope: `400 VALIDATION_ERROR` for a method or path it
 cannot serve, `408 REQUEST_TIMEOUT` when the local call outlives its timeout, `500 INTERNAL_ERROR`
-when it fails.
+when it fails. A database outage is answered by the pipeline itself (`500 DEPENDENCY_UNAVAILABLE`,
+`5.0.0`) and goes back to the broker unchanged.
 
 ### 5.4 Operational endpoints (outside `/api/v1`)
 
 | Method | Path | Gateway | Notes |
 | --- | --- | --- | --- |
-| `GET` | `/health` | public | Liveness |
-| `GET` | `/health/ready` | service | Readiness: `503` until the migrations and the seed are done |
-| `GET` | `/status` | called directly | Service Discovery polls it on the instance - see [Lab 3](#lab-3-status-logs-discovery-several-instances) |
+| `GET` | `/health` | public | Liveness, never touches the database |
+| `GET` | `/health/ready` | called directly (not a Lab 4 Gateway route) | Readiness: `503` until the migrations and the seed are done. From `5.0.0` also `503` with `components.postgres.status: "down"` while no primary answers, else `200` with `"up"`: checked on a connection of its own with `Timeout=1` and answered within 2.5 s - see §12 |
+| `GET` | `/status` | called directly | Service Discovery polls it on the instance - see [Lab 3](#lab-3-status-logs-discovery-several-instances); `503` with `status: "degraded"` while the database does not answer |
 | `GET` | `/logs` | not routed | `4.0.0`. This instance's log lines, `X-Service-Token` checked by the service - see [§11](#11-message-broker-logs-and-metrics-lab-4) |
 | `GET` | `/metrics` | not routed | `4.0.0`. Prometheus scrapes it directly, no credential - see [§11](#11-message-broker-logs-and-metrics-lab-4) |
 
@@ -237,25 +249,37 @@ to grants/denies and can never "fail".
 | 2 | `version` is **one global monotonic sequence** shared across all five difficulties (not five independent sequences) - required because `GET /rulesets/{version}` takes no `difficulty` parameter, so a per-difficulty sequence would make that endpoint ambiguous | Anyone assuming version numbers are per-difficulty |
 | 3 | `Rules__StrictFactShape` defaults to **lenient**: an inconsistent fact (e.g. `major` present for `staff`) is nulled out with a warning, not rejected with `422`. Moderation Service builds these facts; a strict default would deadlock the whole decision flow at integration time over a field this service can safely ignore | Moderation Service |
 | 4 | The seeded rulesets for difficulties 1, 2, 4, 5 are **this service's own design** - only difficulty 3 is specified by the contract (verbatim). See the service's own README for the full seed content | Anyone expecting a specific ruleset at another difficulty |
+| 5 | **Known gap (`5.0.0`): during a failover most requests end as `408`, not `500 DEPENDENCY_UNAVAILABLE`.** CPR README "Database replication" says a service answers `500 DEPENDENCY_UNAVAILABLE` while no primary answers. EF retries a failed statement for about 14 s, longer than the 5 s task timeout, so a request that meets the switch usually ends as `408 REQUEST_TIMEOUT` (which callers retry); `500 DEPENDENCY_UNAVAILABLE` comes when EF gives up first or the failure is not one EF retries. Never `500 INTERNAL_ERROR`. Reads served from the cache answer `200` (§12) | Session, Moderation and the broker's breakers (neither `408` nor `DEPENDENCY_UNAVAILABLE` is counted) |
+| 6 | **A failed create may have been applied.** README "Errors" says of `500 DEPENDENCY_UNAVAILABLE` "Nothing was changed". A `POST /admin/rulesets` (beyond the contract) whose commit acknowledgement is lost in the switch and that then answers `408` or `500 DEPENDENCY_UNAVAILABLE` may have committed; list `GET /admin/rulesets` before sending it again, since a new call is a new create. `PATCH` and `DELETE` may likewise have been applied, and are safe to resend | Whoever creates rulesets during a failover |
+
+`ruleset_version` skipping numbers (a rolled-back insert, or a jump of up to 32 after a promotion) is no
+divergence: README "Shared identifiers" allows it after a failover (§12).
 
 ---
 
 ## Lab 3: status, logs, discovery, several instances
 
-- **`GET /status`** answers without a credential and outside the concurrent task limit (like `/health`): `{ service, instance_id, version, status, in_flight, max_concurrent_tasks }`, `service` is `server-rules`. `status` is `up`, or `degraded` with `503` when the database does not answer. `/health` and `/health/ready` are unchanged.
+- **`GET /status`** answers without a credential and outside the concurrent task limit (like `/health`): `{ service, instance_id, version, status, in_flight, max_concurrent_tasks }`, `service` is `server-rules`. `status` is `up`, or `degraded` with `503` when the database does not answer. Lab 3 left `/health` and `/health/ready` as they were; `5.0.0` adds the database check to `/health/ready` (§12).
 - **Logs** are JSON lines with `time`, `level`, `service`, `instance_id`, `version`, `event`, `msg` and the fields of the event (`http.request` carries `request_id`, `method`, `path`, `status`, `duration_ms`). An error is logged once, with its stack for an unexpected one. `startup` / `shutdown` carry the version, instance id, address and settings (a token only as `service_token_set`).
 - **Service Discovery**: with `SERVICE_DISCOVERY_URL` set the instance registers as `server-rules` (`PUT /api/v1/instances/<instance_id>` with its port, `host` only when `INSTANCE_HOST` is set; from `4.0.0` also `"topics": {"publishes": [], "subscribes": []}`, #111: it publishes and consumes no event), repeats it every 5 s as the heartbeat, and removes itself with `DELETE` on a clean stop; calls time out after 2 s and a failure is logged and retried at the next beat, it never stops the service.
-- **Database**: the Npgsql pool is capped at 20 connections per instance unless the connection string sets `Maximum Pool Size`. Migrations and seeding run under a Postgres advisory lock, so instances starting together on an empty database run them once.
+- **Database**: the Npgsql pool is capped at 20 connections per instance (per host of a multi-host string, `5.0.0`) unless the connection string sets `Maximum Pool Size`. Migrations and seeding run under a Postgres advisory lock, on the primary, so instances starting together on an empty database run them once.
 - **Several instances**: the rules of a ruleset never change, so each instance caches a resolved version for good. `is_active` and `notes` can change on another instance, so the admin endpoints (and the guards before a change) read the database, never the cache. A public read of a version can show an `is_active` or `notes` another instance has just changed until that instance restarts. This service makes no outbound calls, so it has no circuit breaker.
 
 ## 8. Edge cases
 
 - **`GET /rulesets/current` must never fail to answer** for a valid difficulty 1-5. The
-  seeder asserts this at startup and the service refuses to start otherwise.
+  seeder asserts this at startup and the service refuses to start otherwise. During a failover
+  (`5.0.0`) an instance that has answered it before serves its cached copy after 3 s; one that
+  restarted during the outage has nothing cached and answers `408` or `500 DEPENDENCY_UNAVAILABLE`
+  (§12).
 - **Rulesets are immutable.** `GET /rulesets/{version}` for a soft-deleted or deactivated
   version still returns it - `is_active`/`deleted_at` only affect whether it can be `current`.
 - **Wiping the Postgres volume resets the version counter** to 1, silently invalidating any
   snapshot a peer holds of an older `ruleset_version`. Do not drop the volume between demos.
+  Converting `rules_db` to the replicated pattern (Lab 5) means new volumes, since the pattern's init
+  scripts run only on an empty data directory: the seed is created again and the counter starts at 1.
+- **Versions can skip numbers** from `5.0.0` (a rolled-back insert, or a jump of up to 32 after a
+  promotion), as README "Shared identifiers" allows: never compute a version, read it.
 
 ---
 
@@ -278,9 +302,14 @@ What the Gateway ([`docs/GATEWAY.md`](GATEWAY.md)) must do for this service, pre
   Gateway routes. #110 (IacovlevMaxim/gateway-service#15) shipped in the Gateway's `4.0.0`, which the
   compose runs since #113, so the service-token routes above answer `404` at the Gateway; Session `4.0.0` calls `GET /rulesets/current`
   through the broker.
+- **Lab 5:** the Gateway may answer `GET /rulesets/{version}` from its cache for up to 1 h; a
+  version never changes, so that is safe (an `is_active` or `notes` changed meanwhile may show late,
+  as between instances, Lab 3).
 - No CORS headers, no rate limiting, no `Idempotency-Key` support. `POST /evaluations` and
   `POST /admin/rulesets` are not idempotent - two identical requests create two things (a log
-  line; a new ruleset version, respectively). Safe to retry: every `GET`, `PATCH`, `DELETE`.
+  line; a new ruleset version, respectively). From `5.0.0` the service's own retries of one create
+  never insert it twice (§12), but a second call is a second create. Safe to retry: every `GET`,
+  `PATCH`, `DELETE`.
 
 ---
 
@@ -317,7 +346,10 @@ routes of this service go through it (`base_url`): `GET /health` and `GET rulese
 player JWT. Every other request (`/health/ready`, `/status`, `rulesets/current`, the evaluations,
 `/admin/*`, `/logs`, `/metrics`) goes to one instance directly through `server_rules_direct_url`, by its
 own path (`/api/v1/...` without the `server-rules` prefix), since the Lab 4 Gateway answers `404` to it
-(§9). A direct request is a service call: no `X-Player-Id`, and `X-Service-Token: {{service_token}}` on
+(§9). From `5.0.0` the `health` folder also checks `/health/ready`'s `components.postgres` (`"up"` on a
+running stack; against a `4.x` instance, which reports no components, that check is skipped), and the
+admin folder deactivates the version it cloned, so a run leaves each difficulty's current ruleset as
+it found it. A direct request is a service call: no `X-Player-Id`, and `X-Service-Token: {{service_token}}` on
 `/admin/*`, `/dev/*` and `/logs`, the routes the instance checks it on (`/admin/*` and `/dev/*` from
 `4.0.1`); the admin folder also sends no token and a wrong one to an admin route (`403`, `401`).
 Postman cannot send the broker's gRPC calls.
@@ -418,6 +450,130 @@ A method outside the standard ones is `OTHER`, so no caller can grow the number 
 `startup` also carries `message_broker_url`, `log_file`, `log_file_max_mb` and `log_file_keep`. A
 request from the broker is dispatched over loopback, so its `http.request` line has `client_ip`
 `127.0.0.1`; its `request_id` is the caller's `X-Request-ID`. Headers and bodies are never logged.
+
+---
+
+## 12. Replicated database, failover and the ETL (Lab 5)
+
+From `5.0.0` (#175), as CPR README "Database replication" and "Data warehouse and ETL" describe it
+(#163 decisions 3 and 4, #164, #165). The service's own README, section "Replicated
+database and failover", says the same from the code's side.
+
+### The database
+
+`rules_db` runs as `rules-postgres-1` (the first primary), `rules-postgres-2` and `rules-postgres-3`
+(hot standbys), on `postgres:17-alpine` with the scripts of `deployments/postgres-ha/` (#164):
+streaming replication, synchronous to any one standby, and the shared `pg-failover` agent, which
+promotes the standby with the highest received LSN when the primary stops and turns the old primary
+into a standby of the new one when it returns. There is no proxy in front of the nodes.
+
+### The connection
+
+| Variable | Value in the team stack |
+| --- | --- |
+| `ConnectionStrings__RulesDb` | `Host=rules-postgres-1,rules-postgres-2,rules-postgres-3;Port=5432;Database=rules_db;Username=<RULES_POSTGRES_USER>;Password=<RULES_POSTGRES_PASSWORD>;Target Session Attributes=read-write;Timeout=1;Host Recheck Seconds=2` (the contract's string) |
+
+- `Target Session Attributes=read-write`: Npgsql connects only to the node that accepts writes, never
+  to a standby, and so never to the old primary once it is back as one.
+- `Host Recheck Seconds=2`: Npgsql looks at the roles of the hosts again 2 s after it last did (the
+  default is 10 s), so the promoted standby is found quickly.
+- `Timeout=1`: the connect to a dead node gives up after 1 s (the default is 15 s). CPR README "Why a
+  1 s connect timeout": on Docker Desktop for Windows the DNS lookup of a stopped container fails only
+  after 5 to 16 s and no connect timeout covers it, so while the **first listed** node is stopped (the
+  old primary after a failover, or a standby) every new connection pays the whole `Timeout`. Measured
+  with the first node stopped: creates answer at ~1 s each with `Timeout=1` against ~3 s with
+  `Timeout=3`, and recover about 11 to 16 s after the stop (the promotion). The service's own README,
+  "A stopped first host", has the table.
+- **One connection per admin request.** The admin routes open the request's connection before the
+  handler, and a create uses that one connection for the clone read, the insert, the commit check and
+  the reload, so a stopped first host costs a request one `Timeout`, not one per query.
+- Broken pooled connections are dropped and opened again on the new primary: **no restart** is needed
+  after a failover. The pool cap (20 unless `Maximum Pool Size` is set) is per host, and the string
+  keeps every key when the cap is added.
+- No new variable: the connection is the one `ConnectionStrings__RulesDb`. A single `Host=` stays valid
+  (the service's own compose, CI).
+
+### Failover behaviour
+
+The target of #163 is writes again within 15 s of the primary stopping. While no primary answers:
+
+| What | Answer |
+| --- | --- |
+| A request whose database call fails because the database is out | **`500 DEPENDENCY_UNAVAILABLE`**, `details.dependency: "postgres"`, the shared envelope. Never `500 INTERNAL_ERROR`: the broker's breakers count every `5xx` except `DEPENDENCY_UNAVAILABLE` (CPR README "Circuit breaker"), so the instance is not shut out for the breaker's cooldown after the database is back |
+| A request that is still waiting at the task deadline | **`408 REQUEST_TIMEOUT`** (`HTTP_REQUEST_TIMEOUT`, `5s`), also when the deadline made the database call fail. EF retries a failed statement up to 5 times (about 14 s), longer than the task timeout, so this is the usual answer during the switch; callers retry it (§7, divergence 5) |
+| `GET /health/ready` | `503` with `{ "status": "unavailable", "service": "server-rules", "components": { "postgres": { "status": "down" } } }`, checked on a connection of its own with `Timeout=1` (a copy of the string with only that changed, in a pool of at most 3) and answered within 2.5 s; `200` with `{ "status": "ok", "service": "server-rules", "components": { "postgres": { "status": "up" } } }` once a primary answers. Before the migrations and the seed are done it is `503` without `components` |
+| `GET /health` | `200`: never touches the database |
+| `GET /status` | `503` with `status: "degraded"`, the same check answered within 1.5 s (Service Discovery waits 2 s). A `503` of `/health`, `/health/ready` or `/status` is logged at `warn` as `probe.unavailable` (`code` `NOT_READY` or `DEGRADED`). Service Discovery lists the copies `down` for a while around a failover (3 failed checks, then 3 good ones); the broker still routes to them while no copy of the service is listed |
+| A request that does not reach the database | Answered as usual: the cached reads below, `/health`, `/metrics`, `/logs` |
+
+**What counts as an outage** (`Persistence/DatabaseFailure.cs`): any `NpgsqlException` that is not a
+server error (no suitable host, a connect timeout, a refused or reset socket, a broken stream), a
+`TimeoutException` or `SocketException`, EF's `RetryLimitExceededException`, a `PostgresException` of
+class `08` (connection exception) or `53` (insufficient resources), `57P01` to `57P03` (admin or crash
+shutdown, cannot connect now) or `25006` (a write reached a standby), and a `DbUpdateException` or
+EF's "transient failure" `InvalidOperationException` that wraps one of them. A constraint violation or
+any other server error is a bug and stays `500 INTERNAL_ERROR`.
+
+**Startup.** The migrations and the seed reach only the primary. While no primary answers, the
+initializer retries every 2 s for **up to 60 s** (`startup.database_unavailable` warnings), then the
+host exits and the compose `restart` policy starts it again. Hosted services run before Kestrel
+listens, so the instance answers `/health` only once this is done.
+
+**After the failover.** New connections land on the promoted standby, so writes work again without a
+restart. The old primary, back as a standby, is never written to: `read-write` never selects it, and
+a write that still reaches it on a connection opened before the switch fails with `25006`, which
+counts as an outage, not a bug.
+
+### The ruleset cache: stale-if-error
+
+The per-instance cache (`Caching/CachingRulesetRepository.cs`) keeps the service useful during the
+switch, so a shift can start and decisions are still evaluated:
+
+- **`GET /rulesets/{version}`** and the **evaluations** of a version: a version this instance has read
+  once is cached **for good** (the rules of a version never change) and is answered without the
+  database, during the switch too.
+- **`GET /rulesets/current?difficulty=`** always asks the database first. When this instance has
+  answered that difficulty before, the read gets its own budget of **3 s**: if EF gives up or the
+  budget runs out, the last cached answer is served (`200`, about 3 s of latency, a warning logged).
+  The budget is shorter than the 5 s task timeout on purpose: an answer produced after the task
+  deadline could no longer be written (`4.0.1` served the stale copy too late). Without a cached copy
+  the read keeps the request's deadline and answers `408` or `500 DEPENDENCY_UNAVAILABLE`, for example
+  on an instance that restarted during the outage.
+- **A created ruleset is cached as the current one.** A `POST /admin/rulesets` stores the new ruleset
+  as the stale-if-error copy of `GET /rulesets/current` for its difficulty (it is the current one), so a
+  failover right after a create still leaves `/current` a copy to serve.
+- The admin reads and guards never use the cache (Lab 3), so they answer `408` or
+  `500 DEPENDENCY_UNAVAILABLE` during the switch.
+
+### Creating a ruleset during a failover
+
+`POST /admin/rulesets` runs in EF's retrying strategy with a fresh `create_key` (a `uuid`, unique
+index `ux_rulesets_create_key`, never in a response) and a check before each retry: when the
+connection breaks while the commit is in flight, the service looks the key up and returns the version
+it finds instead of inserting the ruleset again. So:
+
+- **A `version` is never used twice**, and one call is never applied twice.
+- **Gaps are possible**: `version` is a PostgreSQL identity, so a rolled-back insert burns a number, and
+  after a promotion the sequence may jump ahead by up to 32 (sequences are WAL-logged in advance).
+  Versions only grow; README "Shared identifiers" allows the gaps after a failover.
+- **A create that failed during the switch** (`408`, or `500 DEPENDENCY_UNAVAILABLE`) **may have been
+  committed**: list `GET /api/v1/admin/rulesets?difficulty=` before sending it again, since a new call
+  carries a new `create_key` and is a new create (§7, divergence 6).
+
+### The ETL: grants and watermarks
+
+The migration `ReplicationWatermarkAndEtlGrants` (`20261117162036`) prepares `rules_db` for the ETL
+Service (#165), which reads it from a standby as `etl_reader` and never writes:
+
+| What | Detail |
+| --- | --- |
+| The role | `etl_reader` (`LOGIN`, `ETL_READER_PASSWORD`) is created by the replication pattern's init script. The migration creates it `NOLOGIN` only when it is missing, so a database without the pattern (CI, the service's own compose) still migrates |
+| Grants | `SELECT` on `rulesets` and `rules`, and by `ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES` on every table a later migration creates. Nothing else: no write, and not `__EFMigrationsHistory` (created before the default privileges). Nothing in this database is secret, so there are no column grants, and the default privileges are allowed (README "Data warehouse and ETL": only where every column of a future table may be read); a later table that holds a secret would have to revoke them |
+| Watermark of `rulesets` | `updated_at` (new, `timestamptz NOT NULL DEFAULT now()`, so the existing rows get the migration's time), set on create and on every change of `is_active`, `deleted_at` or `notes` (every `PATCH` and `DELETE`, also one that leaves the values as they were) |
+| Watermark of `rules` | `id` (an increasing identity): rules never change after they are created |
+| `Down()` | revokes the grants and the default privileges, and drops `create_key` and `updated_at`; the role stays (the pattern owns it) |
+
+Neither `updated_at` nor `create_key` appears in an API response: the contract shapes are unchanged.
 
 ---
 

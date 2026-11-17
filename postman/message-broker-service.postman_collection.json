@@ -342,7 +342,8 @@
                   "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
                   "pm.test('an attachment', () => pm.expect(pm.response.headers.get('Content-Disposition')).to.match(/^attachment; filename=\".+\\.jsonl\"$/));",
                   "const rows = pm.response.text().split('\\n').filter(Boolean).map(JSON.parse);",
-                  "pm.test('one JSON object per line, oldest first', () => { for (let i = 1; i < rows.length; i++) pm.expect(rows[i].time >= rows[i - 1].time).to.be.true; });",
+                  "// Lines are in the order they were written; threads writing at once can be a few ms apart, so allow 1 s.",
+                  "pm.test('one JSON object per line, oldest first', () => { for (let i = 1; i < rows.length; i++) pm.expect(Date.parse(rows[i].time) >= Date.parse(rows[i - 1].time) - 1000, rows[i].time + ' after ' + rows[i - 1].time).to.be.true; });",
                   "pm.test('the broker\\'s lines', () => rows.forEach(r => pm.expect(r.service).to.eql('message-broker')));"
                 ]
               }

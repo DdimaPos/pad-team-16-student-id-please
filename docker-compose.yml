@@ -20,6 +20,19 @@ name: student-id-please
 
 x-reference-year: &reference_year "2026"
 
+# The Gateway's cache nodes (Lab 5, #170): the template the three identical nodes share.
+x-cache-node: &cache_node
+  image: valkey/valkey:8-alpine
+  restart: unless-stopped
+  command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
+  healthcheck:
+    test: ["CMD", "valkey-cli", "ping"]
+    interval: 5s
+    timeout: 3s
+    retries: 10
+  networks:
+    - student-id-net
+
 services:
   # Service Discovery (README "Service Discovery"): the registry every instance and the broker register with, the
   # broker routes from and Prometheus reads its targets from. One copy, registry in memory; after a restart every instance is
@@ -106,6 +119,9 @@ services:
       # Prometheus scrapes it and Service Discovery fetches its GET /logs as static targets.
       MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       LOG_FILE: /var/log/gateway/gateway.jsonl
+      # Lab 5 (#167, #166): the cache nodes of the consistent hashing ring; ignored by 4.0.0. No depends_on on them
+      # on purpose: the cache fails open, so the Gateway answers through the broker while a cache node is down.
+      CACHE_NODES: ${CACHE_NODES:-cache-1:6379,cache-2:6379,cache-3:6379}
     ports:
       - "8080:8080"
     networks:
@@ -606,40 +622,13 @@ services:
   # each with LRU eviction. The Gateway places every key on one node by a consistent hashing ring over CACHE_NODES
   # (cache-1:6379,cache-2:6379,cache-3:6379). Not published on the host: only the Gateway talks to them.
   cache-1:
-    image: valkey/valkey:8-alpine
-    restart: unless-stopped
-    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    networks:
-      - student-id-net
+    <<: *cache_node
 
   cache-2:
-    image: valkey/valkey:8-alpine
-    restart: unless-stopped
-    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    networks:
-      - student-id-net
+    <<: *cache_node
 
   cache-3:
-    image: valkey/valkey:8-alpine
-    restart: unless-stopped
-    command: ["valkey-server", "--save", "", "--appendonly", "no", "--maxmemory", "64mb", "--maxmemory-policy", "allkeys-lru"]
-    healthcheck:
-      test: ["CMD", "valkey-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    networks:
-      - student-id-net
+    <<: *cache_node
 
   # Monitoring (Lab 4, #113; README "Deployments", "Monitoring stack"). Prometheus reads the scrape targets from
   # Service Discovery (every up instance and the broker) plus the Gateway and Service Discovery as static targets,

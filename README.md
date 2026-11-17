@@ -24,7 +24,7 @@ The whole system runs from published Docker Hub images; no service repository ha
 [Deployments](#deployments) for every container, its image and host port).
 
 ```bash
-docker network create student-id-net   # once: the compose joins this external network
+docker network inspect student-id-net >/dev/null 2>&1 || docker network create student-id-net   # the external network, once
 cp .env.example .env                   # then put real values in .env; never commit it
 docker compose up -d                   # the Gateway answers at http://localhost:8080
 ```

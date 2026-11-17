@@ -2410,6 +2410,30 @@ Four containers in `docker-compose.yml` (#113), configured from [`monitoring/`](
 When an instance stops, its series end (the gap), Service Discovery's alert lines appear as annotations, and the
 broker's breaker and reroute lines show where its messages went.
 
+### Replicated databases (Lab 5)
+
+Every service database becomes a primary and two replicas (#164; the decision is #163's). The pattern lives in the
+CPR and runs on the official images, bind-mounted read-only, like the `dms-ws-proxy` configuration:
+
+- **PostgreSQL** ([`deployments/postgres-ha/`](deployments/postgres-ha/README.md)): `<db>-1` starts as the primary,
+  `<db>-2` and `<db>-3` stream from it as hot standbys. The `pg-failover` container watches every cluster listed in its
+  `PGHA_CLUSTERS`: 3 failed checks 2 s apart after a primary stops, it promotes the most advanced standby and
+  re-points the other; a commit waits for one standby while one streams, so a failover loses nothing that was
+  acknowledged. An old primary that comes back reads the new leader from the shared `pg_ha_state` volume and rejoins
+  as a standby, never as a second primary. Measured: writes work again about 6.3 s after `docker stop` of a primary.
+- **MongoDB** ([`deployments/mongo-rs/`](deployments/mongo-rs/README.md)): a replica set `rs0` of `<db>-1..3` with a
+  shared key file, initiated once by a `<db>-init` container, which also creates `etl_reader`; MongoDB's own election
+  (5 s timeout) is the failover. Measured: writes work again about 1.6 s after `docker stop` of the primary.
+- **Services** list the three nodes in their connection string and ask for the writable one
+  (`target_session_attrs=read-write` for PostgreSQL, `replicaSet=rs0` for MongoDB); no proxy sits in between.
+- **Converting a database** means three blocks from the pattern's README, new volumes (the roles and the replica set
+  are created on empty data directories), the multi-host connection string, and the cluster added to `PGHA_CLUSTERS`.
+  Each owner converts their own database in their Lab 5 service issue (#171 to #178).
+- **.env:** `REPLICATION_PASSWORD`, `FAILOVER_PASSWORD`, `ETL_READER_PASSWORD`, `MONGO_REPLICA_KEY` (see `.env.example`).
+- **Proof:** `deployments/postgres-ha/failover-test.sh [--pause]` and `deployments/mongo-rs/failover-test.sh` start a
+  throw-away cluster, fail it over under a running writer, check that no acknowledged write is lost and that the old
+  primary rejoins, and remove it.
+
 ---
 
 ## Branch management

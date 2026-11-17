@@ -875,7 +875,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('405 Method Not Allowed', () => pm.response.to.have.status(405));"
+                  "pm.test('405 Method Not Allowed', () => pm.response.to.have.status(405));",
+                  "pm.test('METHOD_NOT_ALLOWED in the error envelope', () => pm.expect(pm.response.json().error.code).to.eql('METHOD_NOT_ALLOWED'));"
                 ]
               }
             }

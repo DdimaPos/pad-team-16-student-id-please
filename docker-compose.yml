@@ -27,7 +27,7 @@ services:
   # Health polling of every instance's /status every 10 s, alerts in the log and, with TELEGRAM_BOT_TOKEN
   # and TELEGRAM_CHAT_ID set in .env, in the team's Telegram group.
   service-discovery-service:
-    image: d1vinexd/service-discovery-service:4.0.0
+    image: d1vinexd/service-discovery-service:4.0.1
     restart: unless-stopped
     environment:
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}

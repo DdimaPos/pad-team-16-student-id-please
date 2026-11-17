@@ -1,13 +1,15 @@
 # Service Discovery Service - Integration Reference
 
-> **Status:** `4.0.0` (Lab 4, #111; release PR vvtttvv/service-discovery-service#16). Image
-> `d1vinexd/service-discovery-service:4.0.0` and `:latest` (`linux/amd64`, `linux/arm64`), run by the team
+> **Status:** `4.0.1` (Lab 4, hotfix #156, vvtttvv/service-discovery-service#20). Image
+> `d1vinexd/service-discovery-service:4.0.1` and `:latest` (`linux/amd64`, `linux/arm64`), run by the team
 > `docker-compose.yml`. `3.0.0` (tag `v3.0.0`) holds the registry (#69), the mark-down and the circuit breakers (#74),
 > health polling and its alerts (#72), and the Telegram notifications (#73). `4.0.0` adds what the Message Broker and
 > Prometheus need (#111): `topics` in the registration, `load` on the list, `GET /api/v1/instances?topic=`,
 > `GET /api/v1/topics`, `GET /api/v1/instances/prometheus`, `GET /metrics`, `POST /api/v1/alerts`, the broker as the
 > mark-down's caller; the log file, `GET /logs` and the aggregated `GET /api/v1/logs` (#112); it no longer serves
 > `/openapi.json`, and its dependencies are updated. The Lab 4 additions follow the Lab 4 contract (#105): see §10.
+> `4.0.1` changes no API: uvicorn keeps an idle keep-alive connection 120 s instead of 5 s, so heartbeats no longer
+> fail now and then (§9, #156).
 
 ## 1. What this service is
 
@@ -37,7 +39,7 @@ alerts, and Prometheus finds its targets here (#113).
 | **Calls out** | each instance's `GET /status` (directly, no credential); each component's `GET /logs` for a download; the Telegram Bot API when configured |
 | **Callers** | every instance and the broker (registration); the Gateway (Lab 3 list and mark-down); from Lab 4 the broker (list, mark-down, alerts) and Prometheus (targets, `/metrics`) |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`, same as every service |
-| **Docker image** | `d1vinexd/service-discovery-service:4.0.0` and `:latest`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `d1vinexd/service-discovery-service:4.0.1` and `:latest`, published by GitHub Actions on merge to `main` |
 | **API schema** | none served: `/docs`, `/redoc` and `/openapi.json` answer `404` (`4.0.0`); this file and the Postman collection document the API |
 
 Instances call it **directly**, not through the Gateway or the broker: the broker itself (the Gateway in Lab 3) needs
@@ -47,9 +49,9 @@ the registry to route.
 
 ```bash
 docker run --rm --network student-id-net --name service-discovery-service -p 8090:8090 \
-  -e SERVICE_TOKEN=... d1vinexd/service-discovery-service:4.0.0
+  -e SERVICE_TOKEN=... d1vinexd/service-discovery-service:4.0.1
 curl http://localhost:8090/health
-# {"status":"ok","service":"service-discovery","version":"4.0.0"}
+# {"status":"ok","service":"service-discovery","version":"4.0.1"}
 ```
 
 Without `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` it starts as usual and only logs its alerts
@@ -374,6 +376,11 @@ bot token are never logged.
   stops answering within 2 s.
 - **`topics` after a restart** (`4.0.0`): the record is rebuilt from the instance's next `PUT`, so its `topics` are
   back only when that `PUT` carries them. An instance that sends `topics` with every heartbeat loses nothing.
+- **Keep-alive** (`4.0.1`, #156): an idle connection stays open 120 s, longer than the clients' own pool idle
+  timeouts (Go 90 s, .NET 60 s, httpx 5 s), so the client closes it first. `4.0.0` used uvicorn's default of 5 s,
+  the heartbeat interval: a heartbeat sent on a pooled connection just as it closed got no answer
+  (`sd.heartbeat_failed` with `ReadError`, `connection reset by peer` or `HttpRequestException`, and the broker's
+  `sd.refresh`), a few per instance per 30 minutes; three in a row would have expired a healthy instance.
 
 ## 10. Lab 4 contract notes
 

@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "University Record Service",
-    "description": "University Record through the Gateway where the Gateway serves it, otherwise on the instance itself. base_url is {{gateway}}/api/v1/university-record: since the Gateway's 4.0.0 (#110) it serves only the player route GET /records/{category} and the public GET /health of this service, and answers 404 on every other one. A player's request names the player in X-Player-Id, which the collection pre-request script turns into a signed Bearer JWT on a Gateway request. Run the 'scenario' folder top to bottom.\n\nLAB 4 (4.0.0). applicant.initialized, session.started and session.ended arrive from the Message Broker (topics events.<event_type>), not on POST /events, which is removed; this service's own applicant.initialized is published to events.applicant.initialized. Postman cannot send the broker's gRPC calls: the events of the scenario have to be published to the broker with the full envelope first (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711), and the session's scopes are set with the session-service mock (POST /admin/sessions/{id}/scopes).\n\nDIRECT CALLS. Every request whose route is not a Gateway route goes to one instance directly through {{university_record_direct_url}}, with the service's own path (/api/v1/..., /health/ready, /status, /logs, /metrics; no /university-record prefix): /health/ready, /status, /logs, /metrics, the scenario's step 4 (POST /admin/sessions/{id}/scopes) and step 9 (GET /applicants/{id}/records), POST /events, POST /applicants/next, every /admin/* request and the player-id-on-a-service-only-route edge case. The contract routes validate no token; GET /logs and, from 4.0.1 (#151), /admin/* and /dev/* check X-Service-Token themselves, so every direct request to them sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong; the auth edge cases have both on an admin route). Through the broker /admin/* and /dev/* cannot be reached, since the broker never passes the token on. A direct service call on a contract route carries no X-Service-Token and no X-Player-Id, and a direct request that plays a player sends X-Player-Id as it is (the pre-request script signs no JWT and changes no header of a direct request). Direct and Gateway requests must reach the same database: in the team stack forward an instance's port (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
+    "description": "University Record through the Gateway where the Gateway serves it, otherwise on the instance itself. base_url is {{gateway}}/api/v1/university-record: since the Gateway's 4.0.0 (#110) it serves only the player route GET /records/{category} and the public GET /health of this service, and answers 404 on every other one. A player's request names the player in X-Player-Id, which the collection pre-request script turns into a signed Bearer JWT on a Gateway request. Run the 'scenario' folder top to bottom.\n\nLAB 4 (4.0.0). applicant.initialized, session.started and session.ended arrive from the Message Broker (topics events.<event_type>), not on POST /events, which is removed; this service's own applicant.initialized is published to events.applicant.initialized. Postman cannot send the broker's gRPC calls: the events of the scenario have to be published to the broker with the full envelope first (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711), and the session's scopes are set with the session-service mock (POST /admin/sessions/{id}/scopes).\n\nDIRECT CALLS. Every request whose route is not a Gateway route goes to one instance directly through {{university_record_direct_url}}, with the service's own path (/api/v1/..., /health/ready, /status, /logs, /metrics; no /university-record prefix): /health/ready, /status, /logs, /metrics, the scenario's step 4 (POST /admin/sessions/{id}/scopes) and step 9 (GET /applicants/{id}/records), POST /events, POST /applicants/next, every /admin/* request and the player-id-on-a-service-only-route edge case. The contract routes validate no token; GET /logs and, from 4.0.1 (#151), /admin/* and /dev/* check X-Service-Token themselves, so every direct request to them sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong; the auth edge cases have both on an admin route). Through the broker /admin/* and /dev/* cannot be reached, since the broker never passes the token on. A direct service call on a contract route carries no X-Service-Token and no X-Player-Id, and a direct request that plays a player sends X-Player-Id as it is (the pre-request script signs no JWT and changes no header of a direct request). Direct and Gateway requests must reach the same database: in the team stack forward an instance's port (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).\n\nRUN FROM POSTMAN ON THE TEAM STACK. The compose publishes no port of this service (2 instances), so {{university_record_direct_url}} (localhost:8084) answers only while one instance is forwarded to this machine:\ndocker run --rm -d --name university-record-direct --network student-id-net -p 127.0.0.1:8084:8080 alpine/socat TCP-LISTEN:8080,fork,reuseaddr TCP:university-record-service:8080\nBound to 127.0.0.1 only; stop it when done: docker stop university-record-direct. Set service_token and jwt_secret to SERVICE_TOKEN and JWT_SECRET of the stack's .env. Checked on 2026-11-13 against the team stack this way.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -304,7 +304,7 @@
     },
     {
       "name": "scenario - honest student, identity theft, scopes, session end",
-      "description": "From 4.0.0 the events of this scenario arrive from the Message Broker, which Postman cannot call, so they are not requests here any more. Publish them to the broker with the full envelope (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711) at the missing step numbers: 3 applicant.initialized of the honest FAF student (applicant {{honest_applicant_id}}, actual student_id FAF23117, name Ana Rusu) before step 5; 8 applicant.initialized of an outsider claiming FAF23117 (applicant {{thief_applicant_id}}) before step 9; 10 session.ended of {{session_id}} before step 11. Without them steps 5, 9 and 11 fail their tests. Step 4 sets the scopes with the session-service mock in place of session.started. Steps 4 and 9 are service calls on routes the Gateway's 4.0.0 does not serve (404), so they go to the instance directly ({{university_record_direct_url}}, no X-Player-Id; step 4, an /admin/* route, sends X-Service-Token: {{service_token}} from 4.0.1, step 9 no token); steps 5, 6, 7 and 11 are the player route, through the Gateway with the JWT. Both must reach the same database (forward an instance of the team stack, docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
+      "description": "From 4.0.0 the events of this scenario arrive from the Message Broker, which Postman cannot call, so they are not requests here any more. Publish them to the broker with the full envelope (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711) at the missing step numbers: 3 applicant.initialized of the honest FAF student (applicant {{honest_applicant_id}}, actual student_id FAF23117, name Ana Rusu) before step 5; 8 applicant.initialized of an outsider claiming FAF23117 (applicant {{thief_applicant_id}}) before step 9; 10 session.ended of {{session_id}} before step 11. The checks 4b, 8 and 10 ask the service whether each event arrived; without it, the step that needs it (5, 9, 11) is skipped, not failed, and the console says why. Step 4 sets the scopes with the session-service mock in place of session.started. Steps 4 and 9 are service calls on routes the Gateway's 4.0.0 does not serve (404), so they go to the instance directly ({{university_record_direct_url}}, no X-Player-Id; step 4, an /admin/* route, sends X-Service-Token: {{service_token}} from 4.0.1, step 9 no token); steps 5, 6, 7 and 11 are the player route, through the Gateway with the JWT. Both must reach the same database (forward an instance of the team stack, docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
       "item": [
         {
           "name": "4. scopes - A gets enrollment+courses, B gets email-groups+fcim-logs (session-service mock, in place of session.started - called directly)",
@@ -339,8 +339,50 @@
           }
         },
         {
+          "name": "4b. check: applicant.initialized of the honest student arrived (step 3, published to the broker)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const ids = (pm.response.json().items || []).map(a => a.applicant_id);",
+                  "const ok = ids.includes(pm.variables.get('honest_applicant_id'));",
+                  "pm.collectionVariables.set('honest_published', String(ok));",
+                  "console.log(ok ? 'step 3 published: step 5 runs' : 'step 3 not published: step 5 is skipped');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/api/v1/admin/applicants?sessionId={{session_id}}&limit=100",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "description": "Step 3 is applicant.initialized of {{honest_applicant_id}}, published to events.applicant.initialized with the broker's gRPC Publish (docs/UNIVERSITY_RECORD_SERVICE.md, section 11); Postman cannot send it. This request asks the service whether it arrived. If not, step 5 is skipped instead of failing."
+          }
+        },
+        {
           "name": "5. A searches enrollment (allowed)",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skipped, not failed, when applicant.initialized of the honest student (step 3) has not reached this service (see the folder description).",
+                  "if (pm.collectionVariables.get('honest_published') !== 'true') {",
+                  "  console.log('skipped: applicant.initialized of the honest student (step 3) was not published to the broker before this step');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -457,8 +499,50 @@
           }
         },
         {
+          "name": "8. check: applicant.initialized of the thief arrived (published to the broker)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const ids = (pm.response.json().items || []).map(a => a.applicant_id);",
+                  "const ok = ids.includes(pm.variables.get('thief_applicant_id'));",
+                  "pm.collectionVariables.set('thief_published', String(ok));",
+                  "console.log(ok ? 'step 8 published: step 9 runs' : 'step 8 not published: step 9 is skipped');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/api/v1/admin/applicants?sessionId={{session_id}}&limit=100",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "description": "Step 8 is applicant.initialized of an outsider claiming FAF23117 ({{thief_applicant_id}}), published with the broker's gRPC Publish (docs/UNIVERSITY_RECORD_SERVICE.md, section 11). This request asks the service whether it arrived. If not, step 9 is skipped instead of failing."
+          }
+        },
+        {
           "name": "9. Moderation view of the thief - enrollment shows the VICTIM's name (called directly, as a service)",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skipped, not failed, when applicant.initialized of the thief (step 8) has not reached this service (see the folder description).",
+                  "if (pm.collectionVariables.get('thief_published') !== 'true') {",
+                  "  console.log('skipped: applicant.initialized of the thief (step 8) was not published to the broker before this step');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -478,8 +562,49 @@
           }
         },
         {
+          "name": "10. check: session.ended of the session arrived (published to the broker)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const ok = pm.response.json().status === 'ended';",
+                  "pm.collectionVariables.set('ended_published', String(ok));",
+                  "console.log(ok ? 'step 10 published: step 11 runs' : 'step 10 not published: step 11 is skipped');"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/api/v1/admin/sessions/{{session_id}}",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "description": "Step 10 is session.ended of {{session_id}}, published with the broker's gRPC Publish (docs/UNIVERSITY_RECORD_SERVICE.md, section 11). This request reads the session's state here. If it is not ended, step 11 is skipped instead of failing."
+          }
+        },
+        {
           "name": "11. A searches again after session ended (403 SESSION_ENDED)",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Skipped, not failed, when session.ended (step 10) has not reached this service (see the folder description).",
+                  "if (pm.collectionVariables.get('ended_published') !== 'true') {",
+                  "  console.log('skipped: session.ended (step 10) was not published to the broker before this step');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {

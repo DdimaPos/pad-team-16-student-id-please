@@ -1,7 +1,7 @@
 # Team-wide compose - references PUBLISHED Docker Hub images only, never `build:`. Any
 # teammate can run this without cloning anyone's (private) service repository. It covers
-# the Gateway, all 8 services, Service Discovery, the Message Broker and the monitoring (Lab 4, #113):
-# Prometheus, Loki, Alloy and Grafana. Clients reach the system through the Gateway; from Lab 4 every request and
+# the Gateway, all 8 services, Service Discovery, the Message Broker, the monitoring (Lab 4, #113):
+# Prometheus, Loki, Alloy and Grafana, and the data warehouse with the ETL Service (Lab 5, #165). Clients reach the system through the Gateway; from Lab 4 every request and
 # event between the components travels through the Message Broker (README "Message Broker", "Event delivery").
 # New blocks follow the same pattern, referencing a published image and joining the same
 # `student-id-net` network.
@@ -600,11 +600,87 @@ services:
     networks:
       - student-id-net
 
+  # Data warehouse (Lab 5, #165; README "Data warehouse and ETL"): warehouse_db, the star schema the ETL Service loads.
+  # One node, not replicated: the ETL can rebuild it from the services. The ETL creates the schema with its own
+  # versioned migrations, as the user `warehouse`. The init script of deployments/warehouse/ creates grafana_reader,
+  # the read-only role of Grafana's "Analytics" dashboard; like every init script it runs only on an empty volume.
+  # Host port 5440 is published for the demo and the developers.
+  warehouse-postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: warehouse
+      POSTGRES_PASSWORD: ${WAREHOUSE_PASSWORD:?set WAREHOUSE_PASSWORD}
+      POSTGRES_DB: warehouse_db
+      WAREHOUSE_GRAFANA_PASSWORD: ${WAREHOUSE_GRAFANA_PASSWORD:?set WAREHOUSE_GRAFANA_PASSWORD}
+    volumes:
+      - warehouse_pgdata:/var/lib/postgresql/data
+      - ./deployments/warehouse/init-grafana-reader.sh:/docker-entrypoint-initdb.d/10-grafana-reader.sh:ro
+    ports:
+      - "5440:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warehouse -d warehouse_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - student-id-net
+
+  # ETL Service (Lab 5, #165; README "Data warehouse and ETL", docs/ETL_SERVICE.md): a run right after startup, then
+  # every ETL_INTERVAL_SECONDS and on POST /api/v1/runs (X-Service-Token, called directly inside the network, never
+  # through the Gateway or the broker). It reads every service database read-only as etl_reader and writes only to
+  # warehouse_db. One copy (two copies would still never run at once: the run lock is an advisory lock in
+  # warehouse_db). Host port 8075 is published for the demo. It registers with Service Discovery as `etl`, so
+  # Prometheus scrapes it and the logs download fetches its GET /logs.
+  etl-service:
+    image: d1vinexd/etl-service:5.0.0
+    restart: unless-stopped
+    depends_on:
+      service-discovery-service:
+        condition: service_healthy
+      warehouse-postgres:
+        condition: service_healthy
+    environment:
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
+      SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
+      LOG_LEVEL: ${ETL_LOG_LEVEL:-info}
+      HTTP_REQUEST_TIMEOUT: 5s
+      MAX_CONCURRENT_TASKS: "64"
+      ETL_INTERVAL_SECONDS: ${ETL_INTERVAL_SECONDS:-60}
+      # GET /logs reads this file. It stays inside the container: never a shared volume.
+      LOG_FILE: /var/log/etl/etl.jsonl
+      WAREHOUSE_DSN: "postgresql://warehouse:${WAREHOUSE_PASSWORD:?set WAREHOUSE_PASSWORD}@warehouse-postgres:5432/warehouse_db?sslmode=disable"
+      # The eight sources, as the read-only role etl_reader (ETL_READER_PASSWORD; letters, digits and - _ . ~ only,
+      # since it goes into a URL). The ETL appends target_session_attrs=prefer-standby and
+      # readPreference=secondaryPreferred itself. Today every database is one container under its Lab 4 name; #164 and
+      # #170 turn each into <db>-1, <db>-2 and <db>-3 (the two MongoDB ones into the replica set rs0), and then every
+      # DSN lists the three nodes (player-postgres-1:5432,player-postgres-2:5432,player-postgres-3:5432) and every URI
+      # adds replicaSet=rs0. Until a database has the role (#164) and its service grants it what the ETL reads
+      # (#171 to #178), that source fails in every run and is named in the run's failed_sources; the others still load.
+      PLAYER_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@player-postgres:5432/${PLAYER_POSTGRES_DB:-player_db}?sslmode=disable"
+      SESSION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@session-postgres:5432/${SESSION_POSTGRES_DB:-session_db}?sslmode=disable"
+      APPLICANT_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@applicant-postgres:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
+      CREDENTIAL_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
+      RULES_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@rules-postgres:5432/${RULES_POSTGRES_DB:-rules_db}?sslmode=disable"
+      UNIVERSITY_RECORD_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@university-record-postgres:5432/${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}?sslmode=disable"
+      MODERATION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@moderation-postgres:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
+      DMS_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@dms-mongo:27017/dms_db?authSource=admin"
+    ports:
+      - "8075:8075"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8075/health', timeout=2)"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks:
+      - student-id-net
+
   # Monitoring (Lab 4, #113; README "Deployments", "Monitoring stack"). Prometheus reads the scrape targets from
   # Service Discovery (every up instance and the broker) plus the Gateway and Service Discovery as static targets,
   # and scrapes their GET /metrics every 5 s. Alloy reads every container's stdout (the JSON log lines) through
   # the Docker API and ships it to Loki. Grafana shows both: the dashboards "System" and "Broker" are provisioned
-  # from monitoring/grafana. Configuration lives in monitoring/.
+  # from monitoring/grafana, and from Lab 5 (#165) "Analytics", which reads warehouse_db as grafana_reader.
+  # Configuration lives in monitoring/.
   prometheus:
     image: prom/prometheus:v3.5.0
     restart: unless-stopped
@@ -660,6 +736,9 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_USERS_ALLOW_SIGN_UP: "false"
+      # Lab 5 (#165): the password of grafana_reader, the read-only role of the "Warehouse" datasource; Grafana
+      # expands ${WAREHOUSE_GRAFANA_PASSWORD} in monitoring/grafana/provisioning/datasources/datasources.yml.
+      WAREHOUSE_GRAFANA_PASSWORD: ${WAREHOUSE_GRAFANA_PASSWORD:?set WAREHOUSE_GRAFANA_PASSWORD}
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
@@ -688,6 +767,7 @@ volumes:
   applicant_pgdata:
   credential_mongodata:
   broker_data:
+  warehouse_pgdata:
   prometheus_data:
   loki_data:
   grafana_data:

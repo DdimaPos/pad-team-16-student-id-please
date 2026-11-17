@@ -34,3 +34,7 @@
 	path = message-broker-service
 	url = https://github.com/vvtttvv/message-broker-service
 	branch = dev
+[submodule "etl-service"]
+	path = etl-service
+	url = https://github.com/vvtttvv/etl-service
+	branch = dev

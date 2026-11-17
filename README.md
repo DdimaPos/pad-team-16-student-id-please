@@ -2203,10 +2203,12 @@ need to clone the (private) service repository to run one.
 | Server Moderation Session Service | [`dimapos/server-moderation-session-service`](https://hub.docker.com/r/dimapos/server-moderation-session-service) | -         | `POSTGRES_PASSWORD` (PostgreSQL 17, no Redis); `SERVICE_TOKEN`; since `4.0.0` `MESSAGE_BROKER_URL` (`message-broker-service:8071`, gRPC, with `SERVICE_TOKEN` as metadata; empty falls back to stubs) instead of the five peer URLs of Lab 3, `GET /logs` (`LOG_FILE`, the only route that checks `X-Service-Token`), `GET /metrics`, optional `LOG_FILE_MAX_MB`, `LOG_FILE_KEEP`; since `3.0.0` `SERVICE_DISCOVERY_URL` (registration), optional `INSTANCE_ID`, `INSTANCE_HOST` - see below |
 | Service Discovery (Lab 3)         | [`d1vinexd/service-discovery-service`](https://hub.docker.com/r/d1vinexd/service-discovery-service)               | `8090`    | `SERVICE_TOKEN`; optional `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (empty = alerts only logged), `NOTIFY_COOLDOWN_SECONDS` (`300`), `LOG_LEVEL` (`info`), `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS`; since `4.0.0` optional `LOG_FILE`, `LOG_FILE_MAX_MB` (`50`), `LOG_FILE_KEEP` (`5`), `LOGS_STATIC_TARGETS` (`gateway=http://gateway-service:8080`), `LOGS_FETCH_DEADLINE_SECONDS` (`60`), `GET /metrics`. No database - see [Service Discovery](#service-discovery) and below |
 | Message Broker (Lab 4)            | [`d1vinexd/message-broker-service`](https://hub.docker.com/r/d1vinexd/message-broker-service)                     | `8070`, `8071` | `SERVICE_TOKEN` (`X-Service-Token` on its `/api/v1` and `GET /logs`, the `x-service-token` metadata on every RPC); a named volume on `/data` (`MESSAGE_STORE_PATH`, `/data/broker.db`, SQLite; empty = in memory); `SERVICE_DISCOVERY_URL` (registration, instance list, mark-down, dead letter alerts; empty = off); optional `GRPC_MAX_WORKERS` (`64`), `GRPC_RESERVED_WORKERS` (`16`), `MESSAGE_ACK_TIMEOUT_SECONDS` (`5`), `MESSAGE_MAX_ATTEMPTS` (`3`), `MESSAGE_RETENTION_HOURS` (`24`), `LOG_FILE`, `LOG_LEVEL`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). One copy, named volume `broker_data` - see below and [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) |
+| ETL Service (Lab 5)               | [`d1vinexd/etl-service`](https://hub.docker.com/r/d1vinexd/etl-service)                                           | `8075`    | `SERVICE_TOKEN` (`X-Service-Token` on `/api/v1/runs` and `GET /logs`, checked by the ETL itself); `WAREHOUSE_DSN` (`warehouse_db` as `warehouse`, `WAREHOUSE_PASSWORD`); the eight sources as `etl_reader` (`ETL_READER_PASSWORD`): `PLAYER_DB_DSN`, `SESSION_DB_DSN`, `APPLICANT_DB_DSN`, `RULES_DB_DSN`, `UNIVERSITY_RECORD_DB_DSN`, `MODERATION_DB_DSN`, `CREDENTIAL_MONGO_URI`, `DMS_MONGO_URI` (empty = skipped); `ETL_INTERVAL_SECONDS` (`60`); `SERVICE_DISCOVERY_URL` (registration as `etl`; empty = off); optional `ETL_OVERLAP_SECONDS` (`5`), `ETL_PAGE_SIZE` (`1000`), `LOG_FILE` (`/var/log/etl/etl.jsonl`), `LOG_LEVEL`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). One copy, after `warehouse-postgres` is healthy - see below and [`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md) |
+| Warehouse database (Lab 5)        | [`postgres`](https://hub.docker.com/_/postgres) `17-alpine` (`warehouse-postgres`)                              | `5440`    | `WAREHOUSE_PASSWORD` (owner `warehouse`, database `warehouse_db`); `WAREHOUSE_GRAFANA_PASSWORD` (the read-only `grafana_reader`, created by `deployments/warehouse/init-grafana-reader.sh` on an empty volume); named volume `warehouse_pgdata`, one node, not replicated. The schema is the ETL's migrations - see [Data warehouse and ETL](#data-warehouse-and-etl) |
 | Prometheus (Lab 4)                | [`prom/prometheus`](https://hub.docker.com/r/prom/prometheus) `v3.5.0`                                          | `9090`    | `monitoring/prometheus/prometheus.yml`; the service token as the file `/etc/prometheus/service_token` (a compose `config` from `SERVICE_TOKEN`); named volume `prometheus_data`, 7 days kept - see [Monitoring stack](#monitoring-stack-lab-4) |
 | Loki (Lab 4)                      | [`grafana/loki`](https://hub.docker.com/r/grafana/loki) `3.7.9`                                                 | -         | Its built-in single-binary configuration; named volume `loki_data` |
 | Alloy (Lab 4)                     | [`grafana/alloy`](https://hub.docker.com/r/grafana/alloy) `v1.21.0`                                             | -         | `monitoring/alloy/config.alloy`; the Docker socket, read-only |
-| Grafana (Lab 4)                   | [`grafana/grafana`](https://hub.docker.com/r/grafana/grafana) `12.4.14`                                         | `3000`    | `GRAFANA_ADMIN_PASSWORD` (user `admin`); provisioning and dashboards from `monitoring/grafana`; named volume `grafana_data` |
+| Grafana (Lab 4)                   | [`grafana/grafana`](https://hub.docker.com/r/grafana/grafana) `12.4.14`                                         | `3000`    | `GRAFANA_ADMIN_PASSWORD` (user `admin`); from Lab 5 `WAREHOUSE_GRAFANA_PASSWORD` (the "Warehouse" datasource); provisioning and dashboards from `monitoring/grafana`; named volume `grafana_data` |
 
 **One service token for the whole stack.** Every variable above that holds a service token
 (`SERVICE_TOKEN`) is set to the same value,
@@ -2246,11 +2248,22 @@ new container: `docker-compose.yml` mounts the named volume `broker_data` there 
 Rules start after its healthcheck (`GET /health` on `8070`); a service started before it retries its subscription
 with backoff. Its contract is [Message Broker](#message-broker); details in [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md).
 
+**ETL Service and the warehouse (Lab 5).** `d1vinexd/etl-service:5.0.0` runs one copy on `8075` (`/health`,
+`/status`, `/logs`, `/metrics`, and `POST`/`GET /api/v1/runs` with the service token, called directly, not through the
+Gateway) and starts after Service Discovery and `warehouse-postgres` are healthy. `warehouse-postgres` (PostgreSQL 17,
+`warehouse_db`, owner `warehouse`, host port `5440`, named volume `warehouse_pgdata`) is the only database it writes;
+its schema comes from the ETL's migrations, and its init script `deployments/warehouse/init-grafana-reader.sh` creates
+`grafana_reader`, the read-only role of Grafana's "Analytics" dashboard (on an empty volume only). The ETL reads the
+eight service databases as `etl_reader` (`ETL_READER_PASSWORD`); until the replication of #164 the compose points its
+DSNs at today's single database containers, and a database without `etl_reader` and its grants (#164, #171 to #178)
+fails in every run as a named failed source while the others load. Details in [`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md).
+
 **Published host ports.** The Gateway (`8080`), the chat port `8086` (since Discord DMs `3.0.0` published by
 `dms-ws-proxy`, an nginx in front of the Discord DMs copies, for the direct WebSocket connection the Gateway
 negotiates; Discord DMs' REST listens on `8096` inside the network), Service Discovery (`8090`, Lab 3, the registry
 and its `/status`, for the demo and the developers), and from Lab 4 the Message Broker (`8070` HTTP, `8071` gRPC, for
-the demo and the developers), Prometheus (`9090`) and Grafana (`3000`). Every service is reachable only inside
+the demo and the developers), Prometheus (`9090`) and Grafana (`3000`), and from Lab 5 the ETL Service (`8075`, its
+probes and run routes, for the demo). Every service is reachable only inside
 `student-id-net`, through the Gateway and the broker - which is what lets services trust `X-Player-Id` (see
 [Authentication](#authentication)). Database ports are not part of the contract.
 
@@ -2361,8 +2374,9 @@ this contract) live in [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVIC
 [`docs/CREDENTIAL_SERVICE.md`](docs/CREDENTIAL_SERVICE.md),
 [`docs/MODERATION_SERVICE.md`](docs/MODERATION_SERVICE.md),
 [`docs/DISCORD_DMS_SERVICE.md`](docs/DISCORD_DMS_SERVICE.md),
-[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md) and
-[`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md). Postman
+[`docs/PLAYER_SERVICE.md`](docs/PLAYER_SERVICE.md),
+[`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md) and, from Lab 5,
+[`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md). Postman
 collections are in [`postman/`](postman/); [`postman/lab4-shift.postman_collection.json`](postman/lab4-shift.postman_collection.json)
 runs a whole shift through the Gateway and the broker (login, session, applicant, chat, decision, end) and checks
 the monitoring endpoints (Lab 4, #113).
@@ -2378,7 +2392,8 @@ Four containers in `docker-compose.yml` (#113), configured from [`monitoring/`](
   sends it to **Loki**. Each component's line is one JSON object (see [Logging](#logging)), so `level`, `service` and
   `event` become labels; `compose_service` and `container` name the container. No log file or volume is shared.
 - **Grafana** (`localhost:3000`, user `admin`, `GRAFANA_ADMIN_PASSWORD`) has Prometheus and Loki provisioned as data
-  sources and two dashboards in the folder "Student ID, please":
+  sources, from Lab 5 also "Warehouse" (PostgreSQL, uid `warehouse`, `warehouse_db` as the read-only
+  `grafana_reader`, `WAREHOUSE_GRAFANA_PASSWORD`), and three dashboards in the folder "Student ID, please":
   - **System:** requests per second and `5xx` per service, latency p50/p95, `tasks_in_flight` per instance, every
     circuit breaker, instances up per service, warnings and errors of every component, and Service Discovery's
     instance alerts (`health.unreachable`, `registry.marked_down`, `registry.expired`, `registry.recovered`,
@@ -2386,6 +2401,11 @@ Four containers in `docker-compose.yml` (#113), configured from [`monitoring/`](
   - **Broker:** queue depth per queue, messages per second by outcome, published and delivered per queue,
     redeliveries and dead letters, request latency p50/p95 and rate per called service, the breaker of each
     instance, and the broker's dead letter, reroute, timeout and trip lines.
+  - **Analytics** (Lab 5, #165; from the warehouse, not from Prometheus): decisions per day, correct and wrong, the
+    accuracy per moderator, the applicants by status and difficulty, the messages per session, the average shift
+    score (overall and per day and difficulty), the shifts ended, and the last ETL runs with their rows and failed
+    sources. It is as fresh as the last run: one a minute, or `POST /api/v1/runs` on the ETL (see
+    [`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md)).
 
 When an instance stops, its series end (the gap), Service Discovery's alert lines appear as annotations, and the
 broker's breaker and reroute lines show where its messages went.

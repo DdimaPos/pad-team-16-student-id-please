@@ -19,6 +19,30 @@ name: student-id-please
 
 x-reference-year: &reference_year "2026"
 
+# Moderation's replicated PostgreSQL (#164, #177): the environment and the node template its three nodes share.
+x-moderation-pg-env: &moderation_pg_env
+  POSTGRES_USER: ${MODERATION_POSTGRES_USER:-moderation_user}
+  POSTGRES_PASSWORD: ${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}
+  POSTGRES_DB: ${MODERATION_POSTGRES_DB:-moderation_db}
+  PGHA_CLUSTER: moderation-postgres
+  PGHA_NODES: "moderation-postgres-1 moderation-postgres-2 moderation-postgres-3"
+  REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD}
+  FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:?set FAILOVER_PASSWORD}
+  ETL_READER_PASSWORD: ${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}
+
+x-moderation-pg-node: &moderation_pg_node
+  image: postgres:17-alpine
+  restart: unless-stopped
+  entrypoint: ["bash", "/ha/node.sh"]
+  stop_grace_period: 30s
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  networks:
+    - student-id-net
+
 services:
   # Service Discovery (README "Service Discovery"): the registry every instance and the broker register with, the
   # broker routes from and Prometheus reads its targets from. One copy, registry in memory; after a restart every instance is
@@ -218,24 +242,37 @@ services:
     networks:
       - student-id-net
 
-  moderation-postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${MODERATION_POSTGRES_USER:-moderation_user}
-      POSTGRES_PASSWORD: ${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}
-      POSTGRES_DB: ${MODERATION_POSTGRES_DB:-moderation_db}
-    volumes:
-      - moderation_pgdata:/var/lib/postgresql/data
+  # Moderation's database (Lab 5, #164 pattern, #177): one primary and two hot standbys, failover by pg-failover
+  # (deployments/postgres-ha/README.md). moderation-postgres-1 starts as the primary; the service lists all three
+  # nodes and connects to the writable one (target_session_attrs=read-write).
+  moderation-postgres-1:
+    <<: *moderation_pg_node
+    environment: { <<: *moderation_pg_env, PGHA_NODE: moderation-postgres-1 }
     ports:
       - "5436:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${MODERATION_POSTGRES_USER:-moderation_user} -d ${MODERATION_POSTGRES_DB:-moderation_db}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - student-id-net
+    volumes:
+      - moderation_pgdata_1:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  moderation-postgres-2:
+    <<: *moderation_pg_node
+    environment: { <<: *moderation_pg_env, PGHA_NODE: moderation-postgres-2 }
+    volumes:
+      - moderation_pgdata_2:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  moderation-postgres-3:
+    <<: *moderation_pg_node
+    environment: { <<: *moderation_pg_env, PGHA_NODE: moderation-postgres-3 }
+    volumes:
+      - moderation_pgdata_3:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
 
   moderation-service:
     image: dmracovit/moderation-service:4.0.0
@@ -248,14 +285,14 @@ services:
         condition: service_healthy
       message-broker-service:
         condition: service_healthy
-      moderation-postgres:
+      moderation-postgres-1:
         condition: service_healthy
     environment:
       # Service Discovery (README "Service Discovery"): every instance registers its address under `moderation`,
       # heartbeats every 5 s and deregisters on shutdown. The `:-` default applies even to an empty value in .env;
       # registration is off only when the container's own environment has an empty SERVICE_DISCOVERY_URL.
       SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
-      DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
+      DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable&target_session_attrs=read-write&connect_timeout=2"
       # The stack's one X-Service-Token: the metadata of every call to the broker; checked here on /logs, /admin and /dev.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       DEV_ENDPOINTS: ${MODERATION_DEV_ENDPOINTS:-true}
@@ -611,7 +648,7 @@ services:
     restart: unless-stopped
     entrypoint: ["bash", "/ha/pg-failover.sh"]
     environment:
-      PGHA_CLUSTERS: ""
+      PGHA_CLUSTERS: "moderation-postgres"
       FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:-}
       REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-}
     volumes:
@@ -701,7 +738,9 @@ networks:
 volumes:
   rules_pgdata:
   university_record_pgdata:
-  moderation_pgdata:
+  moderation_pgdata_1:
+  moderation_pgdata_2:
+  moderation_pgdata_3:
   dms_mongodata:
   player_pgdata:
   session_pgdata:

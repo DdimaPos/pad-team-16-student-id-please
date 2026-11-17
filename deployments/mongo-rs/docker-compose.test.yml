@@ -1,0 +1,61 @@
+# A test replica set of the MongoDB pattern (#164), used by failover-test.sh: three members (ha-test-mongo-1..3), the
+# one-shot init and a client container, on a network of their own. Never part of the team's stack.
+name: mongors-test
+
+x-member: &member
+  image: mongo:7
+  restart: unless-stopped
+  entrypoint: ["bash", "/rs/node.sh"]
+  healthcheck:
+    test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+    interval: 2s
+    timeout: 5s
+    retries: 30
+
+services:
+  ha-test-mongo-1:
+    <<: *member
+    environment:
+      MONGO_REPLICA_KEY: dGVzdC1yZXBsaWNhLWtleS1mb3ItdGhlLW1vbmdvLXBhdHRlcm4
+      MONGO_INITDB_ROOT_USERNAME: root
+      MONGO_INITDB_ROOT_PASSWORD: root-password
+    volumes: [m1:/data/db, ".:/rs:ro"]
+
+  ha-test-mongo-2:
+    <<: *member
+    environment:
+      MONGO_REPLICA_KEY: dGVzdC1yZXBsaWNhLWtleS1mb3ItdGhlLW1vbmdvLXBhdHRlcm4
+    volumes: [m2:/data/db, ".:/rs:ro"]
+
+  ha-test-mongo-3:
+    <<: *member
+    environment:
+      MONGO_REPLICA_KEY: dGVzdC1yZXBsaWNhLWtleS1mb3ItdGhlLW1vbmdvLXBhdHRlcm4
+    volumes: [m3:/data/db, ".:/rs:ro"]
+
+  ha-test-mongo-init:
+    image: mongo:7
+    restart: "no"
+    entrypoint: ["bash", "/rs/init.sh"]
+    environment:
+      MONGO_RS_MEMBERS: "ha-test-mongo-1 ha-test-mongo-2 ha-test-mongo-3"
+      MONGO_ROOT_USER: root
+      MONGO_ROOT_PASSWORD: root-password
+      MONGO_APP_DB: app_db
+      ETL_READER_PASSWORD: etl-password
+    volumes: [".:/rs:ro"]
+    depends_on:
+      ha-test-mongo-1: { condition: service_healthy }
+      ha-test-mongo-2: { condition: service_healthy }
+      ha-test-mongo-3: { condition: service_healthy }
+
+  client:
+    image: mongo:7
+    entrypoint: ["sleep", "infinity"]
+    environment:
+      URI: mongodb://root:root-password@ha-test-mongo-1:27017,ha-test-mongo-2:27017,ha-test-mongo-3:27017/app_db?authSource=admin&replicaSet=rs0&retryWrites=true
+
+volumes:
+  m1:
+  m2:
+  m3:

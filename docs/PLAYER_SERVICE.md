@@ -21,6 +21,7 @@
 11. [Testing recipes](#11-testing-recipes)
 12. [Several instances (Lab 3)](#12-several-instances-lab-3)
 13. [Message Broker, logs and metrics (Lab 4)](#13-message-broker-logs-and-metrics-lab-4)
+14. [Replicated database, failover and the ETL (Lab 5)](#14-replicated-database-failover-and-the-etl-lab-5)
 
 ---
 
@@ -59,7 +60,7 @@ one event.
 | **Container port** | `8080` |
 | **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/player/...` |
 | **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres and, from `4.0.0`, the broker). Through the Gateway only `/api/v1/player/health` (public); `/health/ready` is not a Lab 4 Gateway route (`404`) and is called on the instance directly, like `GET /status` for Service Discovery - see [§12](#12-several-instances-lab-3) |
-| **Database** | PostgreSQL 17, `player_db` (own container). Schema applied at startup by GORM `AutoMigrate`, under a PostgreSQL advisory lock together with the seed |
+| **Database** | PostgreSQL 17, `player_db` (own container). Schema applied at startup by GORM `AutoMigrate`, under a PostgreSQL advisory lock together with the seed. From `5.0.0` it connects to a primary and two standbys with a multi-host connection string and answers `500 DEPENDENCY_UNAVAILABLE` while no primary answers - see [§14](#14-replicated-database-failover-and-the-etl-lab-5) |
 | **Service Discovery** | Registers as `player`, instance id `player-<hostname>`, port `8080`; heartbeat every 5 s, `DELETE` on graceful shutdown - see [§12](#12-several-instances-lab-3) |
 | **Logs** | One JSON object per line on stdout in the format of CPR README "Logging", and the same lines in the rotating `LOG_FILE`, read back by `GET /logs` (`4.0.0`) |
 | **Metrics** | `GET /metrics`, Prometheus text format, no credential (`4.0.0`) |
@@ -68,7 +69,7 @@ one event.
 | **Events** | Receives `session.ended` from the broker topic `events.session.ended`, settled with `Ack` - see [§6](#6-events). Produces none. `POST /api/v1/events` is removed in `4.0.0` |
 | **Authentication** | Checked by the Gateway, not here: the service reads the calling player from `X-Player-Id` and validates no token. It **issues** the player JWT (`POST /api/v1/auth/login`, HS256 with `JWT_SECRET`) |
 | **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health`, `/health/ready` and `/status` are exempt |
-| **Docker image** | `dimapos/player-service:4.0.0` (also `:latest`), `linux/amd64` and `linux/arm64`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `dimapos/player-service:5.0.0` (also `:latest`), `linux/amd64` and `linux/arm64`, published by GitHub Actions on merge to `main` |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`; `details` is always an object, never `null` |
 | **Timestamps** | ISO-8601, UTC |
 | **Identifiers** | UUID v4 strings |
@@ -80,7 +81,7 @@ one event.
 
 ### In the team stack (recommended)
 
-The CPR `docker-compose.yml` runs `dimapos/player-service:4.0.0` next to its database and the
+The CPR `docker-compose.yml` runs `dimapos/player-service:5.0.0` next to its database and the
 Gateway. Set `PLAYER_POSTGRES_PASSWORD` and `JWT_SECRET` in `.env` (the same `JWT_SECRET` the Gateway
 reads), then `docker compose up -d`. The client routes go to the Gateway on `http://localhost:8080`;
 the rest (`/health/ready`, `/status`, `/logs`, `/metrics`, `/api/v1/dev/slow`) only to an instance
@@ -94,7 +95,7 @@ docker run -d --name player-service --network student-id-net \
   -e POSTGRES_HOST=<postgres-host> \
   -e POSTGRES_PASSWORD=<password> \
   -e JWT_SECRET=<the Gateway's JWT_SECRET> \
-  dimapos/player-service:4.0.0
+  dimapos/player-service:5.0.0
 ```
 
 Every other variable has a working default.
@@ -125,11 +126,13 @@ safe to leave enabled.
 | `JWT_TTL` | `1h` | no | Lifetime of a login token, reported as `expires_in` |
 | `HTTP_REQUEST_TIMEOUT` | `5s` | no | Task timeout; reached = `408 REQUEST_TIMEOUT`. Must stay below the Gateway's `10s` and below `HTTP_WRITE_TIMEOUT` |
 | `MAX_CONCURRENT_TASKS` | `50` | no | Concurrent task limit; reached = `429 TOO_MANY_REQUESTS` with `Retry-After: 1` |
-| `POSTGRES_HOST` | `localhost` | no | |
+| `POSTGRES_HOST` | `localhost` | no | One host, or from `5.0.0` a comma list (`player-postgres-1,player-postgres-2,player-postgres-3`), each host on `POSTGRES_PORT` - see [§14](#14-replicated-database-failover-and-the-etl-lab-5) |
 | `POSTGRES_PORT` | `5432` | no | |
 | `POSTGRES_USER` | `player_user` | no | |
 | `POSTGRES_DB` | `player_db` | no | |
 | `POSTGRES_SSLMODE` | `disable` | no | |
+| `POSTGRES_TARGET_SESSION_ATTRS` | `read-write` | no | `5.0.0`. pgx keeps the first host that is the primary, so no write reaches a standby; empty leaves the parameter out |
+| `POSTGRES_CONNECT_TIMEOUT` | `2s` | no | `5.0.0`. Dial timeout per host, at least `1s`: a stopped primary costs at most this before the next host is tried |
 | `DB_AUTO_MIGRATE` | `true` | no | Applies the schema at boot, so a fresh database needs no migration step |
 | `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` / `DB_CONN_MAX_LIFETIME` | `25` / `5` / `30m` | no | Pool |
 | `APP_PORT` | `8080` | no | Listen port inside the container |
@@ -175,7 +178,8 @@ the Gateway answers `404 NOT_FOUND` and the route is reached on an instance dire
 
 **`POST /api/v1/auth/login`.** `{ "username", "password" }` →
 `200 { "access_token", "token_type": "Bearer", "expires_in" }`. The token is HS256 with
-`JWT_SECRET`; claims `sub` = `player_id`, `iat`, `exp` (`expires_in` seconds later).
+`JWT_SECRET`; claims `sub` = `player_id`, `iat`, `exp` (`expires_in` seconds later) and, from
+`5.0.0`, `jti`, a new UUID per token, which the Gateway uses to revoke one token on logout.
 `401 INVALID_CREDENTIALS` for an unknown username and for a wrong password alike, and both cost the
 same bcrypt work, so neither the answer nor its timing reveals which usernames exist. A missing
 field is `400 VALIDATION_ERROR`.
@@ -251,7 +255,8 @@ Request and response bodies are `snake_case`. `items` is always an array, never 
 | `ALREADY_FRIENDS` | 409 | In either direction - it is one friendship |
 | `CANNOT_FRIEND_SELF` | 422 | `friend_id` equals the player in the path |
 | `TOO_MANY_REQUESTS` | 429 | `MAX_CONCURRENT_TASKS` requests are in progress; nothing was done. Comes with `Retry-After` |
-| `INTERNAL_ERROR` | 500 | Anything unexpected, including the database failing. The detail is logged with the request id, never returned |
+| `DEPENDENCY_UNAVAILABLE` | 500 | `5.0.0`. No database primary answers (a failover in progress); `details.dependency: "postgres"`. The broker's breakers do not count it - see [§14](#14-replicated-database-failover-and-the-etl-lab-5) |
+| `INTERNAL_ERROR` | 500 | Anything unexpected. The detail is logged with the request id, never returned |
 | `SERVICE_TOKEN_REQUIRED` / `INVALID_SERVICE_TOKEN` | 403 / 401 | `GET /logs` only: no `X-Service-Token` / a wrong one |
 | `LOGS_UNAVAILABLE` | 503 | `GET /logs` only: no log file |
 
@@ -342,8 +347,9 @@ a level of 0 would distort the average Session divides by.
 `3.0.0` implemented the whole Lab 3 contract slice of this service: login, `GET /players/{player_id}`,
 `POST /events`, `X-Player-Id`, the shared error codes, the task timeout and the concurrent task
 limit. `4.0.0` implements the Lab 4 contract (#105): the broker subscription, the queue
-`requests.player`, `GET /logs` and `GET /metrics`. Item 9 is where it differs from the README; the
-rest is beyond the contract rather than against it:
+`requests.player`, `GET /logs` and `GET /metrics`. `5.0.0` implements the Lab 5 slice (#163, #171):
+`jti`, the multi-host connection, `DEPENDENCY_UNAVAILABLE`, the ETL grants. Items 9 and 10 are where
+it differs from the README; the rest is beyond the contract rather than against it:
 
 1. **Ten endpoints beyond the contract** (register, list, profile, edit, delete, shifts,
    disciplinary actions, friends) and `GET /dev/slow`.
@@ -391,6 +397,12 @@ rest is beyond the contract rather than against it:
    until then it is recorded here and in the README.
    *Who this affects:* anyone filtering the logs in Grafana by `event`, where Player's requests do not
    appear under `request.received` / `request.replied`.
+
+10. **Not yet wired (Lab 5): one database node in the compose.** `5.0.0` connects to three hosts, but
+   the CPR `docker-compose.yml` still runs one `player-postgres` until the replication pattern (#164)
+   is merged; the conversion to `player-postgres-1..3` needs new volumes (the seed runs again). Until
+   then there is no failover to demonstrate.
+   *Who this affects:* the Lab 5 demo of grade 5; nothing over the API.
 
 ---
 
@@ -709,3 +721,63 @@ curl -s "http://<instance>:8080/logs?since=2026-11-07T17:00:00Z&level=warn" -H "
 | `go_*`, `process_*` | the Go runtime and process collectors |
 
 A method outside the standard ones is `OTHER`, so no caller can grow the number of series.
+
+---
+
+## 14. Replicated database, failover and the ETL (Lab 5)
+
+From `5.0.0` (#171; the pattern is `deployments/postgres-ha/`, #164).
+
+### The connection
+
+`player_db` is a primary and two hot standbys (`player-postgres-1` starts as the primary, `-2` and
+`-3` as synchronous-capable standbys). With
+`POSTGRES_HOST=player-postgres-1,player-postgres-2,player-postgres-3` the service builds
+
+```text
+postgres://player_user:<pw>@player-postgres-1:5432,player-postgres-2:5432,player-postgres-3:5432/player_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=2
+```
+
+pgx tries the hosts in order and keeps the first that is writable, so `AutoMigrate`, the seed and every
+write reach the primary only; no proxy is involved. The startup line (`startup`) logs `db_hosts` and
+`db_target_session_attrs`, never the DSN. A single host still works (a plain local run, CI).
+
+### During a failover
+
+- A stopped primary breaks the pool's connections; the next ones go to the standby the failover agent
+  promoted. No restart, and the service never writes to the old primary when it comes back: it
+  rejoins as a standby, and a fenced one is read-only.
+- While no primary answers, a request gets `500 DEPENDENCY_UNAVAILABLE` with
+  `details.dependency: "postgres"`, logged `db.unavailable` at `warn`. The errors that mean this: a
+  dial failure on every host, a broken connection, `25006` (read-only host), `57P01`-`57P03`, class
+  `08`. Not `INTERNAL_ERROR`: the broker's breakers count every `5xx` except `DEPENDENCY_UNAVAILABLE`,
+  so a failover does not keep the service out after it is over. A request past its task timeout is
+  still `408`.
+- `/health/ready` and `/status` answer `503 degraded` while no primary answers, so Service Discovery
+  may list both copies down for 20 to 40 s around a failover; the broker still routes to them.
+- `session.ended` is acked only after its transaction commits (`RETRY` on a database error), so an
+  event that hits the failover is redelivered by the broker. With synchronous replication to one
+  standby, a commit the old primary acknowledged is on the promoted standby: the XP of an ended shift
+  is not lost.
+
+### What the ETL reads
+
+The migrations, after `AutoMigrate` and under the same startup lock, grant the warehouse ETL's role
+`etl_reader` (created by the pattern with `ETL_READER_PASSWORD`; created here `NOLOGIN` when missing,
+so a database without the pattern still migrates):
+
+| Table | Grant | Watermark |
+| --- | --- | --- |
+| `players` | `SELECT (id, username, display_name, bio, avatar_url, xp, completed_shifts, created_at, updated_at)` - never `email` or `password_hash` | `updated_at` |
+| `shifts` | `SELECT` | `created_at` |
+| `disciplinary_actions` | `SELECT` | `created_at` |
+| tables later migrations create | `ALTER DEFAULT PRIVILEGES ... GRANT SELECT` | - |
+
+`friendships` and `processed_events` are not readable. A deleted player is a hard delete (with
+cascades), so the warehouse keeps the last copy it read.
+
+### `jti`
+
+Login tokens carry `jti` (see [§5.1](#51-contract-endpoints)). Tokens issued by `4.0.0` have none: the
+Gateway accepts them until they expire (`JWT_TTL`, 1 h) but cannot revoke them. Login, registration and
+the friends flows are otherwise unchanged by Lab 5.

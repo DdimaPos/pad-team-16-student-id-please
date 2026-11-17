@@ -19,7 +19,9 @@ x-pg-node: &pg_node
   entrypoint: ["bash", "/ha/node.sh"]
   stop_grace_period: 30s
   healthcheck:
-    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d app_db"]
+    # Healthy as a primary and as a standby (depends_on must not wait for a role); the output, kept by Docker in
+    # `docker inspect`, names the role.
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U app -d app_db && psql -h 127.0.0.1 -U app -d app_db -XAtc \"select case when pg_is_in_recovery() then 'standby' else 'primary' end\""]
     interval: 2s
     timeout: 3s
     retries: 30
@@ -53,7 +55,7 @@ services:
       - state:/ha-state:ro
 
   pg-failover:
-    image: ${PGHA_TEST_IMAGE:-postgres:17-alpine}
+    image: postgres:17-alpine   # the agent's psql 17 serves PostgreSQL 16 clusters too
     restart: unless-stopped
     entrypoint: ["bash", "/ha/pg-failover.sh"]
     environment:

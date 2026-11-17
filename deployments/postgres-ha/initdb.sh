@@ -5,6 +5,7 @@
 #   replicator   REPLICATION, for pg_basebackup and streaming (REPLICATION_PASSWORD)
 #   failover     SUPERUSER, for the failover agent: pg_promote(), ALTER SYSTEM, pg_rewind (FAILOVER_PASSWORD)
 #   etl_reader   LOGIN with no table rights; each service's own migrations grant what the ETL may read (#165)
+# and stores wal_log_hints = on in the data directory (see the comment at the end).
 # Passwords go through psql variables and format(%L), so no quoting of their own is needed.
 set -euo pipefail
 
@@ -16,4 +17,10 @@ SELECT format('CREATE ROLE failover WITH SUPERUSER LOGIN PASSWORD %L', :'fail')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'failover') \gexec
 SELECT format('CREATE ROLE etl_reader WITH LOGIN PASSWORD %L', :'etl')
 WHERE :'etl' <> '' AND NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'etl_reader') \gexec
+-- In the data directory (postgresql.auto.conf, copied to the standbys by pg_basebackup and pg_rewind), not only on
+-- the command line: the crash recovery that pg_rewind runs in single-user mode after an unclean stop reads only the
+-- configuration files. It refuses to rewind without wal_log_hints, and with the default wal_keep_size of 0 its
+-- end-of-recovery checkpoint recycles the WAL that pg_rewind then needs to find where the timelines forked.
+ALTER SYSTEM SET wal_log_hints = on;
+ALTER SYSTEM SET wal_keep_size = '512MB';
 SQL

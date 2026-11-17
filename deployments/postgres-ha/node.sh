@@ -27,13 +27,14 @@ STATE_FILE=/ha-state/$PGHA_CLUSTER/primary
 FIRST_NODE=${PGHA_NODES%% *}
 
 # Settings every node runs with, primary or standby. hba_file: the pattern's own client authentication (with the
-# replication line); wal_log_hints: pg_rewind needs it from the first start; hot_standby_feedback: long reads of the
+# replication line); wal_log_hints: pg_rewind needs it from the first start (initdb.sh also stores it with ALTER
+# SYSTEM, so the crash recovery pg_rewind runs in single-user mode after an unclean stop sees it too); hot_standby_feedback: long reads of the
 # ETL on a standby are not cancelled by recovery. synchronous_standby_names is managed at run time by the agent
 # (ALTER SYSTEM), never here: a primary with no standby yet would otherwise block every write, initdb's included.
 SETTINGS=(
   -c hba_file=/ha/pg_hba.conf
   -c wal_log_hints=on
-  -c wal_keep_size=256MB
+  -c wal_keep_size=512MB
   -c max_wal_senders=10
   -c hot_standby_feedback=on
 )
@@ -105,8 +106,8 @@ if ! has_data; then
   clone_from "$current"
 else
   log info node.rewinding "rewinding onto the primary's timeline (a no-op when nothing diverged)" primary "$current"
-  if ! as_postgres pg_rewind -D "$PGDATA" \
-      --source-server="host=$current port=5432 user=failover password=$FAILOVER_PASSWORD dbname=postgres"; then
+  if ! PGPASSWORD=$FAILOVER_PASSWORD as_postgres pg_rewind -D "$PGDATA" \
+      --source-server="host=$current port=5432 user=failover dbname=postgres"; then
     log warn node.rewind_failed "pg_rewind failed; cloning the data directory again" primary "$current"
     clone_from "$current"
   fi

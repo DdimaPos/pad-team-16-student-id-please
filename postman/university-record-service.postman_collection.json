@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "University Record Service",
-    "description": "University Record through the Gateway where the Gateway serves it, otherwise on the instance itself. base_url is {{gateway}}/api/v1/university-record: since the Gateway's 4.0.0 (#110) it serves only the player route GET /records/{category} and the public GET /health of this service, and answers 404 on every other one. A player's request names the player in X-Player-Id, which the collection pre-request script turns into a signed Bearer JWT on a Gateway request. Run the 'scenario' folder top to bottom.\n\nLAB 4 (4.0.0). applicant.initialized, session.started and session.ended arrive from the Message Broker (topics events.<event_type>), not on POST /events, which is removed; this service's own applicant.initialized is published to events.applicant.initialized. Postman cannot send the broker's gRPC calls: the events of the scenario have to be published to the broker with the full envelope first (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711), and the session's scopes are set with the session-service mock (POST /admin/sessions/{id}/scopes).\n\nDIRECT CALLS. Every request whose route is not a Gateway route goes to one instance directly through {{university_record_direct_url}}, with the service's own path (/api/v1/..., /health/ready, /status, /logs, /metrics; no /university-record prefix): /health/ready, /status, /logs, /metrics, the scenario's step 4 (POST /admin/sessions/{id}/scopes) and step 9 (GET /applicants/{id}/records), POST /events, POST /applicants/next, every /admin/* request and the player-id-on-a-service-only-route edge case. The contract routes validate no token; GET /logs and, from 4.0.1 (#151), /admin/* and /dev/* check X-Service-Token themselves, so every direct request to them sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong; the auth edge cases have both on an admin route). Through the broker /admin/* and /dev/* cannot be reached, since the broker never passes the token on. A direct service call on a contract route carries no X-Service-Token and no X-Player-Id, and a direct request that plays a player sends X-Player-Id as it is (the pre-request script signs no JWT and changes no header of a direct request). Direct and Gateway requests must reach the same database: in the team stack forward an instance's port (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
+    "description": "University Record through the Gateway where the Gateway serves it, otherwise on the instance itself. base_url is {{gateway}}/api/v1/university-record: since the Gateway's 4.0.0 (#110) it serves only the player route GET /records/{category} and the public GET /health of this service, and answers 404 on every other one. A player's request names the player in X-Player-Id, which the collection pre-request script turns into a signed Bearer JWT on a Gateway request. Run the 'scenario' folder top to bottom.\n\nLAB 4 (4.0.0). applicant.initialized and session.ended (and session.started until 4.0.1) arrive from the Message Broker (topics events.<event_type>), not on POST /events, which is removed; this service's own applicant.initialized is published to events.applicant.initialized. Postman cannot send the broker's gRPC calls: the events of the scenario have to be published to the broker with the full envelope first (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).\n\nLAB 5 (5.0.0, #176). session.started is retired: the juniors' scopes arrive as the input of the saga step grant-scopes of shift.start, which the broker's coordinator calls (POST /api/v1/saga-steps/grant-scopes and .../compensate, service-only, not Gateway routes). The folder 'Saga step grant-scopes (direct, inside the network)' calls them directly on an instance, and the scenario's step 4a sets its scopes with them. Both read the instance version from GET /status first and skip the saga requests on a 4.x instance (the console says why), where step 4 sets the scopes with the session-service mock (POST /admin/sessions/{id}/scopes) instead.\n\nDIRECT CALLS. Every request whose route is not a Gateway route goes to one instance directly through {{university_record_direct_url}}, with the service's own path (/api/v1/..., /health/ready, /status, /logs, /metrics; no /university-record prefix): /health/ready, /status, /logs, /metrics, the scenario's step 4 (POST /admin/sessions/{id}/scopes) and step 9 (GET /applicants/{id}/records), POST /events, POST /applicants/next, every /admin/* request and the player-id-on-a-service-only-route edge case. The contract routes validate no token; GET /logs and, from 4.0.1 (#151), /admin/* and /dev/* check X-Service-Token themselves, so every direct request to them sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong; the auth edge cases have both on an admin route). Through the broker /admin/* and /dev/* cannot be reached, since the broker never passes the token on. A direct service call on a contract route carries no X-Service-Token and no X-Player-Id, and a direct request that plays a player sends X-Player-Id as it is (the pre-request script signs no JWT and changes no header of a direct request). Direct and Gateway requests must reach the same database: in the team stack forward an instance's port (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -42,6 +42,47 @@
     {
       "key": "player_b_id",
       "value": "c3e5a7b9-2d4f-4b6c-8e0a-1f3b5d7f9a21"
+    },
+    {
+      "key": "university_record_major",
+      "value": "",
+      "description": "Set by the version requests from GET /status; the saga step requests (5.0.0) are skipped below 5"
+    },
+    {
+      "key": "saga_id",
+      "value": ""
+    },
+    {
+      "key": "saga_session_id",
+      "value": ""
+    },
+    {
+      "key": "saga_moderator_id",
+      "value": ""
+    },
+    {
+      "key": "saga_junior_id",
+      "value": ""
+    },
+    {
+      "key": "saga_started_at",
+      "value": ""
+    },
+    {
+      "key": "tombstone_saga_id",
+      "value": ""
+    },
+    {
+      "key": "tombstone_session_id",
+      "value": ""
+    },
+    {
+      "key": "invalid_saga_id",
+      "value": ""
+    },
+    {
+      "key": "scenario_saga_id",
+      "value": ""
     }
   ],
   "event": [
@@ -304,11 +345,49 @@
     },
     {
       "name": "scenario - honest student, identity theft, scopes, session end",
-      "description": "From 4.0.0 the events of this scenario arrive from the Message Broker, which Postman cannot call, so they are not requests here any more. Publish them to the broker with the full envelope (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711) at the missing step numbers: 3 applicant.initialized of the honest FAF student (applicant {{honest_applicant_id}}, actual student_id FAF23117, name Ana Rusu) before step 5; 8 applicant.initialized of an outsider claiming FAF23117 (applicant {{thief_applicant_id}}) before step 9; 10 session.ended of {{session_id}} before step 11. Without them steps 5, 9 and 11 fail their tests. Step 4 sets the scopes with the session-service mock in place of session.started. Steps 4 and 9 are service calls on routes the Gateway's 4.0.0 does not serve (404), so they go to the instance directly ({{university_record_direct_url}}, no X-Player-Id; step 4, an /admin/* route, sends X-Service-Token: {{service_token}} from 4.0.1, step 9 no token); steps 5, 6, 7 and 11 are the player route, through the Gateway with the JWT. Both must reach the same database (forward an instance of the team stack, docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
+      "description": "From 4.0.0 the events of this scenario arrive from the Message Broker, which Postman cannot call, so they are not requests here any more. Publish them to the broker with the full envelope (docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711) at the missing step numbers: 3 applicant.initialized of the honest FAF student (applicant {{honest_applicant_id}}, actual student_id FAF23117, name Ana Rusu) before step 5; 8 applicant.initialized of an outsider claiming FAF23117 (applicant {{thief_applicant_id}}) before step 9; 10 session.ended of {{session_id}} before step 11. Without them steps 5, 9 and 11 fail their tests. Step 0 reads the instance version. On 5.x step 4a sets the scopes with the saga step grant-scopes (session.started is retired) and step 4 is skipped; on 4.x step 4 sets them with the session-service mock and step 4a is skipped. Steps 4 and 9 are service calls on routes the Gateway's 4.0.0 does not serve (404), so they go to the instance directly ({{university_record_direct_url}}, no X-Player-Id; step 4, an /admin/* route, sends X-Service-Token: {{service_token}} from 4.0.1, step 9 no token); steps 5, 6, 7 and 11 are the player route, through the Gateway with the JWT. Both must reach the same database (forward an instance of the team stack, docs/UNIVERSITY_RECORD_SERVICE.md, \u00a711).",
       "item": [
+        {
+          "name": "0. read the instance version (GET /status - called directly)",
+          "description": "Stores the major version of the instance in university_record_major. Below 5, step 4a is skipped and step 4 (the mock) runs; from 5, the other way round.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0. Every saga request reads university_record_major and is skipped on a 4.x instance.",
+                  "let version = '';",
+                  "try { version = String(pm.response.json().version || ''); } catch (e) { version = ''; }",
+                  "const major = parseInt(version.split('.')[0], 10) || 0;",
+                  "pm.collectionVariables.set('university_record_major', String(major));",
+                  "pm.test('GET /status answers with the instance version', () => pm.expect(version).to.match(/^\\d+\\.\\d+\\.\\d+/));",
+                  "console.log('university-record ' + version + (major >= 5 ? ': the saga step requests run' : ': the saga step requests (5.0.0) are skipped'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/status"
+          }
+        },
         {
           "name": "4. scopes - A gets enrollment+courses, B gets email-groups+fcim-logs (session-service mock, in place of session.started - called directly)",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// From 5.0.0 the scopes come from the saga step (4a); this session-service mock then stands in for nothing and is skipped.",
+                  "if (parseInt(pm.collectionVariables.get('university_record_major') || '0', 10) >= 5) {",
+                  "  console.log('skipped: the instance is 5.x, step 4a sets the scopes with the saga step grant-scopes');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
@@ -335,6 +414,59 @@
             "body": {
               "mode": "raw",
               "raw": "{ \"scopes\": [\n  { \"player_id\": \"{{player_a_id}}\", \"category\": \"enrollment\" },\n  { \"player_id\": \"{{player_a_id}}\", \"category\": \"courses\" },\n  { \"player_id\": \"{{player_b_id}}\", \"category\": \"email-groups\" },\n  { \"player_id\": \"{{player_b_id}}\", \"category\": \"fcim-logs\" }\n] }"
+            }
+          }
+        },
+        {
+          "name": "4a. scopes - the same, by the saga step grant-scopes (5.x, in place of the mock - called directly)",
+          "description": "From 5.0.0 the scopes arrive as the input of the saga step grant-scopes (session.started is retired). Called directly as the broker's coordinator would (no X-Player-Id, no token needed). Skipped on a 4.x instance, where step 4 (the session-service mock) sets them. Run again after step 10 the session has ended here: the step answers 409 SESSION_ENDED, and steps 5 to 7 then answer SESSION_ENDED too.",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('scenario_saga_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('saga_started_at', new Date().toISOString());",
+                  "if (!pm.collectionVariables.get('saga_moderator_id')) pm.collectionVariables.set('saga_moderator_id', pm.variables.replaceIn('{{$guid}}'));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (pm.response.code === 409 && body.error && body.error.code === 'SESSION_ENDED') {",
+                  "  console.log('the session ' + pm.variables.get('session_id') + ' has ended here (a run after step 10): the step is refused, the session is not reopened');",
+                  "  pm.test('409 SESSION_ENDED - the session ended in an earlier run', () => pm.expect(body.error.details.session_id).to.eql(pm.variables.get('session_id')));",
+                  "} else {",
+                  "  pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "  pm.test('state done', () => pm.expect(body.state).to.eql('done'));",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{scenario_saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{player_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{player_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
             }
           }
         },
@@ -823,6 +955,36 @@
               }
             ]
           }
+        },
+        {
+          "name": "saga step through the Gateway (404 NOT_FOUND - not a Gateway route)",
+          "description": "The saga step routes (5.0.0) are service-only and not routed by the Gateway: 404 before any credential is checked, on 4.x and 5.x alike.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{base_url}}/saga-steps/grant-scopes",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}"
+            }
+          }
         }
       ]
     },
@@ -934,6 +1096,613 @@
             "body": {
               "mode": "raw",
               "raw": "{ \"scopes\": [ { \"player_id\": \"{{player_a_id}}\", \"category\": \"enrollment\" } ] }"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Saga step grant-scopes (direct, inside the network)",
+      "description": "LAB 5 (5.0.0, #176). Step 2 of the saga shift.start: POST /api/v1/saga-steps/grant-scopes stores each junior's record_scopes for the session, POST /api/v1/saga-steps/grant-scopes/compensate deletes the session and its scopes (docs/UNIVERSITY_RECORD_SERVICE.md, section 13). The broker's saga coordinator calls them as service calls on requests.university-record; the Gateway does not route them (404, see the auth edge cases). Here they go to one instance directly ({{university_record_direct_url}}) as the coordinator would send them: no X-Player-Id. The service checks no token on them; the first request sends X-Service-Token anyway to show it is ignored. Idempotent by (saga_id, step); the pre-request scripts make fresh UUIDs, so the folder can run again. Request 0 reads the instance version from GET /status: on a 4.x instance (no saga routes) every other request is skipped, not failed, and the console says why. Run the folder top to bottom.",
+      "item": [
+        {
+          "name": "0. read the instance version (GET /status - called directly)",
+          "description": "Stores the major version of the instance in university_record_major. Every other request of this folder is skipped when it is below 5.",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0. Every saga request reads university_record_major and is skipped on a 4.x instance.",
+                  "let version = '';",
+                  "try { version = String(pm.response.json().version || ''); } catch (e) { version = ''; }",
+                  "const major = parseInt(version.split('.')[0], 10) || 0;",
+                  "pm.collectionVariables.set('university_record_major', String(major));",
+                  "pm.test('GET /status answers with the instance version', () => pm.expect(version).to.match(/^\\d+\\.\\d+\\.\\d+/));",
+                  "console.log('university-record ' + version + (major >= 5 ? ': the saga step requests run' : ': the saga step requests (5.0.0) are skipped'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/status"
+          }
+        },
+        {
+          "name": "1. step grant-scopes (200 done)",
+          "description": "A new saga: the junior {{saga_junior_id}} gets enrollment and courses for {{saga_session_id}}. X-Service-Token is sent and ignored (the broker drops it; these routes check none).",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// Fresh ids on every run, so the step is new each time (idempotency is by (saga_id, step)).",
+                  "pm.collectionVariables.set('saga_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('saga_session_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('saga_moderator_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('saga_junior_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('saga_started_at', new Date().toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('state done', () => pm.expect(body.state).to.eql('done'));",
+                  "pm.test('names the step and the saga', () => {",
+                  "  pm.expect(body.step).to.eql('grant-scopes');",
+                  "  pm.expect(body.saga_id).to.eql(pm.collectionVariables.get('saga_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "2. the same step again (200 done, idempotent - not redone)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('state done', () => pm.expect(body.state).to.eql('done'));",
+                  "pm.test('names the step and the saga', () => {",
+                  "  pm.expect(body.step).to.eql('grant-scopes');",
+                  "  pm.expect(body.saga_id).to.eql(pm.collectionVariables.get('saga_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "3. the junior reads a granted category (200 - called directly with X-Player-Id)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('a list', () => pm.expect(pm.response.json().items).to.be.an('array'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/api/v1/records/enrollment?session_id={{saga_session_id}}&q=FAF",
+            "header": [
+              {
+                "key": "X-Player-Id",
+                "value": "{{saga_junior_id}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "4. compensate (200 compensated - the session and its scopes are removed)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('state compensated', () => pm.expect(body.state).to.eql('compensated'));",
+                  "pm.test('names the step and the saga', () => {",
+                  "  pm.expect(body.step).to.eql('grant-scopes');",
+                  "  pm.expect(body.saga_id).to.eql(pm.collectionVariables.get('saga_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes/compensate",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "5. the junior reads after the compensation (403 CATEGORY_NOT_ASSIGNED - as before the shift)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('CATEGORY_NOT_ASSIGNED', () => pm.expect(pm.response.json().error.code).to.eql('CATEGORY_NOT_ASSIGNED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{university_record_direct_url}}/api/v1/records/enrollment?session_id={{saga_session_id}}&q=FAF",
+            "header": [
+              {
+                "key": "X-Player-Id",
+                "value": "{{saga_junior_id}}"
+              }
+            ]
+          }
+        },
+        {
+          "name": "6. the step after its compensation (409 SAGA_STEP_COMPENSATED - nothing changed)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('SAGA_STEP_COMPENSATED', () => pm.expect(pm.response.json().error.code).to.eql('SAGA_STEP_COMPENSATED'));",
+                  "pm.test('details name the saga and the step', () => {",
+                  "  const details = pm.response.json().error.details;",
+                  "  pm.expect(details.saga_id).to.eql(pm.collectionVariables.get('saga_id'));",
+                  "  pm.expect(details.step).to.eql('grant-scopes');",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "7. compensate again (200 compensated, idempotent)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('state compensated', () => pm.expect(body.state).to.eql('compensated'));",
+                  "pm.test('names the step and the saga', () => {",
+                  "  pm.expect(body.step).to.eql('grant-scopes');",
+                  "  pm.expect(body.saga_id).to.eql(pm.collectionVariables.get('saga_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes/compensate",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "8. compensate a saga whose step was never done (200 compensated - tombstone)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "// A saga whose step was never done here: its compensation records a tombstone.",
+                  "pm.collectionVariables.set('tombstone_saga_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('tombstone_session_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_moderator_id')) pm.collectionVariables.set('saga_moderator_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_junior_id')) pm.collectionVariables.set('saga_junior_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('saga_started_at', new Date().toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test('state compensated', () => pm.expect(body.state).to.eql('compensated'));",
+                  "pm.test('names the step and the saga', () => {",
+                  "  pm.expect(body.step).to.eql('grant-scopes');",
+                  "  pm.expect(body.saga_id).to.eql(pm.collectionVariables.get('tombstone_saga_id'));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes/compensate",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{tombstone_saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{tombstone_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "9. the step of that saga arriving late (409 SAGA_STEP_COMPENSATED - the tombstone)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "pm.test('SAGA_STEP_COMPENSATED', () => pm.expect(pm.response.json().error.code).to.eql('SAGA_STEP_COMPENSATED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{tombstone_saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{tombstone_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "10. invalid body - an unknown record category (400 VALIDATION_ERROR, details.field)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('invalid_saga_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_session_id')) pm.collectionVariables.set('saga_session_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_moderator_id')) pm.collectionVariables.set('saga_moderator_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_junior_id')) pm.collectionVariables.set('saga_junior_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('saga_started_at', new Date().toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('details.field names the field', () => pm.expect(pm.response.json().error.details.field).to.eql('payload.junior_moderators[0].record_scopes'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{invalid_saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"grades\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "11. invalid body - another saga_type (400 VALIDATION_ERROR, details.field)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('invalid_saga_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_session_id')) pm.collectionVariables.set('saga_session_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_moderator_id')) pm.collectionVariables.set('saga_moderator_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_junior_id')) pm.collectionVariables.set('saga_junior_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('saga_started_at', new Date().toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));",
+                  "pm.test('details.field is saga_type', () => pm.expect(pm.response.json().error.details.field).to.eql('saga_type'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{invalid_saga_id}}\",\n  \"saga_type\": \"shift.end\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
+            }
+          }
+        },
+        {
+          "name": "12. with X-Player-Id (403 SERVICE_TOKEN_REQUIRED - a player never calls it)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The saga step routes exist from 5.0.0 (#176): on a 4.x instance this request is skipped, not failed.",
+                  "const major = parseInt(pm.collectionVariables.get('university_record_major') || '0', 10);",
+                  "if (!(major >= 5)) {",
+                  "  console.log('skipped: the instance is ' + (major ? major + '.x' : 'of an unknown version (run the version request first)') + ', it has no saga step routes (5.0.0)');",
+                  "  pm.execution.skipRequest();",
+                  "}",
+                  "pm.collectionVariables.set('invalid_saga_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_session_id')) pm.collectionVariables.set('saga_session_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_moderator_id')) pm.collectionVariables.set('saga_moderator_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "if (!pm.collectionVariables.get('saga_junior_id')) pm.collectionVariables.set('saga_junior_id', pm.variables.replaceIn('{{$guid}}'));",
+                  "pm.collectionVariables.set('saga_started_at', new Date().toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{university_record_direct_url}}/api/v1/saga-steps/grant-scopes",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "{{saga_junior_id}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{invalid_saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"grant-scopes\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{saga_moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{saga_junior_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 1,\n    \"started_at\": \"{{saga_started_at}}\"\n  }\n}"
             }
           }
         }

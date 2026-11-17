@@ -2417,10 +2417,11 @@ CPR and runs on the official images, bind-mounted read-only, like the `dms-ws-pr
 
 - **PostgreSQL** ([`deployments/postgres-ha/`](deployments/postgres-ha/README.md)): `<db>-1` starts as the primary,
   `<db>-2` and `<db>-3` stream from it as hot standbys. The `pg-failover` container watches every cluster listed in its
-  `PGHA_CLUSTERS`: 3 failed checks 2 s apart after a primary stops, it promotes the most advanced standby and
+  `PGHA_CLUSTERS`, one loop per cluster: 6 s without an answer from a primary, it promotes the most advanced standby and
   re-points the other; a commit waits for one standby while one streams, so a failover loses nothing that was
   acknowledged. An old primary that comes back reads the new leader from the shared `pg_ha_state` volume and rejoins
-  as a standby, never as a second primary. Measured: writes work again about 6.3 s after `docker stop` of a primary.
+  as a standby, never as a second primary (`docker compose exec pg-failover bash /ha/roles.sh` shows who is who).
+  Measured: writes work again about 6 s after a primary stops (`docker stop` or `docker kill`).
 - **MongoDB** ([`deployments/mongo-rs/`](deployments/mongo-rs/README.md)): a replica set `rs0` of `<db>-1..3` with a
   shared key file, initiated once by a `<db>-init` container, which also creates `etl_reader`; MongoDB's own election
   (5 s timeout) is the failover. Measured: writes work again about 1.6 s after `docker stop` of the primary.

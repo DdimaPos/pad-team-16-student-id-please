@@ -674,8 +674,8 @@ services:
       retries: 12
 
   # Failover agent of the replicated PostgreSQL databases (Lab 5, #164; deployments/postgres-ha/README.md). One
-  # container for every cluster listed in PGHA_CLUSTERS (the nodes of cluster C are C-1, C-2 and C-3): 3 failed checks
-  # (2 s apart) after a primary stops it promotes the most advanced standby and re-points the other one; it keeps
+  # container for every cluster listed in PGHA_CLUSTERS (the nodes of cluster C are C-1, C-2 and C-3), one loop each:
+  # 6 s without an answer from a primary, it promotes the most advanced standby and re-points the other one; it keeps
   # synchronous replication on while a standby streams, and fences an old primary that wakes up. The leader of each
   # cluster lives in the pg_ha_state volume, which every node reads before it starts. Each owner adds their cluster to
   # PGHA_CLUSTERS when they convert their database (#171 to #178); until then the agent idles. No port.

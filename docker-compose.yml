@@ -431,7 +431,7 @@ services:
       - student-id-net
 
   session-service:
-    image: dimapos/server-moderation-session-service:4.0.0
+    image: dimapos/server-moderation-session-service:5.0.0
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
@@ -445,6 +445,9 @@ services:
         condition: service_healthy
     environment:
       APP_ENV: docker
+      # Lab 5 (5.0.0): POSTGRES_HOST takes the primary and its standbys as a comma list
+      # (session-postgres-1,session-postgres-2,session-postgres-3, with target_session_attrs=read-write);
+      # the block moves to session-postgres-1..3 once the replication pattern (#164) is merged.
       POSTGRES_HOST: session-postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: ${SESSION_POSTGRES_USER:-session_user}

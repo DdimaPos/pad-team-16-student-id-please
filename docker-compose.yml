@@ -368,7 +368,7 @@ services:
       - student-id-net
 
   player-service:
-    image: dimapos/player-service:4.0.0
+    image: dimapos/player-service:5.0.0
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
@@ -387,6 +387,9 @@ services:
       JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET}
       HTTP_REQUEST_TIMEOUT: ${PLAYER_HTTP_REQUEST_TIMEOUT:-5s}
       MAX_CONCURRENT_TASKS: ${PLAYER_MAX_CONCURRENT_TASKS:-50}
+      # Lab 5 (5.0.0): POSTGRES_HOST takes the primary and its standbys as a comma list
+      # (player-postgres-1,player-postgres-2,player-postgres-3, with target_session_attrs=read-write);
+      # the block moves to player-postgres-1..3 once the replication pattern (#164) is merged.
       POSTGRES_HOST: player-postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: ${PLAYER_POSTGRES_USER:-player_user}

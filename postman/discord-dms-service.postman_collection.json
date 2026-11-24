@@ -3,7 +3,7 @@
     "name": "Discord DMs Service",
     "_postman_id": "1f8c3a2d-7b4e-4c5f-9a6d-2e3f4a5b6c7d",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Discord DMs Service. The player routes go through the Gateway: set base_url to the Gateway (http://localhost:8080); they carry the service prefix /api/v1/discord-dms, and the Gateway hands them to the Message Broker (Lab 4). The routes that are not Gateway routes (/health/ready, /status, /metrics, /logs, /api/v1/admin/*, /api/v1/dev/*) go to one copy directly through service_url, with service_token on /logs, /admin and /dev. The Setup folder applies session.started through POST /api/v1/dev/events (DEV_ENDPOINTS), the handler a broker delivery goes through, so every run gets a fresh session. The WebSocket itself is opened outside Postman: folder 3 prints the ws_url to connect to directly."
+    "description": "Discord DMs Service. The player routes go through the Gateway: set base_url to the Gateway (http://localhost:8080); they carry the service prefix /api/v1/discord-dms, and the Gateway hands them to the Message Broker (Lab 4). The routes that are not Gateway routes (/health/ready, /status, /metrics, /logs, /api/v1/admin/*, /api/v1/dev/*) go to one copy directly through service_url, with service_token on /logs, /admin and /dev. The Setup folder applies session.started through POST /api/v1/dev/events (DEV_ENDPOINTS), the handler a broker delivery goes through, so every run gets a fresh session. The WebSocket itself is opened outside Postman: folder 3 prints the ws_url to connect to directly. Folder 9 (Lab 5) calls the saga step create-channels and its compensation directly on one instance at service_url, as the broker does (service-only routes): run it inside student-id-net with service_url set to one instance, e.g. --env-var service_url=http://<instance-ip>:8096."
   },
   "variable": [
     {
@@ -69,6 +69,14 @@
       "key": "service_url",
       "value": "http://localhost:8096",
       "description": "The REST port of one copy, reached directly like Service Discovery does (port 8096, never published: run the request from inside student-id-net, http://discord-dms-service:8096, or forward a host port to one copy)"
+    },
+    {
+      "key": "saga_id",
+      "value": ""
+    },
+    {
+      "key": "saga_session_id",
+      "value": ""
     }
   ],
   "item": [
@@ -1792,6 +1800,547 @@
             "header": [],
             "url": "{{service_url}}/health/ready"
           }
+        }
+      ]
+    },
+    {
+      "name": "9. Lab 5: the saga step create-channels (direct, service-only)",
+      "description": "The step create-channels of the saga shift.start and its compensation (#168 coordinates them through the broker; here they are called directly on one instance at service_url, as the broker's request would arrive: no X-Player-Id). Idempotent by (saga_id, step); a step after its compensation answers 409 SAGA_STEP_COMPENSATED; the failure switch makes the next step answer 500 once, on whichever copy gets it.",
+      "item": [
+        {
+          "name": "step: create the session's channels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"saga_id\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"saga_session_id\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "pm.test(\"done, for this saga\", () => { pm.expect(r.state).to.eql(\"done\"); pm.expect(r.saga_id).to.eql(pm.collectionVariables.get(\"saga_id\")); pm.expect(r.step).to.eql(\"create-channels\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the same step again changes nothing",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"done\", () => pm.expect(pm.response.json().state).to.eql(\"done\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the moderator sees the session's four channels (Gateway)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/sessions/{{saga_session_id}}/channels",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "const channels = body.items || body.channels || body;",
+                  "pm.test(\"four channels, created once\", () => pm.expect(channels.length).to.eql(4));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a request that names a player is refused",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}",
+                "description": "the pre-request script would turn this into a JWT; it is kept as a header here on purpose"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The collection's pre-request script turned X-Player-Id into a JWT for the Gateway; this request goes to the",
+                  "// instance directly, so put the raw header back, as a player's request through the Gateway would carry it.",
+                  "pm.request.headers.remove(\"Authorization\");",
+                  "pm.request.headers.upsert({ key: \"X-Player-Id\", value: pm.collectionVariables.get(\"moderator_id\") });"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 403\", () => pm.response.to.have.status(403));",
+                  "pm.test(\"SERVICE_TOKEN_REQUIRED\", () => pm.expect(pm.response.json().error.code).to.eql(\"SERVICE_TOKEN_REQUIRED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a step without its payload is malformed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"VALIDATION_ERROR\", () => pm.expect(pm.response.json().error.code).to.eql(\"VALIDATION_ERROR\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "compensation: delete the saga's channels",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels/compensate",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"compensated\", () => pm.expect(pm.response.json().state).to.eql(\"compensated\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "after the compensation the session has no channel (Gateway)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "{{moderator_id}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/sessions/{{saga_session_id}}/channels",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The session document is deleted with its channels, so the moderator is no longer a member of it: 403 (as for any",
+                  "// session the player is not in), 404, or an empty list.",
+                  "pm.test(\"no channel left\", () => {",
+                  "  if (pm.response.code === 403 || pm.response.code === 404) return;",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "  const body = pm.response.json();",
+                  "  pm.expect((body.items || body.channels || body).length).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "a step that comes after its own compensation is refused",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 409\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"SAGA_STEP_COMPENSATED\", () => pm.expect(pm.response.json().error.code).to.eql(\"SAGA_STEP_COMPENSATED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "compensating a step that never ran succeeds",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels/compensate",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{$guid}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"compensated\", () => pm.expect(pm.response.json().state).to.eql(\"compensated\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the failure switch needs the service token",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{service_url}}/api/v1/dev/saga-steps/fail-next",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 403\", () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "arm the failure switch",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/dev/saga-steps/fail-next",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the next step fails once, with nothing changed",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"saga_id\", pm.variables.replaceIn(\"{{$guid}}\"));",
+                  "pm.collectionVariables.set(\"saga_session_id\", pm.variables.replaceIn(\"{{$guid}}\"));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 500\", () => pm.response.to.have.status(500));",
+                  "const e = pm.response.json().error;",
+                  "pm.test(\"INTERNAL_ERROR from the failure switch\", () => { pm.expect(e.code).to.eql(\"INTERNAL_ERROR\"); pm.expect(e.details.failure_switch).to.eql(true); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the same step again succeeds: the switch fired once",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"done\", () => pm.expect(pm.response.json().state).to.eql(\"done\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "clean up: compensate it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{service_url}}/api/v1/saga-steps/create-channels/compensate",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the Gateway does not route the step",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/saga-steps/create-channels",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 404\", () => pm.response.to.have.status(404));"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

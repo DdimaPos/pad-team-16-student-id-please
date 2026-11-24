@@ -448,7 +448,7 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:4.0.0
+    image: dmracovit/discord-dms-service:5.0.0
     restart: unless-stopped
     # A lookup of a stopped replica set member fails within 1 s (README "Database replication", Docker Desktop for Windows).
     dns_opt: ["timeout:1", "attempts:1"]
@@ -470,6 +470,8 @@ services:
       MONGODB_URI: "mongodb://${DMS_MONGO_USER:-dms_user}:${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}@dms-mongo-1:27017,dms-mongo-2:27017,dms-mongo-3:27017/dms_db?authSource=admin&replicaSet=rs0&retryWrites=true"
       # Required with several copies: a message stored by one copy reaches the players connected to the others.
       REDIS_URL: redis://dms-redis:6379/0
+      # /api/v1/dev/* with X-Service-Token; from 5.0.0 also the failure switch of the demo,
+      # POST /api/v1/dev/saga-steps/fail-next (the next create-channels answers 500 once, so the saga compensates).
       DEV_ENDPOINTS: ${DMS_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
       # The address clients reach port 8086 at: the base of the ws_url a ticket comes with. The chat is
@@ -481,7 +483,9 @@ services:
       # The stack's one X-Service-Token: the metadata of the broker stream; checked here on /logs, /admin and /dev.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       # Lab 4 (README "Message Broker"): every copy's stream brings the Gateway's requests (requests.discord-dms) and
-      # the events of events.session.started and events.session.ended. The chat path is unchanged.
+      # the events of events.session.ended. Lab 5 (5.0.0): session.started is retired; the session's channels are
+      # created by the saga step create-channels of shift.start, which the broker's coordinator sends on
+      # requests.discord-dms (POST /api/v1/saga-steps/create-channels and .../compensate). The chat path is unchanged.
       MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
     networks:
       - student-id-net

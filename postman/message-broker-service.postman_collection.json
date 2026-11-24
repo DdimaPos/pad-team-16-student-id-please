@@ -2,11 +2,12 @@
   "info": {
     "name": "Message Broker Service",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "The Message Broker 4.0.0 (Lab 4), its HTTP side on port 8070: the probes, the topics and dead letter listings (X-Service-Token), GET /logs (#112) and GET /metrics (#126). docs/MESSAGE_BROKER.md is the reference. On a new broker both listings are empty. Set base_url and service_token (the placeholder of .env.example) for your stack.\n\nThe gRPC API on port 8071 (Publish, Subscribe, Ack, Request, Reply, ListTopics, ListDeadLetters) is not in this collection, which holds HTTP requests only. It is called with scripts/smoke.py from the root of the broker's repository, with SERVICE_TOKEN in the environment and --broker host:port (default 127.0.0.1:8071):\n\n  python -m scripts.smoke subscribe --service player --instance player-1 --topic events.session.ended\n  python -m scripts.smoke publish --topic events.session.ended --event-id e1\n  python -m scripts.smoke topics\n  python -m scripts.smoke request --service player --method GET --path /api/v1/players\n\nTo fill the dead letter listing, run the subscriber alone with --outcome permanent and publish again."
+    "description": "The Message Broker 5.0.0 (Lab 5), its HTTP side on port 8070: the probes, the topics, dead letter and saga listings (X-Service-Token; the sagas from #168), GET /logs (#112) and GET /metrics (#126). docs/MESSAGE_BROKER.md is the reference. On a new broker the dead letter and saga listings are empty. Set base_url and service_token (the placeholder of .env.example) for your stack.\n\nThe gRPC API on port 8071 (Publish, Subscribe, Ack, Request, Reply, ListTopics, ListDeadLetters, StartSaga, GetSaga) is not in this collection, which holds HTTP requests only. It is called with scripts/smoke.py from the root of the broker's repository, with SERVICE_TOKEN in the environment and --broker host:port (default 127.0.0.1:8071):\n\n  python -m scripts.smoke subscribe --service player --instance player-1 --topic events.session.ended\n  python -m scripts.smoke publish --topic events.session.ended --event-id e1\n  python -m scripts.smoke topics\n  python -m scripts.smoke request --service player --method GET --path /api/v1/players\n  python -m scripts.smoke saga-start --payload-file shift.json --wait-seconds 4\n  python -m scripts.smoke saga-get --saga-id <saga_id>\n\nTo fill the dead letter listing, run the subscriber alone with --outcome permanent and publish again."
   },
   "variable": [
     { "key": "base_url", "value": "http://localhost:8070" },
-    { "key": "service_token", "value": "change_me_too" }
+    { "key": "service_token", "value": "change_me_too" },
+    { "key": "saga_id", "value": "" }
   ],
   "item": [
     {
@@ -422,6 +423,242 @@
             "method": "GET",
             "header": [{ "key": "X-Service-Token", "value": "not-the-token" }],
             "url": "{{base_url}}/api/v1/dead-letters"
+          }
+        }
+      ]
+    },
+    {
+      "name": "sagas (#168)",
+      "description": "The saga listings of the broker 5.0.0 (README \"Sagas\", docs/MESSAGE_BROKER.md §12). On a broker that has run no saga yet the listing is empty; `scripts/smoke.py saga-start` starts one.",
+      "item": [
+        {
+          "name": "GET /api/v1/sagas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('a page', () => {",
+                  "  pm.expect(b).to.have.all.keys('items','total');",
+                  "  pm.expect(b.items).to.be.an('array');",
+                  "  pm.expect(b.total).to.be.a('number');",
+                  "});",
+                  "pm.test('at most the default limit of 20', () => pm.expect(b.items.length).to.be.at.most(20));",
+                  "pm.test('newest first', () => { for (let i = 1; i < b.items.length; i++) pm.expect(b.items[i].started_at <= b.items[i - 1].started_at).to.be.true; });",
+                  "b.items.forEach(s => {",
+                  "  pm.test(`${s.saga_id} has its shape`, () => {",
+                  "    pm.expect(s).to.have.all.keys('saga_id','saga_type','state','failed_step','reason','steps','started_at','updated_at');",
+                  "    pm.expect(['running','compensating','completed','compensated','failed']).to.include(s.state);",
+                  "    s.steps.forEach(st => pm.expect(st).to.have.all.keys('step','service','state','attempts','last_status','last_error','started_at','ended_at'));",
+                  "  });",
+                  "});",
+                  "if (b.items.length) pm.collectionVariables.set('saga_id', b.items[0].saga_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/sagas"
+          }
+        },
+        {
+          "name": "GET /api/v1/sagas?state=completed - only completed sagas",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('a page', () => {",
+                  "  pm.expect(b).to.have.all.keys('items','total');",
+                  "  pm.expect(b.items).to.be.an('array');",
+                  "  pm.expect(b.total).to.be.a('number');",
+                  "});",
+                  "pm.test('every item is completed', () => b.items.forEach(s => pm.expect(s.state).to.eql('completed')));",
+                  "pm.test('every step of a completed saga is done', () => b.items.forEach(s => s.steps.forEach(st => pm.expect(st.state).to.eql('done'))));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/sagas?state=completed"
+          }
+        },
+        {
+          "name": "GET /api/v1/sagas/{saga_id} - one saga (the newest, when there is one)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// No saga yet: ask for an id no saga has, not /api/v1/sagas/ (FastAPI redirects that to the listing).",
+                  "if (!pm.collectionVariables.get('saga_id')) pm.variables.set('saga_id', '00000000-0000-4000-8000-000000000000');"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (!pm.collectionVariables.get('saga_id')) { pm.test('no saga yet: 404 SAGA_NOT_FOUND', () => { pm.response.to.have.status(404); pm.expect(pm.response.json().error.code).to.eql('SAGA_NOT_FOUND'); }); return; }",
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const s = pm.response.json();",
+                  "pm.test('the saga asked for', () => pm.expect(s.saga_id).to.eql(pm.collectionVariables.get('saga_id')));",
+                  "pm.test('the four steps of shift.start in order', () => pm.expect(s.steps.map(x => x.step)).to.eql(['shift-begin','grant-scopes','create-channels','shift-confirm']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/sagas/{{saga_id}}"
+          }
+        },
+        {
+          "name": "GET /api/v1/sagas/{unknown} - 404 SAGA_NOT_FOUND",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('404', () => pm.response.to.have.status(404));",
+                  "pm.test('SAGA_NOT_FOUND in the error envelope', () => pm.expect(pm.response.json().error.code).to.eql('SAGA_NOT_FOUND'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/sagas/00000000-0000-4000-8000-000000000000"
+          }
+        },
+        {
+          "name": "GET /api/v1/sagas?state=finished - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR in the error envelope', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/sagas?state=finished"
+          }
+        },
+        {
+          "name": "GET /api/v1/sagas?limit=0 - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "pm.test('VALIDATION_ERROR in the error envelope', () => pm.expect(pm.response.json().error.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/sagas?limit=0"
+          }
+        },
+        {
+          "name": "GET /api/v1/sagas without a token: 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED in the error envelope', () => pm.expect(pm.response.json().error.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{base_url}}/api/v1/sagas"
+          }
+        },
+        {
+          "name": "GET /api/v1/sagas with a wrong token: 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "pm.test('INVALID_SERVICE_TOKEN in the error envelope', () => pm.expect(pm.response.json().error.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong-token"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/sagas"
           }
         }
       ]

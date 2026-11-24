@@ -134,7 +134,7 @@ services:
   # (/status, /logs, /metrics, the topics and dead letter listings with the service token). Messages, subscriptions
   # and dead letters are in SQLite on the broker_data volume, so they survive a restart and a new container.
   message-broker-service:
-    image: d1vinexd/message-broker-service:4.0.0
+    image: d1vinexd/message-broker-service:5.0.0
     restart: unless-stopped
     depends_on:
       service-discovery-service:
@@ -147,7 +147,8 @@ services:
       LOG_LEVEL: ${MESSAGE_BROKER_LOG_LEVEL:-info}
       MESSAGE_STORE_PATH: /data/broker.db
       MESSAGE_ACK_TIMEOUT_SECONDS: ${MESSAGE_ACK_TIMEOUT_SECONDS:-5}
-      MESSAGE_MAX_ATTEMPTS: ${MESSAGE_MAX_ATTEMPTS:-3}
+      # Five deliveries 5 s apart outlast the 15 s of a database failover (README "Database replication").
+      MESSAGE_MAX_ATTEMPTS: ${MESSAGE_MAX_ATTEMPTS:-5}
       MESSAGE_RETENTION_HOURS: ${MESSAGE_RETENTION_HOURS:-24}
       # GET /logs reads this file. It stays inside the container: never a shared volume.
       LOG_FILE: /var/log/message-broker/message-broker.jsonl

@@ -18,6 +18,21 @@ git clone https://github.com/DdimaPos/pad-team-16-student-id-please.git
 git submodule update --init --recursive
 ```
 
+## Quick start
+
+The whole system runs from published Docker Hub images; no service repository has to be cloned (see
+[Deployments](#deployments) for every container, its image and host port).
+
+```bash
+docker network inspect student-id-net >/dev/null 2>&1 || docker network create student-id-net   # the external network, once
+cp .env.example .env                   # then put real values in .env; never commit it
+docker compose up -d                   # the Gateway answers at http://localhost:8080
+```
+
+Grafana is at http://localhost:3000 (user `admin`, `GRAFANA_ADMIN_PASSWORD`), Prometheus at http://localhost:9090,
+Service Discovery at http://localhost:8090 and the broker at http://localhost:8070. The Postman collections in
+[`postman/`](postman) run against this stack; `lab4-shift` plays a whole shift through the Gateway.
+
 ## Module ownership list
 
 - Postoronca Dumitru: `player service` and `server moderation session service`;
@@ -2205,6 +2220,7 @@ need to clone the (private) service repository to run one.
 | Message Broker (Lab 4)            | [`d1vinexd/message-broker-service`](https://hub.docker.com/r/d1vinexd/message-broker-service)                     | `8070`, `8071` | `SERVICE_TOKEN` (`X-Service-Token` on its `/api/v1` and `GET /logs`, the `x-service-token` metadata on every RPC); a named volume on `/data` (`MESSAGE_STORE_PATH`, `/data/broker.db`, SQLite; empty = in memory); `SERVICE_DISCOVERY_URL` (registration, instance list, mark-down, dead letter alerts; empty = off); optional `GRPC_MAX_WORKERS` (`64`), `GRPC_RESERVED_WORKERS` (`16`), `MESSAGE_ACK_TIMEOUT_SECONDS` (`5`), `MESSAGE_MAX_ATTEMPTS` (`3`), `MESSAGE_RETENTION_HOURS` (`24`), `LOG_FILE`, `LOG_LEVEL`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). One copy, named volume `broker_data` - see below and [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md) |
 | ETL Service (Lab 5)               | [`d1vinexd/etl-service`](https://hub.docker.com/r/d1vinexd/etl-service)                                           | `8075`    | `SERVICE_TOKEN` (`X-Service-Token` on `/api/v1/runs` and `GET /logs`, checked by the ETL itself); `WAREHOUSE_DSN` (`warehouse_db` as `warehouse`, `WAREHOUSE_PASSWORD`); the eight sources as `etl_reader` (`ETL_READER_PASSWORD`): `PLAYER_DB_DSN`, `SESSION_DB_DSN`, `APPLICANT_DB_DSN`, `RULES_DB_DSN`, `UNIVERSITY_RECORD_DB_DSN`, `MODERATION_DB_DSN`, `CREDENTIAL_MONGO_URI`, `DMS_MONGO_URI` (empty = skipped); `ETL_INTERVAL_SECONDS` (`60`); `SERVICE_DISCOVERY_URL` (registration as `etl`; empty = off); optional `ETL_OVERLAP_SECONDS` (`5`), `ETL_PAGE_SIZE` (`1000`), `LOG_FILE` (`/var/log/etl/etl.jsonl`), `LOG_LEVEL`, `HTTP_REQUEST_TIMEOUT` (`5s`), `MAX_CONCURRENT_TASKS` (`64`). One copy, after `warehouse-postgres` is healthy - see below and [`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md) |
 | Warehouse database (Lab 5)        | [`postgres`](https://hub.docker.com/_/postgres) `17-alpine` (`warehouse-postgres`)                              | `5440`    | `WAREHOUSE_PASSWORD` (owner `warehouse`, database `warehouse_db`); `WAREHOUSE_GRAFANA_PASSWORD` (the read-only `grafana_reader`, created by `deployments/warehouse/init-grafana-reader.sh` on an empty volume); named volume `warehouse_pgdata`, one node, not replicated. The schema is the ETL's migrations - see [Data warehouse and ETL](#data-warehouse-and-etl) |
+| Cache nodes (Lab 5)               | [`valkey/valkey`](https://hub.docker.com/r/valkey/valkey) `8-alpine`, three containers `cache-1`, `cache-2`, `cache-3` | -         | No persistence, `--maxmemory 64mb --maxmemory-policy allkeys-lru`; the Gateway reaches them at `CACHE_NODES` (#167, #166) |
 | Prometheus (Lab 4)                | [`prom/prometheus`](https://hub.docker.com/r/prom/prometheus) `v3.5.0`                                          | `9090`    | `monitoring/prometheus/prometheus.yml`; the service token as the file `/etc/prometheus/service_token` (a compose `config` from `SERVICE_TOKEN`); named volume `prometheus_data`, 7 days kept - see [Monitoring stack](#monitoring-stack-lab-4) |
 | Loki (Lab 4)                      | [`grafana/loki`](https://hub.docker.com/r/grafana/loki) `3.7.9`                                                 | -         | Its built-in single-binary configuration; named volume `loki_data` |
 | Alloy (Lab 4)                     | [`grafana/alloy`](https://hub.docker.com/r/grafana/alloy) `v1.21.0`                                             | -         | `monitoring/alloy/config.alloy`; the Docker socket, read-only |

@@ -50,6 +50,8 @@ x-dms-mongo-member: &dms_mongo_member
   image: mongo:7
   restart: unless-stopped
   entrypoint: ["bash", "/rs/node.sh"]
+  # mongod spends up to 15 s in quiesce mode on SIGTERM; Docker's default 10 s would end it with a SIGKILL.
+  stop_grace_period: 30s
   healthcheck:
     test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
     interval: 5s

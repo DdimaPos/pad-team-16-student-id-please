@@ -31,7 +31,8 @@ docker compose up -d                   # the Gateway answers at http://localhost
 
 Grafana is at http://localhost:3000 (user `admin`, `GRAFANA_ADMIN_PASSWORD`), Prometheus at http://localhost:9090,
 Service Discovery at http://localhost:8090 and the broker at http://localhost:8070. The Postman collections in
-[`postman/`](postman) run against this stack; `lab4-shift` plays a whole shift through the Gateway.
+[`postman/`](postman) run against this stack; `lab4-shift` plays a whole shift through the Gateway, and `lab5-shift`
+plays it on the Lab 5 data layer from inside `student-id-net` (the saga, the cache, the logout, an ETL run).
 
 ## Module ownership list
 
@@ -2395,7 +2396,12 @@ this contract) live in [`docs/SERVER_RULES_SERVICE.md`](docs/SERVER_RULES_SERVIC
 [`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md). Postman
 collections are in [`postman/`](postman/); [`postman/lab4-shift.postman_collection.json`](postman/lab4-shift.postman_collection.json)
 runs a whole shift through the Gateway and the broker (login, session, applicant, chat, decision, end) and checks
-the monitoring endpoints (Lab 4, #113).
+the monitoring endpoints (Lab 4, #113). [`postman/lab5-shift.postman_collection.json`](postman/lab5-shift.postman_collection.json)
+(Lab 5, #170) plays the shift on the Lab 5 stack: the start as the saga `shift.start` (the scopes and the channels made
+by its steps, the saga `completed` in the broker), a ruleset read twice through the cache (`MISS`, then `HIT`), a
+second start with the Discord DMs failure switch (`409 SHIFT_START_FAILED`, the session back in the lobby, no channel,
+the saga `compensated`), the logout and the `401` after it, and an ETL run with its row counts. It runs inside
+`student-id-net`, since the switch and the ETL are called directly (the command is in its description).
 
 ### Monitoring stack (Lab 4)
 

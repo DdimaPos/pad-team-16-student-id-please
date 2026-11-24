@@ -97,6 +97,30 @@ x-rules-pg-node: &rules_pg_node
   networks:
     - student-id-net
 
+# Applicant's replicated PostgreSQL (#164, #173): the environment and the node template its three nodes share.
+x-applicant-pg-env: &applicant_pg_env
+  POSTGRES_USER: ${APPLICANT_POSTGRES_USER:-applicant_user}
+  POSTGRES_PASSWORD: ${APPLICANT_POSTGRES_PASSWORD:?set APPLICANT_POSTGRES_PASSWORD}
+  POSTGRES_DB: ${APPLICANT_POSTGRES_DB:-applicant_db}
+  PGHA_CLUSTER: applicant-postgres
+  PGHA_NODES: "applicant-postgres-1 applicant-postgres-2 applicant-postgres-3"
+  REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD}
+  FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:?set FAILOVER_PASSWORD}
+  ETL_READER_PASSWORD: ${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}
+
+x-applicant-pg-node: &applicant_pg_node
+  image: postgres:16-alpine
+  restart: unless-stopped
+  entrypoint: ["bash", "/ha/node.sh"]
+  stop_grace_period: 30s
+  healthcheck:              # healthy as a primary and as a standby; the output (docker inspect) names the role
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" && psql -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -XAtc \"select case when pg_is_in_recovery() then 'standby' else 'primary' end\""]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  networks:
+    - student-id-net
+
 services:
   # Service Discovery (README "Service Discovery"): the registry every instance and the broker register with, the
   # broker routes from and Prometheus reads its targets from. One copy, registry in memory; after a restart every instance is
@@ -634,36 +658,52 @@ services:
     networks:
       - student-id-net
 
-  applicant-postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${APPLICANT_POSTGRES_USER:-applicant_user}
-      POSTGRES_PASSWORD: ${APPLICANT_POSTGRES_PASSWORD:?set APPLICANT_POSTGRES_PASSWORD}
-      POSTGRES_DB: ${APPLICANT_POSTGRES_DB:-applicant_db}
-    volumes:
-      - applicant_pgdata:/var/lib/postgresql/data
+  # Applicant's database (Lab 5, #164 pattern, #173): one primary and two hot standbys, failover by pg-failover
+  # (deployments/postgres-ha/README.md). applicant-postgres-1 starts as the primary; the service lists all three
+  # nodes and connects to the writable one (target_session_attrs=read-write). Port 5433 of node 1 is for debugging:
+  # after a failover it may reach a standby.
+  applicant-postgres-1:
+    <<: *applicant_pg_node
+    environment: { <<: *applicant_pg_env, PGHA_NODE: applicant-postgres-1 }
     ports:
       - "5433:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${APPLICANT_POSTGRES_USER:-applicant_user} -d ${APPLICANT_POSTGRES_DB:-applicant_db}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - student-id-net
+    volumes:
+      - applicant_pgdata_1:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  applicant-postgres-2:
+    <<: *applicant_pg_node
+    environment: { <<: *applicant_pg_env, PGHA_NODE: applicant-postgres-2 }
+    volumes:
+      - applicant_pgdata_2:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  applicant-postgres-3:
+    <<: *applicant_pg_node
+    environment: { <<: *applicant_pg_env, PGHA_NODE: applicant-postgres-3 }
+    volumes:
+      - applicant_pgdata_3:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
 
   applicant-service:
-    image: stewdh/applicant-service:4.0.0
+    image: stewdh/applicant-service:5.0.0
     restart: unless-stopped
-    # Two copies share applicant-postgres (no container_name, no host port);
+    # A lookup of a stopped database node fails within 1 s (README "Database replication", Docker Desktop for Windows).
+    dns_opt: ["timeout:1", "attempts:1"]
+    # Two copies share the database (no container_name, no host port);
     # `docker compose up -d --scale applicant-service=3` adds a third.
     deploy:
       replicas: 2
     depends_on:
       service-discovery-service:
         condition: service_healthy
-      applicant-postgres:
+      applicant-postgres-1:
         condition: service_healthy
       message-broker-service:
         condition: service_healthy
@@ -671,14 +711,15 @@ services:
       APP_ENV: docker
       APP_PORT: "8081"
       LOG_LEVEL: info
-      SERVICE_VERSION: "4.0.0"
+      SERVICE_VERSION: "5.0.0"
       TZ: UTC
       # Task timeout (408) and concurrent task limit (429) - README "Task timeout and concurrent
       # task limit". DEV_ENDPOINTS mounts GET /api/v1/dev/slow?ms=, which demonstrates both.
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
       DEV_ENDPOINTS: ${APPLICANT_DEV_ENDPOINTS:-true}
-      DATABASE_URL: "postgres://${APPLICANT_POSTGRES_USER:-applicant_user}:${APPLICANT_POSTGRES_PASSWORD:?set APPLICANT_POSTGRES_PASSWORD}@applicant-postgres:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
+      # The three nodes; the driver keeps the one that accepts writes (README "Database replication").
+      DATABASE_URL: "postgres://${APPLICANT_POSTGRES_USER:-applicant_user}:${APPLICANT_POSTGRES_PASSWORD:?set APPLICANT_POSTGRES_PASSWORD}@applicant-postgres-1:5432,applicant-postgres-2:5432,applicant-postgres-3:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable&target_session_attrs=read-write&connect_timeout=1"
       MIGRATE_ON_START: "true"
       # Lab 4 (README "Event delivery"): requests arrive on the broker's requests.applicant
       # queue and applicant.initialized is published to events.applicant.initialized, over
@@ -834,7 +875,7 @@ services:
       # (#171 to #178), that source fails in every run and is named in the run's failed_sources; the others still load.
       PLAYER_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@player-postgres:5432/${PLAYER_POSTGRES_DB:-player_db}?sslmode=disable"
       SESSION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@session-postgres:5432/${SESSION_POSTGRES_DB:-session_db}?sslmode=disable"
-      APPLICANT_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@applicant-postgres:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
+      APPLICANT_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@applicant-postgres-1:5432,applicant-postgres-2:5432,applicant-postgres-3:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
       CREDENTIAL_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
       RULES_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@rules-postgres-1:5432,rules-postgres-2:5432,rules-postgres-3:5432/${RULES_POSTGRES_DB:-rules_db}?sslmode=disable"
       UNIVERSITY_RECORD_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@university-record-postgres:5432/${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}?sslmode=disable"
@@ -861,7 +902,7 @@ services:
     restart: unless-stopped
     entrypoint: ["bash", "/ha/pg-failover.sh"]
     environment:
-      PGHA_CLUSTERS: "moderation-postgres rules-postgres"
+      PGHA_CLUSTERS: "moderation-postgres rules-postgres applicant-postgres"
       FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:-}
       REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-}
     volumes:
@@ -967,7 +1008,9 @@ volumes:
   dms_mongodata_3:
   player_pgdata:
   session_pgdata:
-  applicant_pgdata:
+  applicant_pgdata_1:
+  applicant_pgdata_2:
+  applicant_pgdata_3:
   credential_mongodata:
   pg_ha_state:
   broker_data:

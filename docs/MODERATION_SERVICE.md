@@ -9,7 +9,7 @@ verdict with a penalty and publishes it to the Message Broker, which gives it to
 Owner: Racovita Dumitru. Source: the private `moderation-service` repository, linked as a submodule of this CPR.
 
 > **Audience:** developers of the other services of *"Student ID, please"* (Team 16, FAF.PAD21.1), or the Gateway.
-> Copied from the service's own README at `v4.0.0`; relative paths below refer to the `moderation-service/` submodule.
+> Copied from the service's own README at `v5.0.0`; relative paths below refer to the `moderation-service/` submodule.
 > Where the implementation diverges from the CPR contract, the divergence is called out in the last section.
 
 ## Integration card
@@ -34,7 +34,7 @@ Owner: Racovita Dumitru. Source: the private `moderation-service` repository, li
 | Calls | Server Moderation Session, Applicant, Credential, University Record, Server Rules - all as `Request`s through the broker (`requests.<peer>`), with the request's `X-Request-ID`, each behind its own circuit breaker; in the mock mode the built-in mocks answer instead |
 | Authentication | Player endpoints read the calling player from `X-Player-Id`, set by the Gateway after it validated the player's JWT. `/logs`, `/api/v1/admin/*` and `/api/v1/dev/*` are not Gateway routes any more (#110): they are called directly inside the network, and this service checks their `X-Service-Token` itself (`403 SERVICE_TOKEN_REQUIRED`, `401 INVALID_SERVICE_TOKEN`) |
 | Task limits | `HTTP_REQUEST_TIMEOUT` (5 s) stops a task with `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (64) refuses the next task with `429 TOO_MANY_REQUESTS`; health endpoints exempt. See [Task timeout and concurrent task limit](#task-timeout-and-concurrent-task-limit) |
-| Docker image | `dmracovit/moderation-service:4.0.0` and `:latest`, public on Docker Hub, linux/amd64 and linux/arm64; published by GitHub Actions on merge to `main` from the `VERSION` file (Lab 4 = `4.x.y`), with the tag `v<VERSION>` and its GitHub Release |
+| Docker image | `dmracovit/moderation-service:5.0.0` and `:latest`, public on Docker Hub, linux/amd64 and linux/arm64; published by GitHub Actions on merge to `main` from the `VERSION` file (Lab 4 = `4.x.y`), with the tag `v<VERSION>` and its GitHub Release |
 
 ## Running it
 
@@ -440,7 +440,7 @@ stops, and a commit waits for one standby, so a failover loses no decision that 
 ## Docker image, versioning and CI
 
 The image tag is the single line of the `VERSION` file; its MAJOR is the laboratory number, so every
-Lab 4 release is `4.x.y` (`4.0.0` now). Images are never pushed by hand:
+Lab 5 release is `5.x.y` (`5.0.0` now). Images are never pushed by hand:
 
 - `moderation-service/.github/workflows/ci.yml`: on every pull request into `dev` or `main`, and on every push to a work branch, checks that the checked-in gRPC stubs match `broker.proto` (`scripts/gen-proto.sh`), runs `go vet` and the tests against a PostgreSQL service and builds the image without pushing it.
 - `moderation-service/.github/workflows/release.yml`: on every push to `main` (a merge of `dev`), runs the tests and, only if they pass, builds `linux/amd64` and `linux/arm64` and pushes `dmracovit/moderation-service:<VERSION>` and `:latest`, then tags the commit `v<VERSION>` and creates its GitHub Release from the CHANGELOG section of that version (skipped when the release exists). It stops when `VERSION` is not `MAJOR.MINOR.PATCH`.

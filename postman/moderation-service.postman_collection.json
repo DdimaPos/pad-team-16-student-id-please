@@ -88,6 +88,14 @@
       "value": ""
     },
     {
+      "key": "applicant_name",
+      "value": ""
+    },
+    {
+      "key": "bans_query",
+      "value": "ban"
+    },
+    {
       "key": "decisions_made",
       "value": "0"
     },
@@ -522,7 +530,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
-                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id || \"\");"
+                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id || \"\");",
+                  "pm.collectionVariables.set(\"applicant_name\", pm.response.json().name || \"\");"
                 ]
               }
             }
@@ -585,7 +594,7 @@
                   "  pm.expect(d.decision_id).to.be.a(\"string\");",
                   "  pm.expect(d.ruleset_version).to.eql(Number(pm.collectionVariables.get(\"ruleset_version\")));",
                   "});",
-                  "pm.test(\"expected_action is one of accept, reject, ban\", () => pm.expect([\"accept\", \"reject\", \"ban\"]).to.include(d.expected_action));",
+                  "pm.test(\"expected_action is one of accept, reject, flag, ban (README Shared values)\", () => pm.expect([\"accept\", \"reject\", \"flag\", \"ban\"]).to.include(d.expected_action));",
                   "pm.test(\"a correct decision took the expected action\", () => { if (d.is_correct) pm.expect(action).to.eql(d.expected_action); });",
                   "pm.test(\"another action than the expected one is wrong\", () => { if (action !== d.expected_action) pm.expect(d.is_correct).to.eql(false); });",
                   "pm.test(\"the penalty is 0 exactly when the decision is correct\", () => pm.expect(d.penalty === 0).to.eql(d.is_correct));",
@@ -702,7 +711,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
-                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id || \"\");"
+                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id || \"\");",
+                  "pm.collectionVariables.set(\"applicant_name\", pm.response.json().name || \"\");"
                 ]
               }
             }
@@ -765,7 +775,7 @@
                   "  pm.expect(d.decision_id).to.be.a(\"string\");",
                   "  pm.expect(d.ruleset_version).to.eql(Number(pm.collectionVariables.get(\"ruleset_version\")));",
                   "});",
-                  "pm.test(\"expected_action is one of accept, reject, ban\", () => pm.expect([\"accept\", \"reject\", \"ban\"]).to.include(d.expected_action));",
+                  "pm.test(\"expected_action is one of accept, reject, flag, ban (README Shared values)\", () => pm.expect([\"accept\", \"reject\", \"flag\", \"ban\"]).to.include(d.expected_action));",
                   "pm.test(\"a correct decision took the expected action\", () => { if (d.is_correct) pm.expect(action).to.eql(d.expected_action); });",
                   "pm.test(\"another action than the expected one is wrong\", () => { if (action !== d.expected_action) pm.expect(d.is_correct).to.eql(false); });",
                   "pm.test(\"the penalty is 0 exactly when the decision is correct\", () => pm.expect(d.penalty === 0).to.eql(d.is_correct));",
@@ -773,7 +783,9 @@
                   "pm.collectionVariables.set(\"decided_applicant_id\", pm.collectionVariables.get(\"applicant_id\"));",
                   "const n = Number(pm.collectionVariables.get(\"decisions_made\") || 0) + 1;",
                   "pm.collectionVariables.set(\"decisions_made\", String(n));",
-                  "pm.collectionVariables.set(\"banned_student_id\", pm.collectionVariables.get(\"student_id\"));"
+                  "pm.collectionVariables.set(\"banned_student_id\", pm.collectionVariables.get(\"student_id\"));",
+                  "// Bans are searchable by student ID and by name; an outsider or a staff member has no student ID (q may not be empty).",
+                  "pm.collectionVariables.set(\"bans_query\", pm.collectionVariables.get(\"student_id\") || pm.collectionVariables.get(\"applicant_name\") || \"ban\");"
                 ]
               }
             }
@@ -844,7 +856,8 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
-                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id || \"\");"
+                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id || \"\");",
+                  "pm.collectionVariables.set(\"applicant_name\", pm.response.json().name || \"\");"
                 ]
               }
             }
@@ -907,7 +920,7 @@
                   "  pm.expect(d.decision_id).to.be.a(\"string\");",
                   "  pm.expect(d.ruleset_version).to.eql(Number(pm.collectionVariables.get(\"ruleset_version\")));",
                   "});",
-                  "pm.test(\"expected_action is one of accept, reject, ban\", () => pm.expect([\"accept\", \"reject\", \"ban\"]).to.include(d.expected_action));",
+                  "pm.test(\"expected_action is one of accept, reject, flag, ban (README Shared values)\", () => pm.expect([\"accept\", \"reject\", \"flag\", \"ban\"]).to.include(d.expected_action));",
                   "pm.test(\"a correct decision took the expected action\", () => { if (d.is_correct) pm.expect(action).to.eql(d.expected_action); });",
                   "pm.test(\"another action than the expected one is wrong\", () => { if (action !== d.expected_action) pm.expect(d.is_correct).to.eql(false); });",
                   "pm.test(\"the penalty is 0 exactly when the decision is correct\", () => pm.expect(d.penalty === 0).to.eql(d.is_correct));",
@@ -1202,7 +1215,7 @@
           ]
         },
         {
-          "name": "GET /bans?q=<the banned applicant's student id>",
+          "name": "GET /bans?q=<the banned applicant's student id, or name>",
           "request": {
             "method": "GET",
             "header": [
@@ -1211,7 +1224,7 @@
                 "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": "{{base_url}}/api/v1/moderation/bans?q={{banned_student_id}}",
+            "url": "{{base_url}}/api/v1/moderation/bans?q={{bans_query}}",
             "description": ""
           },
           "event": [

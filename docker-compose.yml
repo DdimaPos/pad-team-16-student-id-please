@@ -145,6 +145,21 @@ x-university-record-pg-node: &university_record_pg_node
   networks:
     - student-id-net
 
+# The members of Credential's replica set (#164, #174): the template the three share.
+x-credential-mongo-member: &credential_mongo_member
+  image: mongo:7
+  restart: unless-stopped
+  entrypoint: ["bash", "/rs/node.sh"]
+  # mongod spends up to 15 s in quiesce mode on SIGTERM; Docker's default 10 s would end it with a SIGKILL.
+  stop_grace_period: 30s
+  healthcheck:
+    test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  networks:
+    - student-id-net
+
 services:
   # Service Discovery (README "Service Discovery"): the registry every instance and the broker register with, the
   # broker routes from and Prometheus reads its targets from. One copy, registry in memory; after a restart every instance is
@@ -783,49 +798,88 @@ services:
     networks:
       - student-id-net
 
-  credential-mongo:
-    image: mongo:7
-    restart: unless-stopped
+  # Credential's database (Lab 5, #164 pattern, #174): the replica set rs0 of three members, failover by MongoDB's own
+  # election (deployments/mongo-rs/README.md). Only credential-mongo-1 gets the root user; credential-mongo-init
+  # initiates the set once and creates etl_reader. The service lists the three members and names the set
+  # (replicaSet=rs0). Port 27018 of credential-mongo-1 is for debugging only (directConnection=true).
+  credential-mongo-1:
+    <<: *credential_mongo_member
     environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?set MONGO_REPLICA_KEY}
       MONGO_INITDB_ROOT_USERNAME: ${CREDENTIAL_MONGO_USER:-credential_user}
       MONGO_INITDB_ROOT_PASSWORD: ${CREDENTIAL_MONGO_PASSWORD:?set CREDENTIAL_MONGO_PASSWORD}
-      MONGO_INITDB_DATABASE: credential_db
-    volumes:
-      - credential_mongodata:/data/db
     ports:
       - "27018:27017"
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+    volumes:
+      - credential_mongodata_1:/data/db
+      - ./deployments/mongo-rs:/rs:ro
+
+  credential-mongo-2:
+    <<: *credential_mongo_member
+    environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?set MONGO_REPLICA_KEY}
+    volumes:
+      - credential_mongodata_2:/data/db
+      - ./deployments/mongo-rs:/rs:ro
+
+  credential-mongo-3:
+    <<: *credential_mongo_member
+    environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?set MONGO_REPLICA_KEY}
+    volumes:
+      - credential_mongodata_3:/data/db
+      - ./deployments/mongo-rs:/rs:ro
+
+  credential-mongo-init:
+    image: mongo:7
+    restart: "no"
+    entrypoint: ["bash", "/rs/init.sh"]
+    environment:
+      MONGO_RS_MEMBERS: "credential-mongo-1 credential-mongo-2 credential-mongo-3"
+      MONGO_ROOT_USER: ${CREDENTIAL_MONGO_USER:-credential_user}
+      MONGO_ROOT_PASSWORD: ${CREDENTIAL_MONGO_PASSWORD:?set CREDENTIAL_MONGO_PASSWORD}
+      MONGO_APP_DB: credential_db
+      ETL_READER_PASSWORD: ${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}
+    volumes:
+      - ./deployments/mongo-rs:/rs:ro
+    depends_on:
+      credential-mongo-1:
+        condition: service_healthy
+      credential-mongo-2:
+        condition: service_healthy
+      credential-mongo-3:
+        condition: service_healthy
     networks:
       - student-id-net
 
   credential-service:
-    image: stewdh/credential-service:4.0.0
+    image: stewdh/credential-service:5.0.0
     restart: unless-stopped
-    # Two copies share credential-mongo (no container_name, no host port);
+    # A lookup of a stopped replica set member fails within 1 s (README "Database replication", Docker Desktop for Windows).
+    dns_opt: ["timeout:1", "attempts:1"]
+    # Two copies share the replica set (no container_name, no host port);
     # `docker compose up -d --scale credential-service=3` adds a third.
     deploy:
       replicas: 2
     depends_on:
       service-discovery-service:
         condition: service_healthy
-      credential-mongo:
-        condition: service_healthy
+      credential-mongo-init:
+        condition: service_completed_successfully
       message-broker-service:
         condition: service_healthy
     environment:
       APP_ENV: docker
       APP_PORT: "8082"
       LOG_LEVEL: info
-      SERVICE_VERSION: "4.0.0"
+      SERVICE_VERSION: "5.0.0"
       TZ: UTC
       HTTP_REQUEST_TIMEOUT: 5s
       MAX_CONCURRENT_TASKS: "64"
       DEV_ENDPOINTS: ${CREDENTIAL_DEV_ENDPOINTS:-true}
-      MONGODB_URI: "mongodb://${CREDENTIAL_MONGO_USER:-credential_user}:${CREDENTIAL_MONGO_PASSWORD:?set CREDENTIAL_MONGO_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
+      # The three members; the driver finds the primary and retries a write once after an election (README
+      # "Database replication").
+      MONGODB_URI: "mongodb://${CREDENTIAL_MONGO_USER:-credential_user}:${CREDENTIAL_MONGO_PASSWORD:?set CREDENTIAL_MONGO_PASSWORD}@credential-mongo-1:27017,credential-mongo-2:27017,credential-mongo-3:27017/credential_db?replicaSet=rs0&authSource=admin"
       MONGODB_DATABASE: credential_db
       ENSURE_INDEXES_ON_START: "true"
       # Lab 4: requests on requests.credential and events.applicant.initialized through the
@@ -920,7 +974,7 @@ services:
       PLAYER_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@player-postgres:5432/${PLAYER_POSTGRES_DB:-player_db}?sslmode=disable"
       SESSION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@session-postgres:5432/${SESSION_POSTGRES_DB:-session_db}?sslmode=disable"
       APPLICANT_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@applicant-postgres-1:5432,applicant-postgres-2:5432,applicant-postgres-3:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
-      CREDENTIAL_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
+      CREDENTIAL_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@credential-mongo-1:27017,credential-mongo-2:27017,credential-mongo-3:27017/credential_db?authSource=admin&replicaSet=rs0"
       RULES_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@rules-postgres-1:5432,rules-postgres-2:5432,rules-postgres-3:5432/${RULES_POSTGRES_DB:-rules_db}?sslmode=disable"
       UNIVERSITY_RECORD_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@university-record-postgres-1:5432,university-record-postgres-2:5432,university-record-postgres-3:5432/${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}?sslmode=disable"
       MODERATION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
@@ -1057,7 +1111,9 @@ volumes:
   applicant_pgdata_1:
   applicant_pgdata_2:
   applicant_pgdata_3:
-  credential_mongodata:
+  credential_mongodata_1:
+  credential_mongodata_2:
+  credential_mongodata_3:
   pg_ha_state:
   broker_data:
   warehouse_pgdata:

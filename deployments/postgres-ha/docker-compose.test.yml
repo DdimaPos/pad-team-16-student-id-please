@@ -58,6 +58,7 @@ services:
     image: postgres:17-alpine   # the agent's psql 17 serves PostgreSQL 16 clusters too
     restart: unless-stopped
     entrypoint: ["bash", "/ha/pg-failover.sh"]
+    dns_opt: ["timeout:1", "attempts:1"]
     environment:
       PGHA_CLUSTERS: ha-test-postgres
       FAILOVER_PASSWORD: failover-password
@@ -69,8 +70,9 @@ services:
   client:
     image: ${PGHA_TEST_IMAGE:-postgres:17-alpine}
     entrypoint: ["sleep", "infinity"]
+    dns_opt: ["timeout:1", "attempts:1"]
     environment:
-      DSN: postgres://app:app-password@ha-test-postgres-1:5432,ha-test-postgres-2:5432,ha-test-postgres-3:5432/app_db?target_session_attrs=read-write&connect_timeout=2
+      DSN: postgres://app:app-password@ha-test-postgres-1:5432,ha-test-postgres-2:5432,ha-test-postgres-3:5432/app_db?target_session_attrs=read-write&connect_timeout=1
 
 volumes:
   pg1:

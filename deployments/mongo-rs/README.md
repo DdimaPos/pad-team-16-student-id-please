@@ -32,7 +32,9 @@ on the official `mongo:7` image; this folder is bind-mounted read-only into the 
 
 1. Replace the database block with three members and the init container below; one named volume per member.
 2. Change the service's `MONGODB_URI` to the replica set form above, and make it wait for the init container
-   (`depends_on: <db>-init: { condition: service_completed_successfully }`).
+   (`depends_on: <db>-init: { condition: service_completed_successfully }`). Give its block
+   `dns_opt: ["timeout:1", "attempts:1"]`, so the lookup of a stopped member fails at once on Docker Desktop for
+   Windows (see "1 s timeouts and `dns_opt`" in `deployments/postgres-ha/README.md`).
 3. Start with **new volumes**: the first member's root user and the set are created only on empty data directories.
 
 ```yaml

@@ -81,7 +81,7 @@ naming the variable.
 
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | - | yes | PostgreSQL connection string (pgx format). Lab 5, the team stack: every node of the cluster, `postgres://<user>:<pw>@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/moderation_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=2`; the driver connects to whichever node is the primary |
+| `DATABASE_URL` | - | yes | PostgreSQL connection string (pgx format). Lab 5, the team stack: every node of the cluster, `postgres://<user>:<pw>@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/moderation_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=1`; the driver connects to whichever node is the primary |
 | `SERVICE_TOKEN` | - | yes | The stack's one `X-Service-Token`: the `x-service-token` metadata of every call to the broker, sent to Service Discovery, and checked here on `/logs`, `/api/v1/admin/*` and `/api/v1/dev/*` |
 | `MESSAGE_BROKER_URL` | empty | no | The broker's gRPC address, `message-broker-service:8071` in the team stack. Every peer is called and every event published through it. Empty = the mock mode: the built-in mocks answer for every peer and receive the events. Replaces Lab 3's `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL` and `RULES_URL` |
 | `LOG_FILE` | `/var/log/moderation/moderation.jsonl` | no | The log file next to stdout, read by `GET /logs`. Set but empty = stdout only. Outside Docker, a writable path such as `./logs/moderation.jsonl` |
@@ -427,6 +427,9 @@ stops, and a commit waits for one standby, so a failover loses no decision that 
 
 - **Connection.** The multi-host `DATABASE_URL` above; pgx tries the nodes in order and keeps only a writable one,
   so the service follows a failover without a restart. The pool checks idle connections every 5 s.
+  `connect_timeout=1` and `dns_opt: ["timeout:1", "attempts:1"]` on the compose block keep a stopped node from
+  costing every new connection the 5 to 16 s that Docker Desktop for Windows takes to fail its DNS lookup; the pool
+  reuses its open connections, so only a new one tries the nodes again.
 - **While no primary answers** (a few seconds during a failover) a store call answers `500 DEPENDENCY_UNAVAILABLE`
   with `details.dependency: "postgres"`, never `500 INTERNAL_ERROR`, because the broker's breakers count every
   `5xx` but that one; `GET /status` answers `503 degraded` and `/health/ready` is not ready. A decision is written

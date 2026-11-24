@@ -295,6 +295,8 @@ services:
   moderation-service:
     image: dmracovit/moderation-service:5.0.0
     restart: unless-stopped
+    # A lookup of a stopped database node fails within 1 s (README "Database replication", Docker Desktop for Windows).
+    dns_opt: ["timeout:1", "attempts:1"]
     # Two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
       replicas: 2
@@ -310,7 +312,7 @@ services:
       # heartbeats every 5 s and deregisters on shutdown. The `:-` default applies even to an empty value in .env;
       # registration is off only when the container's own environment has an empty SERVICE_DISCOVERY_URL.
       SERVICE_DISCOVERY_URL: ${SERVICE_DISCOVERY_URL:-http://service-discovery-service:8090}
-      DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable&target_session_attrs=read-write&connect_timeout=2"
+      DATABASE_URL: "postgres://${MODERATION_POSTGRES_USER:-moderation_user}:${MODERATION_POSTGRES_PASSWORD:?set MODERATION_POSTGRES_PASSWORD}@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable&target_session_attrs=read-write&connect_timeout=1"
       # The stack's one X-Service-Token: the metadata of every call to the broker; checked here on /logs, /admin and /dev.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       DEV_ENDPOINTS: ${MODERATION_DEV_ENDPOINTS:-true}

@@ -703,6 +703,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 12
+    networks:
+      - student-id-net
 
   # Failover agent of the replicated PostgreSQL databases (Lab 5, #164; deployments/postgres-ha/README.md). One
   # container for every cluster listed in PGHA_CLUSTERS (the nodes of cluster C are C-1, C-2 and C-3), one loop each:

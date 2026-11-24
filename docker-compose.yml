@@ -448,6 +448,8 @@ services:
   discord-dms-service:
     image: dmracovit/discord-dms-service:4.0.0
     restart: unless-stopped
+    # A lookup of a stopped replica set member fails within 1 s (README "Database replication", Docker Desktop for Windows).
+    dns_opt: ["timeout:1", "attempts:1"]
     # Two copies, none publishing a port. The one chat port of the stack, 8086, is answered by dms-ws-proxy
     # below, which hands each WebSocket connection to one of the copies; the Redis fan-out makes every copy deliver
     # every message, so the copy does not matter. More copies: --scale discord-dms-service=3.

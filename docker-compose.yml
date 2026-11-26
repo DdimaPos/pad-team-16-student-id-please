@@ -45,6 +45,21 @@ x-moderation-pg-node: &moderation_pg_node
   networks:
     - student-id-net
 
+# The members of Discord DMs' replica set (#164, #178): the template the three share.
+x-dms-mongo-member: &dms_mongo_member
+  image: mongo:7
+  restart: unless-stopped
+  entrypoint: ["bash", "/rs/node.sh"]
+  # mongod spends up to 15 s in quiesce mode on SIGTERM; Docker's default 10 s would end it with a SIGKILL.
+  stop_grace_period: 30s
+  healthcheck:
+    test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  networks:
+    - student-id-net
+
 # The Gateway's cache nodes (Lab 5, #170): the template the three identical nodes share.
 x-cache-node: &cache_node
   image: valkey/valkey:8-alpine
@@ -365,21 +380,57 @@ services:
     networks:
       - student-id-net
 
-  dms-mongo:
-    image: mongo:7
-    restart: unless-stopped
+  # Discord DMs' database (Lab 5, #164 pattern, #178): the replica set rs0 of three members, failover by MongoDB's own
+  # election (deployments/mongo-rs/README.md). Only dms-mongo-1 gets the root user; dms-mongo-init initiates the set
+  # once and creates etl_reader. The service lists the three members and names the set (replicaSet=rs0). Port 27019
+  # of dms-mongo-1 is for debugging only (directConnection=true).
+  dms-mongo-1:
+    <<: *dms_mongo_member
     environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?set MONGO_REPLICA_KEY}
       MONGO_INITDB_ROOT_USERNAME: ${DMS_MONGO_USER:-dms_user}
       MONGO_INITDB_ROOT_PASSWORD: ${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}
-    volumes:
-      - dms_mongodata:/data/db
     ports:
       - "27019:27017"
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
+    volumes:
+      - dms_mongodata_1:/data/db
+      - ./deployments/mongo-rs:/rs:ro
+
+  dms-mongo-2:
+    <<: *dms_mongo_member
+    environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?set MONGO_REPLICA_KEY}
+    volumes:
+      - dms_mongodata_2:/data/db
+      - ./deployments/mongo-rs:/rs:ro
+
+  dms-mongo-3:
+    <<: *dms_mongo_member
+    environment:
+      MONGO_REPLICA_KEY: ${MONGO_REPLICA_KEY:?set MONGO_REPLICA_KEY}
+    volumes:
+      - dms_mongodata_3:/data/db
+      - ./deployments/mongo-rs:/rs:ro
+
+  dms-mongo-init:
+    image: mongo:7
+    restart: "no"
+    entrypoint: ["bash", "/rs/init.sh"]
+    environment:
+      MONGO_RS_MEMBERS: "dms-mongo-1 dms-mongo-2 dms-mongo-3"
+      MONGO_ROOT_USER: ${DMS_MONGO_USER:-dms_user}
+      MONGO_ROOT_PASSWORD: ${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}
+      MONGO_APP_DB: dms_db
+      ETL_READER_PASSWORD: ${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}
+    volumes:
+      - ./deployments/mongo-rs:/rs:ro
+    depends_on:
+      dms-mongo-1:
+        condition: service_healthy
+      dms-mongo-2:
+        condition: service_healthy
+      dms-mongo-3:
+        condition: service_healthy
     networks:
       - student-id-net
 
@@ -397,8 +448,10 @@ services:
       - student-id-net
 
   discord-dms-service:
-    image: dmracovit/discord-dms-service:4.0.0
+    image: dmracovit/discord-dms-service:5.0.0
     restart: unless-stopped
+    # A lookup of a stopped replica set member fails within 1 s (README "Database replication", Docker Desktop for Windows).
+    dns_opt: ["timeout:1", "attempts:1"]
     # Two copies, none publishing a port. The one chat port of the stack, 8086, is answered by dms-ws-proxy
     # below, which hands each WebSocket connection to one of the copies; the Redis fan-out makes every copy deliver
     # every message, so the copy does not matter. More copies: --scale discord-dms-service=3.
@@ -409,14 +462,16 @@ services:
         condition: service_healthy
       message-broker-service:
         condition: service_healthy
-      dms-mongo:
-        condition: service_healthy
+      dms-mongo-init:
+        condition: service_completed_successfully
       dms-redis:
         condition: service_healthy
     environment:
-      MONGODB_URI: "mongodb://${DMS_MONGO_USER:-dms_user}:${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}@dms-mongo:27017/dms_db?authSource=admin"
+      MONGODB_URI: "mongodb://${DMS_MONGO_USER:-dms_user}:${DMS_MONGO_PASSWORD:?set DMS_MONGO_PASSWORD}@dms-mongo-1:27017,dms-mongo-2:27017,dms-mongo-3:27017/dms_db?authSource=admin&replicaSet=rs0&retryWrites=true"
       # Required with several copies: a message stored by one copy reaches the players connected to the others.
       REDIS_URL: redis://dms-redis:6379/0
+      # /api/v1/dev/* with X-Service-Token; from 5.0.0 also the failure switch of the demo,
+      # POST /api/v1/dev/saga-steps/fail-next (the next create-channels answers 500 once, so the saga compensates).
       DEV_ENDPOINTS: ${DMS_DEV_ENDPOINTS:-true}
       SEED_ON_START: "true"
       # The address clients reach port 8086 at: the base of the ws_url a ticket comes with. The chat is
@@ -428,7 +483,9 @@ services:
       # The stack's one X-Service-Token: the metadata of the broker stream; checked here on /logs, /admin and /dev.
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
       # Lab 4 (README "Message Broker"): every copy's stream brings the Gateway's requests (requests.discord-dms) and
-      # the events of events.session.started and events.session.ended. The chat path is unchanged.
+      # the events of events.session.ended. Lab 5 (5.0.0): session.started is retired; the session's channels are
+      # created by the saga step create-channels of shift.start, which the broker's coordinator sends on
+      # requests.discord-dms (POST /api/v1/saga-steps/create-channels and .../compensate). The chat path is unchanged.
       MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
     networks:
       - student-id-net
@@ -779,7 +836,7 @@ services:
       RULES_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@rules-postgres-1:5432,rules-postgres-2:5432,rules-postgres-3:5432/${RULES_POSTGRES_DB:-rules_db}?sslmode=disable"
       UNIVERSITY_RECORD_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@university-record-postgres:5432/${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}?sslmode=disable"
       MODERATION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
-      DMS_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@dms-mongo:27017/dms_db?authSource=admin"
+      DMS_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@dms-mongo-1:27017,dms-mongo-2:27017,dms-mongo-3:27017/dms_db?authSource=admin&replicaSet=rs0"
     ports:
       - "8075:8075"
     healthcheck:
@@ -902,7 +959,9 @@ volumes:
   moderation_pgdata_1:
   moderation_pgdata_2:
   moderation_pgdata_3:
-  dms_mongodata:
+  dms_mongodata_1:
+  dms_mongodata_2:
+  dms_mongodata_3:
   player_pgdata:
   session_pgdata:
   applicant_pgdata:

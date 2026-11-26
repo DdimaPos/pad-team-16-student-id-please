@@ -1,7 +1,7 @@
 # Service Discovery Service - Integration Reference
 
-> **Status:** `5.0.0` (Lab 5, #165, vvtttvv/service-discovery-service#22, tag `v5.0.0`). Image
-> `d1vinexd/service-discovery-service:5.0.0` and `:latest` (`linux/amd64`, `linux/arm64`), run by the team
+> **Status:** `5.0.1` (Lab 5, #165, tag `v5.0.1`). Image
+> `d1vinexd/service-discovery-service:5.0.1` and `:latest` (`linux/amd64`, `linux/arm64`), run by the team
 > `docker-compose.yml`. `3.0.0` (tag `v3.0.0`) holds the registry (#69), the mark-down and the circuit breakers (#74),
 > health polling and its alerts (#72), and the Telegram notifications (#73). `4.0.0` adds what the Message Broker and
 > Prometheus need (#111): `topics` in the registration, `load` on the list, `GET /api/v1/instances?topic=`,
@@ -11,6 +11,7 @@
 > `4.0.1` changes no API: uvicorn keeps an idle keep-alive connection 120 s instead of 5 s, so heartbeats no longer
 > fail now and then (§9, #156). `5.0.0` accepts `etl`, the ETL Service of Lab 5, as a service name (registration,
 > the logs download and the alerts); the release now creates its `v<VERSION>` tag and GitHub Release itself.
+> `5.0.1` changes no code: its README and `.env.example` are complete (every variable, current examples).
 
 ## 1. What this service is
 
@@ -40,7 +41,7 @@ alerts, and Prometheus finds its targets here (#113).
 | **Calls out** | each instance's `GET /status` (directly, no credential); each component's `GET /logs` for a download; the Telegram Bot API when configured |
 | **Callers** | every instance and the broker (registration); the Gateway (Lab 3 list and mark-down); from Lab 4 the broker (list, mark-down, alerts) and Prometheus (targets, `/metrics`) |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`, same as every service |
-| **Docker image** | `d1vinexd/service-discovery-service:5.0.0` and `:latest`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `d1vinexd/service-discovery-service:5.0.1` and `:latest`, published by GitHub Actions on merge to `main` |
 | **API schema** | none served: `/docs`, `/redoc` and `/openapi.json` answer `404` (`4.0.0`); this file and the Postman collection document the API |
 
 Instances call it **directly**, not through the Gateway or the broker: the broker itself (the Gateway in Lab 3) needs
@@ -50,7 +51,7 @@ the registry to route.
 
 ```bash
 docker run --rm --network student-id-net --name service-discovery-service -p 8090:8090 \
-  -e SERVICE_TOKEN=... d1vinexd/service-discovery-service:5.0.0
+  -e SERVICE_TOKEN=... d1vinexd/service-discovery-service:5.0.1
 curl http://localhost:8090/health
 # {"status":"ok","service":"service-discovery","version":"5.0.0"}
 ```

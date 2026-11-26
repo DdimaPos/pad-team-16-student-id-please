@@ -361,7 +361,8 @@ set initiated once by `dms-mongo-init` (which also creates the ETL's read-only `
 election as the failover (5 s timeout). The service connects with
 `mongodb://<user>:<pw>@dms-mongo-1:27017,dms-mongo-2:27017,dms-mongo-3:27017/dms_db?authSource=admin&replicaSet=rs0&retryWrites=true`;
 the driver finds the primary and retries a write once across an election, so the image needs no change for it
-(`4.0.0` runs on it as it is). The compose block sets `dns_opt: ["timeout:1", "attempts:1"]`, so the lookup of a
+(the compose runs `4.0.0` on it as it is; `5.0.0`, on Docker Hub too, adds the saga step of Lab 5 and is not the
+tag this compose deploys). The compose block sets `dns_opt: ["timeout:1", "attempts:1"]`, so the lookup of a
 stopped member fails at once instead of after the 5 to 16 s of Docker Desktop for Windows. Measured on the team stack: a new primary 2 s after `docker stop` of the old one, the
 Postman collection green before, after the election and after the old primary rejoined as a secondary. `dms-redis`
 stays one node: it is Pub/Sub, not storage.

@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Server Rules Service",
-    "description": "Server Rules Service has zero mocked business logic - it calls no service, publishes no event, consumes no event, and stores nothing about applicants. Every input arrives in the request. This collection exercises the real code paths end to end.\n\nTHROUGH THE GATEWAY ({{base_url}}). Only the routes the Lab 4 Gateway serves for this service: GET /health (public) and GET rulesets/{version} (player JWT, signed by the pre-request script). The Gateway's 4.0.0 (#110, IacovlevMaxim/gateway-service#15, merged into its dev) keeps only these and answers 404 NOT_FOUND to every other path of this service, without forwarding it; Session and Moderation reach the others through the Message Broker's queue requests.server-rules (gRPC), which Postman cannot send.\n\nDIRECT CALLS ({{server_rules_direct_url}}). Every other request goes to one instance directly, by its own path (/api/v1/..., /health/ready, /status, /logs, /metrics, without the Gateway's /server-rules prefix): /health/ready, /status, rulesets/current, the evaluations, /admin/*, /logs and /metrics. The REST port still serves every route, exactly as the broker's requests are served (dispatched to it over loopback). A direct request is a service call: no X-Player-Id. The contract routes check no token; GET /logs and, from 4.0.1 (#150), /admin/* and /dev/* check X-Service-Token themselves, so every direct request to them sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong; the admin folder has both cases). /admin/* also refuses a request carrying X-Player-Id (403 SERVICE_TOKEN_REQUIRED), even with the right token. Through the broker /admin/* and /dev/* are refused, since the broker never passes the token on. The pre-request script never touches a direct request.\n\nRUN FROM POSTMAN ON THE TEAM STACK. The compose publishes no port of this service (2 instances), so {{server_rules_direct_url}} (localhost:8083) answers only while one instance is forwarded to this machine:\ndocker run --rm -d --name server-rules-direct --network student-id-net -p 127.0.0.1:8083:8080 alpine/socat TCP-LISTEN:8080,fork,reuseaddr TCP:server-rules-service:8080\nBound to 127.0.0.1 only; stop it when done: docker stop server-rules-direct. Set service_token and jwt_secret to SERVICE_TOKEN and JWT_SECRET of the stack's .env. Checked on 2026-11-13 against the team stack this way.",
+    "description": "Server Rules Service has zero mocked business logic - it calls no service, publishes no event, consumes no event, and stores nothing about applicants. Every input arrives in the request. This collection exercises the real code paths end to end.\n\nTHROUGH THE GATEWAY ({{base_url}}). Only the routes the Lab 4 Gateway serves for this service: GET /health (public) and GET rulesets/{version} (player JWT, signed by the pre-request script). The Gateway's 4.0.0 (#110, IacovlevMaxim/gateway-service#15, merged into its dev) keeps only these and answers 404 NOT_FOUND to every other path of this service, without forwarding it; Session and Moderation reach the others through the Message Broker's queue requests.server-rules (gRPC), which Postman cannot send.\n\nDIRECT CALLS ({{server_rules_direct_url}}). Every other request goes to one instance directly, by its own path (/api/v1/..., /health/ready, /status, /logs, /metrics, without the Gateway's /server-rules prefix): /health/ready, /status, rulesets/current, the evaluations, /admin/*, /logs and /metrics. The REST port still serves every route, exactly as the broker's requests are served (dispatched to it over loopback). A direct request is a service call: no X-Player-Id. The contract routes check no token; GET /logs and, from 4.0.1 (#150), /admin/* and /dev/* check X-Service-Token themselves, so every direct request to them sends {{service_token}} (403 SERVICE_TOKEN_REQUIRED without it, 401 INVALID_SERVICE_TOKEN when wrong; the admin folder has both cases). /admin/* also refuses a request carrying X-Player-Id (403 SERVICE_TOKEN_REQUIRED), even with the right token. Through the broker /admin/* and /dev/* are refused, since the broker never passes the token on. The pre-request script never touches a direct request.\n\nRUN FROM POSTMAN ON THE TEAM STACK. The compose publishes no port of this service (2 instances), so {{server_rules_direct_url}} (localhost:8083) answers only while one instance is forwarded to this machine:\ndocker run --rm -d --name server-rules-direct --network student-id-net -p 127.0.0.1:8083:8080 alpine/socat TCP-LISTEN:8080,fork,reuseaddr TCP:server-rules-service:8080\nBound to 127.0.0.1 only; stop it when done: docker stop server-rules-direct. Set service_token and jwt_secret to SERVICE_TOKEN and JWT_SECRET of the stack's .env. Checked on 2026-11-13 against the team stack this way.\n\nLAB 5 (5.0.0, #175). The service runs on a replicated rules_db (rules-postgres-1..3, a multi-host Npgsql string, docs/SERVER_RULES_SERVICE.md section 12). GET /health/ready now checks the database: 200 with components.postgres.status \"up\", or 503 with \"down\" while no primary answers. The health folder checks that shape when GET /status reports a 5.x version and skips it against a 4.x instance, which reports no components, so the collection stays green on a 4.0.1 or 5.0.0 single-node stack. A database outage answers 500 DEPENDENCY_UNAVAILABLE with details.dependency \"postgres\" (never INTERNAL_ERROR), or 408 past the task deadline; a failover cannot be staged from Postman (stop the primary container, see the docs). Ruleset versions only grow but may skip numbers after a failover, so the clone test asserts only a larger version, and the admin folder deactivates the version it cloned, so a run leaves each difficulty's current ruleset as it found it. Through the Lab 5 Gateway a GET rulesets/{version} may come from its cache.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -51,8 +51,16 @@
         },
         {
           "name": "GET /health/ready (readiness - called directly, no credential)",
-          "description": "Not a Lab 4 Gateway route (the Gateway answers 404), so called on the instance itself. 503 until the migrations and the seed are done.",
-          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/health/ready" }
+          "description": "Not a Lab 4 Gateway route (the Gateway answers 404), so called on the instance itself. 503 until the migrations and the seed are done and, from 5.0.0, while no primary of rules_db answers (components.postgres.status \"down\"). The components check is the next request but one, after GET /status has told the version.",
+          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/health/ready" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('ready: 200 ok for server-rules', function () {",
+            "  pm.response.to.have.status(200);",
+            "  const body = pm.response.json();",
+            "  pm.expect(body.status).to.eql('ok');",
+            "  pm.expect(body.service).to.eql('server-rules');",
+            "});"
+          ] } }]
         },
         {
           "name": "GET /status (Service Discovery, outside the limiter - called directly)",
@@ -62,6 +70,38 @@
             "pm.test('status answers 200 with the agreed shape', function () {",
             "  pm.response.to.have.status(200);",
             "  pm.expect(pm.response.json()).to.have.all.keys('service', 'instance_id', 'version', 'status', 'in_flight', 'max_concurrent_tasks');",
+            "});",
+            "// Remembered for the 5.0.0-only checks of the next request (4.x reports no components on /health/ready).",
+            "pm.collectionVariables.set('server_rules_version', String(pm.response.json().version || ''));"
+          ] } }]
+        },
+        {
+          "name": "GET /health/ready - components.postgres up (5.0.0, called directly)",
+          "description": "Lab 5 (#175): readiness checks the database with a 3 s bound. 200 { status: ok, service: server-rules, components: { postgres: { status: up } } } while a primary answers; 503 { status: unavailable, ..., components: { postgres: { status: down } } } while none does (stop the primary to see it). Skipped against a 4.x instance, which reports no components.",
+          "request": { "method": "GET", "url": "{{server_rules_direct_url}}/health/ready" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "const version = pm.collectionVariables.get('server_rules_version') || '';",
+            "const major = parseInt(version.split('.')[0], 10);",
+            "const lab5 = major >= 5;",
+            "const body = pm.response.json();",
+            "(lab5 ? pm.test : pm.test.skip)('components.postgres has the 5.0.0 shape (' + (version || 'unknown version') + ')', function () {",
+            "  pm.expect(body).to.have.all.keys('status', 'service', 'components');",
+            "  pm.expect(body.components).to.have.all.keys('postgres');",
+            "  pm.expect(body.components.postgres).to.have.all.keys('status');",
+            "  pm.expect(['up', 'down']).to.include(body.components.postgres.status);",
+            "});",
+            "(lab5 ? pm.test : pm.test.skip)('a running stack: 200 with postgres up', function () {",
+            "  pm.response.to.have.status(200);",
+            "  pm.expect(body.status).to.eql('ok');",
+            "  pm.expect(body.components.postgres.status).to.eql('up');",
+            "});",
+            "pm.test('ready and components agree (503 only with postgres down)', function () {",
+            "  if (pm.response.code === 503 && body.components) {",
+            "    pm.expect(body.status).to.eql('unavailable');",
+            "    pm.expect(body.components.postgres.status).to.eql('down');",
+            "  } else {",
+            "    pm.response.to.have.status(200);",
+            "  }",
             "});"
           ] } }]
         },
@@ -314,7 +354,17 @@
           "event": [
             {
               "listen": "test",
-              "script": { "exec": ["const body = pm.response.json();", "pm.collectionVariables.set('cloned_version', body.version);"] }
+              "script": { "exec": [
+                "const body = pm.response.json();",
+                "pm.collectionVariables.set('cloned_version', body.version);",
+                "pm.test('201 with a new, larger version (5.0.0: versions only grow, but may skip numbers)', function () {",
+                "  pm.response.to.have.status(201);",
+                "  pm.expect(body.version).to.be.a('number');",
+                "  pm.expect(body.version).to.be.above(3);",
+                "  pm.expect(body.difficulty).to.eql(3);",
+                "  pm.expect(body.is_active).to.eql(true);",
+                "});"
+              ] }
             }
           ],
           "request": {
@@ -332,6 +382,22 @@
             "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
             "body": { "mode": "raw", "raw": "{ \"notes\": \"renamed via Postman\" }" }
           }
+        },
+        {
+          "name": "deactivate the cloned version (clean-up: difficulty 3's current ruleset is again the one before the run)",
+          "description": "The clone above is active and the newest of difficulty 3, so it became GET rulesets/current?difficulty=3. Deactivating it leaves the stack as the run found it (version 3 or a later active one stays active, so no 409 LAST_ACTIVE_RULESET).",
+          "request": {
+            "method": "PATCH",
+            "url": "{{server_rules_direct_url}}/api/v1/admin/rulesets/{{cloned_version}}",
+            "header": [{ "key": "X-Service-Token", "value": "{{service_token}}" }, { "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{ \"is_active\": false }" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('200, the clone is no longer active', function () {",
+            "  pm.response.to.have.status(200);",
+            "  pm.expect(pm.response.json().is_active).to.eql(false);",
+            "});"
+          ] } }]
         },
         {
           "name": "invalid ruleset - channel rule grants nothing (422 INVALID_RULESET)",

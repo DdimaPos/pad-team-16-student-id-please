@@ -58,6 +58,30 @@ x-cache-node: &cache_node
   networks:
     - student-id-net
 
+# Server Rules' replicated PostgreSQL (#164, #175): the environment and the node template its three nodes share.
+x-rules-pg-env: &rules_pg_env
+  POSTGRES_USER: ${RULES_POSTGRES_USER:-rules_user}
+  POSTGRES_PASSWORD: ${RULES_POSTGRES_PASSWORD:?set RULES_POSTGRES_PASSWORD}
+  POSTGRES_DB: ${RULES_POSTGRES_DB:-rules_db}
+  PGHA_CLUSTER: rules-postgres
+  PGHA_NODES: "rules-postgres-1 rules-postgres-2 rules-postgres-3"
+  REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD}
+  FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:?set FAILOVER_PASSWORD}
+  ETL_READER_PASSWORD: ${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}
+
+x-rules-pg-node: &rules_pg_node
+  image: postgres:17-alpine
+  restart: unless-stopped
+  entrypoint: ["bash", "/ha/node.sh"]
+  stop_grace_period: 30s
+  healthcheck:              # healthy as a primary and as a standby; the output (docker inspect) names the role
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" && psql -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -XAtc \"select case when pg_is_in_recovery() then 'standby' else 'primary' end\""]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  networks:
+    - student-id-net
+
 services:
   # Service Discovery (README "Service Discovery"): the registry every instance and the broker register with, the
   # broker routes from and Prometheus reads its targets from. One copy, registry in memory; after a restart every instance is
@@ -152,28 +176,43 @@ services:
     networks:
       - student-id-net
 
-  rules-postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${RULES_POSTGRES_USER:-rules_user}
-      POSTGRES_PASSWORD: ${RULES_POSTGRES_PASSWORD:?set RULES_POSTGRES_PASSWORD}
-      POSTGRES_DB: ${RULES_POSTGRES_DB:-rules_db}
-    volumes:
-      - rules_pgdata:/var/lib/postgresql/data
+  # Server Rules' database (Lab 5, #164 pattern, #175): one primary and two hot standbys, failover by pg-failover
+  # (deployments/postgres-ha/README.md). rules-postgres-1 starts as the primary; the service lists all three nodes
+  # and connects to the writable one (Target Session Attributes=read-write). Port 5434 of node 1 is for debugging.
+  rules-postgres-1:
+    <<: *rules_pg_node
+    environment: { <<: *rules_pg_env, PGHA_NODE: rules-postgres-1 }
     ports:
       - "5434:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${RULES_POSTGRES_USER:-rules_user} -d ${RULES_POSTGRES_DB:-rules_db}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - student-id-net
+    volumes:
+      - rules_pgdata_1:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  rules-postgres-2:
+    <<: *rules_pg_node
+    environment: { <<: *rules_pg_env, PGHA_NODE: rules-postgres-2 }
+    volumes:
+      - rules_pgdata_2:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  rules-postgres-3:
+    <<: *rules_pg_node
+    environment: { <<: *rules_pg_env, PGHA_NODE: rules-postgres-3 }
+    volumes:
+      - rules_pgdata_3:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
 
   server-rules-service:
-    image: d1vinexd/server-rules-service:4.0.1
+    image: d1vinexd/server-rules-service:5.0.0
     restart: unless-stopped
+    # A lookup of a stopped database node fails within 1 s (README "Database replication", Docker Desktop for Windows).
+    dns_opt: ["timeout:1", "attempts:1"]
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
       replicas: 2
@@ -182,10 +221,11 @@ services:
         condition: service_healthy
       message-broker-service:
         condition: service_healthy
-      rules-postgres:
+      rules-postgres-1:
         condition: service_healthy
     environment:
-      ConnectionStrings__RulesDb: "Host=rules-postgres;Port=5432;Database=${RULES_POSTGRES_DB:-rules_db};Username=${RULES_POSTGRES_USER:-rules_user};Password=${RULES_POSTGRES_PASSWORD:?set RULES_POSTGRES_PASSWORD}"
+      # Lab 5 (5.0.0): the three nodes, the writable one chosen by Npgsql (README "Database replication").
+      ConnectionStrings__RulesDb: "Host=rules-postgres-1,rules-postgres-2,rules-postgres-3;Port=5432;Database=${RULES_POSTGRES_DB:-rules_db};Username=${RULES_POSTGRES_USER:-rules_user};Password=${RULES_POSTGRES_PASSWORD:?set RULES_POSTGRES_PASSWORD};Target Session Attributes=read-write;Timeout=1;Host Recheck Seconds=2"
       Dev__EnableTestEndpoints: ${RULES_ENABLE_DEV_ENDPOINTS:-true}
       # Task timeout and concurrent task limit (README "Task timeout and concurrent task limit"). Dev__EnableTestEndpoints
       # mounts GET /api/v1/dev/slow?ms=, which demonstrates both. The broker checks the service token of every call;
@@ -736,7 +776,7 @@ services:
       SESSION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@session-postgres:5432/${SESSION_POSTGRES_DB:-session_db}?sslmode=disable"
       APPLICANT_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@applicant-postgres:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
       CREDENTIAL_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
-      RULES_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@rules-postgres:5432/${RULES_POSTGRES_DB:-rules_db}?sslmode=disable"
+      RULES_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@rules-postgres-1:5432,rules-postgres-2:5432,rules-postgres-3:5432/${RULES_POSTGRES_DB:-rules_db}?sslmode=disable"
       UNIVERSITY_RECORD_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@university-record-postgres:5432/${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}?sslmode=disable"
       MODERATION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
       DMS_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@dms-mongo:27017/dms_db?authSource=admin"
@@ -761,7 +801,7 @@ services:
     restart: unless-stopped
     entrypoint: ["bash", "/ha/pg-failover.sh"]
     environment:
-      PGHA_CLUSTERS: "moderation-postgres"
+      PGHA_CLUSTERS: "moderation-postgres rules-postgres"
       FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:-}
       REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-}
     volumes:
@@ -855,7 +895,9 @@ networks:
     name: student-id-net
 
 volumes:
-  rules_pgdata:
+  rules_pgdata_1:
+  rules_pgdata_2:
+  rules_pgdata_3:
   university_record_pgdata:
   moderation_pgdata_1:
   moderation_pgdata_2:

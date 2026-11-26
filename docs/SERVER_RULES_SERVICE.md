@@ -61,7 +61,7 @@ service, publishes no event, consumes no event, and stores nothing about applica
 | **Metrics** | `GET /metrics`, Prometheus text format, no credential (`4.0.0`) |
 | **Circuit breaker** | None: the service calls no other service, through the broker or otherwise |
 | **Authentication** | Lab 3: checked by the Gateway, not here: `GET /rulesets/current`, `POST /rulesets/{v}/evaluations` and `/admin/*` only with the service token, `GET /rulesets/{version}` with a player JWT. From `4.0.0` the broker checks the token as gRPC metadata of every call and never passes it on. The contract endpoints validate no token. The routes called directly, never through the broker or the Gateway, check `X-Service-Token` themselves (CPR README "Authentication" > "Through the Message Broker", rule 4): `GET /logs` (`4.0.0`) and, from `4.0.1` (#150), `/admin/*` and `/dev/*`: `403 SERVICE_TOKEN_REQUIRED` without it, `401 INVALID_SERVICE_TOKEN` when wrong, compared in constant time with `SERVICE_TOKEN`; an empty `SERVICE_TOKEN` matches no token, so those routes stay closed. `/admin/*` and `/dev/*` refuse a request that carries `X-Player-Id` first (`403 SERVICE_TOKEN_REQUIRED`), even with the right token |
-| **Docker image** | `d1vinexd/server-rules-service:5.0.0` (also tagged `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64`, published by CI when the release reaches `main`. `5.0.0` (#175) runs on the replicated database: the multi-host connection, `500 DEPENDENCY_UNAVAILABLE` for a database outage, `/health/ready` checking the database, a create that never reuses a `version`, `rulesets.updated_at` and the `etl_reader` grants, and a startup that waits for a primary (§12). The contract routes, the broker subscription, `/logs`, `/metrics` and the token check are those of `4.0.1` (#150, the token check of `/admin/*` and `/dev/*`). The team compose runs `5.0.0` |
+| **Docker image** | `d1vinexd/server-rules-service:5.0.1` (also tagged `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64`, published by CI when the release reaches `main`. `5.0.0` (#175) runs on the replicated database: the multi-host connection, `500 DEPENDENCY_UNAVAILABLE` for a database outage, `/health/ready` checking the database, a create that never reuses a `version`, `rulesets.updated_at` and the `etl_reader` grants, and a startup that waits for a primary (§12). The contract routes, the broker subscription, `/logs`, `/metrics` and the token check are those of `4.0.1` (#150, the token check of `/admin/*` and `/dev/*`). The team compose runs `5.0.0` |
 | **Architecture** | Clean Architecture, five projects: `Domain` (pure - the condition DSL, evaluator, channel resolver), `Repositories` (interfaces), `Services` (use cases), `Infrastructure` (EF Core + Npgsql; from `5.0.0` also `Persistence/DatabaseFailure`, which tells a database outage from a bug, and the startup initializer that waits for a primary), `Api` (minimal APIs; from `4.0.0` also `Messaging`, the broker consumer and the loopback dispatch, and the log file and metrics in `Observability`) |
 
 ---
@@ -75,7 +75,7 @@ docker network create student-id-net   # once, if it does not already exist
 docker run -d --name server-rules-service --network student-id-net \
   -p 8083:8080 \
   -e ConnectionStrings__RulesDb="Host=<postgres-host>;Port=5432;Database=rules_db;Username=rules_user;Password=<password>" \
-  d1vinexd/server-rules-service:5.0.0
+  d1vinexd/server-rules-service:5.0.1
 ```
 
 Against the replicated database list every node and let Npgsql find the primary (§12):
@@ -360,7 +360,8 @@ Postman cannot send the broker's gRPC calls.
 
 From `4.0.0`, as CPR README "Message Broker", "Authentication" ("Through the Message Broker"), "Logs
 download" and "Monitoring" describe it (#105). `Protos/broker.proto` is a byte-identical
-copy of the CPR's [`shared/broker.proto`](../shared/broker.proto). `4.0.1` (#150) adds the
+copy of the CPR's [`shared/broker.proto`](../shared/broker.proto). From `5.0.1` it is the Lab 5 file, with the saga
+RPCs (`StartSaga`, `GetSaga`) this service does not call. `4.0.1` (#150) adds the
 `X-Service-Token` check of `/admin/*` and `/dev/*` (§5.2), so those routes are reached only directly.
 
 ### The subscription

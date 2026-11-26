@@ -288,7 +288,7 @@ services:
       - pg_ha_state:/ha-state:ro
 
   server-rules-service:
-    image: d1vinexd/server-rules-service:5.0.0
+    image: d1vinexd/server-rules-service:5.0.1
     restart: unless-stopped
     # A lookup of a stopped database node fails within 1 s (README "Database replication", Docker Desktop for Windows).
     dns_opt: ["timeout:1", "attempts:1"]

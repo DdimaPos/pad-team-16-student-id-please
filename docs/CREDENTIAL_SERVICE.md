@@ -3,11 +3,11 @@
 Everything another service, a gateway or a teammate needs in order to work with this service,
 without reading its source.
 
-Team 16 · *Student ID, please* · FAF.PAD21.1 · version `4.0.0`
+Team 16 · *Student ID, please* · FAF.PAD21.1 · version `5.0.0`
 
 For "how do I start it", see [README.md](../credential-service/README.md). This document is the contract.
 
-Everything here describes the published image `4.0.0`. Where it differs from the CPR contract,
+Everything here describes the published image `5.0.0`. Where it differs from the CPR contract,
 [§11](#11-divergences-from-the-cpr-contract) says so.
 
 **Lab 4** moved every request and every event of this service onto the Message Broker:
@@ -15,6 +15,11 @@ requests arrive on the queue `requests.credential`, events are published to and 
 `events.applicant.initialized`, all over gRPC ([§5.5b](#55b-requests-and-events-through-the-message-broker),
 [§8](#8-events)). The REST port stays for the probes, `/logs`, `/metrics` and direct calls
 inside the network.
+
+**Lab 5** runs the database as the replica set `rs0` of three members behind one multi-member
+`MONGODB_URI`: when the primary stops, the other two elect a new one within seconds, the driver
+finds it by itself and no acknowledged write is lost ([§12.3](#123-mongodb-is-away)). The data
+warehouse's ETL reads the database read-only as `etl_reader` ([§9](#9-what-and-how-it-stores)).
 
 ## Contents
 
@@ -71,14 +76,14 @@ Rules Service's ruleset.
 | Status (Service Discovery) | `GET /status` - load and health of this copy ([§5.6](#56-health)) |
 | Logs and metrics | `GET /logs` (service token) and `GET /metrics` (Prometheus), on the REST port ([§15](#15-observability)) |
 | Instances | 2-3 copies share the one database; each subscribes to the broker, which hands every request to the least loaded copy ([§14](#14-running-several-instances)) |
-| Database | MongoDB, `credential_db` |
+| Database | MongoDB 7, `credential_db`; from Lab 5 a replica set `rs0` of three members (`credential-mongo-1..3`), reached with one multi-member `MONGODB_URI` ([§12.3](#123-mongodb-is-away)). The data warehouse's ETL reads it read-only as `etl_reader` ([§9](#9-what-and-how-it-stores)) |
 | Events | through the Message Broker over gRPC (CPR README "Event delivery"): published once from a transactional outbox to `events.applicant.initialized`, received on the instance's subscription to that topic and acked |
 | Produces | `applicant.initialized`; the broker hands a copy to Applicant and University Record Service |
 | Consumes | `applicant.initialized` from Applicant and University Record Service (its own copy is ignored) |
 | Auth | none in the service: the broker checks the service token on every gRPC call, and the Gateway checks a player's JWT before it hands a request to the broker, which passes on only `X-Player-Id`. `GET /logs` is the exception: it checks `X-Service-Token` itself - see [§13](#13-gateway-and-broker-requirements) |
 | Outbound calls | gRPC to the broker at `MESSAGE_BROKER_URL` (`Subscribe`, `Publish`, `Ack`, `Reply`) with `x-service-token` metadata; its registration with Service Discovery, directly |
 | Producer name | `credential-service` |
-| Image | `stewdh/credential-service:4.0.0`, also `:latest` (linux/amd64, linux/arm64), published by CI on every merge to `main` |
+| Image | `stewdh/credential-service:5.0.0`, also `:latest` (linux/amd64, linux/arm64), published by CI on every merge to `main` |
 | Error envelope | `{"error":{"code","message","details"}}` |
 | Timestamps | ISO 8601, UTC, whole seconds |
 | Identifiers | UUID v4 strings |
@@ -116,7 +121,7 @@ a message naming the variable rather than at the first request that happens to n
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `MONGODB_URI` | — | **required.** Connection string, credentials included |
+| `MONGODB_URI` | — | **required.** Connection string, credentials included. From Lab 5 it lists the three members of the replica set: `mongodb://<user>:<pw>@credential-mongo-1:27017,credential-mongo-2:27017,credential-mongo-3:27017/credential_db?replicaSet=rs0&authSource=admin` ([§12.3](#123-mongodb-is-away)). A tool on the host that reaches one member through a published port adds `directConnection=true` |
 | `MONGODB_DATABASE` | `credential_db` | database inside that deployment |
 | `DB_MAX_POOL_SIZE` | `20` | driver connection pool |
 | `DB_CONNECT_TIMEOUT` | `30s` | also the server-selection timeout |
@@ -154,8 +159,8 @@ whatever the request is waiting on in MongoDB is cancelled and the service answe
 `408 REQUEST_TIMEOUT`. An applicant is one document written by one operation, and that operation
 is not started once the deadline has passed; one that did start finishes and is answered normally.
 So `408` always means the applicant was not stored, changed or deleted. The university email
-reserved while generating the applicant is a write of its own (standalone MongoDB, no
-multi-document transactions), recorded under the new applicant's id; when the applicant is not
+reserved while generating the applicant is a write of its own (no multi-document transaction: the
+service also runs on a standalone server, CI's included), recorded under the new applicant's id; when the applicant is not
 stored - a timeout, a failed insert - it is handed back. Only when MongoDB is unreachable for
 that too does the address stay reserved, which costs a later applicant with the same name a
 numeric suffix; no applicant, document or event refers to it.
@@ -229,7 +234,9 @@ could point at either.
 **Not idempotent.** Two calls make two applicants. There is no request-id deduplication; the
 caller owns the retry decision, as it does on Applicant Service.
 
-Errors: `400 VALIDATION_ERROR`.
+Errors: `400 VALIDATION_ERROR`; `500 DEPENDENCY_UNAVAILABLE` (`details.dependency: "mongodb"`) when the database
+refuses the write; `408 REQUEST_TIMEOUT` when no primary answers within the task timeout (an election,
+[§12.3](#123-mongodb-is-away)). Nothing is stored in either case.
 
 ### 5.3 `GET /api/v1/applicants/{applicant_id}/documents`
 
@@ -363,7 +370,7 @@ restarting a healthy container because somebody else's database was slow would b
 `GET /health/ready`:
 
 ```json
-{ "status": "ok", "service": "credential-service", "version": "4.0.0",
+{ "status": "ok", "service": "credential-service", "version": "5.0.0",
   "components": { "mongodb": {"status": "up"}, "message_broker": {"status": "up"},
                   "event_relay": {"status": "up"} },
   "pending_events": 0, "parked_events": 0 }
@@ -374,7 +381,7 @@ restarting a healthy container because somebody else's database was slow would b
 | everything configured and subscribed | `ok` | `200` | |
 | `MESSAGE_BROKER_URL` unset | `degraded` | `200` | `components.message_broker` and `components.event_relay` `disabled` |
 | the broker not answering | `degraded` | `200` | `components.message_broker.status: "down"`; `pending_events` climbs when applicants are created on the REST port |
-| Mongo unreachable | `unavailable` | `503` | `components.mongodb` |
+| Mongo unreachable, or no primary within 1 s (an election) | `unavailable` | `503` | `components.mongodb`; the ping and the backlog count are each bounded to 1 s, like `GET /status`, so the probe answers instead of waiting for a primary |
 
 `pending_events` is the outbox backlog: events not yet published, due or waiting out a retry
 backoff. `parked_events` counts events set aside because they can never be published (the
@@ -392,7 +399,7 @@ reports from Service Discovery. No credential; like the health checks it sits ou
 at full load reports itself busy instead of looking broken.
 
 ```json
-{ "service": "credential", "instance_id": "credential-3f4e2a9b1c7d", "version": "4.0.0",
+{ "service": "credential", "instance_id": "credential-3f4e2a9b1c7d", "version": "5.0.0",
   "status": "up", "in_flight": 3, "max_concurrent_tasks": 64 }
 ```
 
@@ -776,8 +783,26 @@ deliberately left out — its absence from the group lists is exactly the tell a
 with the `email-groups` scope discovers.
 
 **Indexes** (created at startup, idempotently): `session_id + created_at`, `created_at`,
-a partial index on deliveries still owed (`outbox.deliveries.next_attempt_at`), and
-`session_id + actual.university_status` for impersonation victims.
+`updated_at` (Lab 5, the ETL's watermark), a partial index on deliveries still owed
+(`outbox.deliveries.next_attempt_at`), and `session_id + actual.university_status` for
+impersonation victims.
+
+**One document, so no transaction (Lab 5, #174).** A bundle and the event that announces it are
+written by one `InsertOne` of one document, so they are stored together or not at all - on a
+standalone server and on the replica set alike, an election included. The replica set would allow a
+multi-document transaction; this needs none. The email reservations stay writes of their own,
+handed back when the applicant is not stored ([§4](#4-configuration), task timeout).
+
+**What the ETL reads (Lab 5).** The data warehouse's ETL Service reads `credential_db` read-only,
+from a secondary, as `etl_reader` (CPR README "Data warehouse and ETL"). The replica set's init step
+creates the role with MongoDB's `read` on this database (CPR #164), so nothing here creates or
+changes it. `read` covers the whole database, so what may leave is fixed by the contract and done
+by the ETL: from `applicants` only `_id`, `session_id`, `difficulty`, `documents.type`,
+`documents.validation_status`, `documents.problems`, `is_honest`, `created_at` and `updated_at` -
+never an email address, a document's `fields`, `claimed` or `actual` - and nothing from
+`email_reservations`. Its watermark is `updated_at` (`by_updated_at`), set on insert and on every
+`PATCH` from the application's clock, to the second, before the write; so the ETL reads `>=` its
+watermark and its upsert absorbs the overlap.
 
 **`actual` never leaves the service.** It is stored because validation is computed at ingest —
 the one moment the truth is available — and because the email namespace is answered from it.
@@ -850,12 +875,18 @@ Raise these in the CPR before integration.
 | --- | --- | --- |
 | 2 | **`GET .../documents/validation` is protected only by the broker's token check** (and, since Lab 4, by not being a Gateway route) and by this port being unpublished. Reading no credential in the service is correct under the contract | the broker, the Gateway |
 | 3 | **`422 VALIDATION_ERROR`** for an impossible person. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | generic clients |
-| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, with course codes matching `^[A-Z]{2,4}$`. Image `4.0.0` still ships the copy taken from Applicant Service before that file existed, and it does not match: 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format. Its `fake_courses.json` (`ELSE-NET`, `QBIT-101`, `WEB5`, …) does not follow the format either | University Record Service, Moderation |
+| 4 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, with course codes matching `^[A-Z]{2,4}$`. Image `5.0.0` still ships the copy taken from Applicant Service before that file existed, and it does not match: 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format. Its `fake_courses.json` (`ELSE-NET`, `QBIT-101`, `WEB5`, …) does not follow the format either | University Record Service, Moderation |
 | 5 | **Five CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `GET`, `PATCH`, `DELETE`) | the broker and the Gateway — see [§13](#13-gateway-and-broker-requirements) |
 | 6 | **`POST /api/v1/applicants` does not produce `applicant.initialized`** | anyone expecting every applicant to be announced |
 | 7 | **The contract read endpoints do not use the `{items, total}` list envelope.** The API conventions prescribe it for lists; both document endpoints are specified with `{applicant_id, documents}` and the endpoint spec wins. The extension list endpoint does use `{items, total}` | anyone writing a generic client |
 | 8 | **Forgery is mapped to the document that asserts the claim**, not smeared across the bundle ([§7](#7-validation-rules)). The contract says "the documents that support the false claim"; this table is the reading of *which* | Moderation Service |
 | 9 | **The event consumer deduplicates on `applicant_id`, not `event_id`** ([§5.5b](#55b-requests-and-events-through-the-message-broker)). The contract says a consumer "remembers the `event_id` values it has seen"; keying on the document's primary key gives the same idempotency without a second collection or a transaction, and additionally folds two producers announcing the same applicant into one | nobody in practice; noted for the record |
+
+**Lab 5 (`5.0.0`).** Follows the Lab 5 contract (CPR #163: README "Database replication" and "Data
+warehouse and ETL") with no new divergence. `api/proto/broker.proto` is the CPR's Lab 5
+`shared/broker.proto` byte for byte, with `StartSaga` and `GetSaga`, which this service does not
+call. The replica set and `etl_reader` come from the replication pattern (CPR #164), and the ETL's projection
+is the ETL's.
 
 **Lab 4 (`4.0.0`).** Built against the broker contract proposed for CPR issue #105 before it was
 merged: `broker.proto` (package `broker.v1`) is vendored in `api/proto/` byte for byte, with
@@ -935,6 +966,27 @@ producers' outboxes.
 `/health/ready` answers `503` and reads and writes return
 `500 DEPENDENCY_UNAVAILABLE` with `details.dependency = "mongodb"`. Nothing is changed.
 
+**Election (Lab 5).** On the replica set, when the primary stops the other two members elect a new
+one - within a few seconds, since the replica set's init step (CPR #164) sets `electionTimeoutMillis`
+to 5 s; the target is writes again within 15 s (CPR README "Database replication"). Meanwhile:
+
+- A request that reaches the database waits for a primary: a write is cut at its 2 s write timeout
+  and answers `500 DEPENDENCY_UNAVAILABLE` (`details.dependency = "mongodb"`), never
+  `INTERNAL_ERROR`, so the broker's breakers do not count it; `POST /applicants/next` first reads
+  (the session's victim) and reserves its emails on the request's own deadline, so during an
+  election it answers `408` at the 5 s task timeout, or succeeds once a primary is elected.
+  `/health/ready` and `GET /status` answer `503` while no primary answers within 1 s. Measured on the
+  replication pattern (#164) with `docker kill` of the primary: one `408`, writes back after 5.4 s;
+  with `docker stop` the election finished before any write failed.
+- The driver finds the new primary itself and retries a write once after a primary change
+  (retryable writes, on by default): no restart, no write to a secondary, and the old primary comes
+  back as a secondary.
+- A bundle is one document, so an election never leaves a bundle without its event, or the reverse
+  ([§9](#9-what-and-how-it-stores)).
+- An `applicant.initialized` that arrives meanwhile is acked `RETRY` and delivered again 5 s later;
+  the broker tries 5 times (broker `5.0.0`; 3 with `4.0.0`) before it sends it to the dead letter
+  channel, so the event outlasts a write outage of up to 20 s.
+
 ### 12.4 The same event arrives twice
 
 Ingest is an insert keyed on `applicant_id`, so the second arrival changes nothing and is
@@ -1007,7 +1059,7 @@ up, directly with Service Discovery, with the topics it publishes and subscribes
 ```
 PUT {SERVICE_DISCOVERY_URL}/api/v1/instances/credential-<hostname>
 X-Service-Token: {SERVICE_TOKEN}
-{"service_name": "credential", "port": 8082, "version": "4.0.0",
+{"service_name": "credential", "port": 8082, "version": "5.0.0",
  "topics": {"publishes": ["events.applicant.initialized"],
             "subscribes": ["events.applicant.initialized"]}}     (+ "host" only with INSTANCE_HOST)
 ```
@@ -1055,7 +1107,7 @@ or an event and on the relay's lines for a publish, and `correlation_id` on ever
 request the broker delivered.
 
 ```json
-{"time":"2026-11-02T12:00:00.123Z","level":"info","msg":"request","service":"credential","instance_id":"credential-3f4e2a9b1c7d","version":"4.0.0","event":"http.request","method":"GET","path":"/api/v1/applicants/5d2c8e4a-…/documents","status":200,"duration_ms":7,"client_ip":"172.18.0.12","player_id":"8c1f6a2e-…","request_id":"9d2d…","correlation_id":"7a74…"}
+{"time":"2026-11-02T12:00:00.123Z","level":"info","msg":"request","service":"credential","instance_id":"credential-3f4e2a9b1c7d","version":"5.0.0","event":"http.request","method":"GET","path":"/api/v1/applicants/5d2c8e4a-…/documents","status":200,"duration_ms":7,"client_ip":"172.18.0.12","player_id":"8c1f6a2e-…","request_id":"9d2d…","correlation_id":"7a74…"}
 ```
 
 **`X-Request-ID`** is read from the request or generated (uuid4), echoed on the response,

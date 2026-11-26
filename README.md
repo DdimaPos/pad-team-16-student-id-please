@@ -133,34 +133,31 @@ No service calls another service, and no client calls a service, directly. A cli
 
 ![Architecture Diagram](img/ArchitecturalDiagram.png)
 
-The diagram shows the system of Lab 4 as it runs when every component runs its `4.x` image. `docker-compose.yml` runs the broker, the Gateway `4.0.0` and the monitoring since #113; each service runs its `4.x` image once its own Lab 4 delivery is merged.
+The diagram shows the system of Lab 5 as the team `docker-compose.yml` runs it; its editable source is [`img/ArchitecturalDiagram.drawio`](img/ArchitecturalDiagram.drawio), to be changed together with the PNG. Every arrow on it is a row of [Every arrow in the diagram](#every-arrow-in-the-diagram-and-the-rule-it-follows), plus the lines that only show ownership, copies and monitoring (the legend at the bottom names each kind).
 
-A client reaches the system only through the **Gateway** (REST with the player's JWT). The Gateway turns each request into a gRPC `Request` on the **Message Broker**, which puts it into the `requests.<service>` queue of the target service and hands it to one instance of that service. The eight services sit in three groups:
+**Copies.** Each of the eight services runs two copies, drawn as a stacked box marked `×2`. The Gateway, Service Discovery, the Message Broker, `dms-ws-proxy`, the ETL Service, `pg-failover` and the monitoring run one copy each (`×1`).
+
+**The request path.** A client reaches the system only through the **Gateway** (REST with the player's JWT). The Gateway turns each request into a gRPC `Request` on the **Message Broker**, which puts it into the `requests.<service>` queue of the target service and hands it to one instance of that service. Beside the Gateway are its three cache nodes, `cache-1` to `cache-3` (Valkey), on the consistent-hash ring that picks one node per key: they hold the cached `GET` answers and the authentication data (`auth:player:<id>`, `auth:revoked:<jti>`); see [Caching](#caching) and [Cache sharding](#cache-sharding). The eight services sit in three groups:
 
 - **Session Layer:** Discord DMs, Server Moderation Session and Player.
 - **Moderation:** Moderation Service and Server Rules Service.
 - **Applicant Data:** Applicant, Credential and University Record.
 
-Each blue line between the broker and a service is two-way and carries several kinds of traffic over one gRPC connection:
+**Between the broker and a service** every line is carried by the one gRPC connection of each instance (its `Subscribe` stream, and its `Reply`, `Ack`, `Publish`, `Request` and `StartSaga` on the same connection); the picture draws its kinds of traffic apart:
 
-- the instance's `Subscribe` stream, which delivers the requests of its `requests.<service>` queue and the events of the `events.<event_type>` topics its service subscribed to;
-- its `Reply` to a request and its `Ack` of an event;
-- its own `Publish` of an event and its `Request` to another service.
+- the blue line: the requests of its `requests.<service>` queue and its own requests to other services;
+- the orange dashed line: the events, pointing from the publisher to the broker and from the broker to the subscribers. Which topics a service publishes (`pub`) and subscribes to (`sub`) is written in its box;
+- the purple dashed lines: the saga `shift.start`. Session asks the broker to run it (`StartSaga`), and the saga coordinator inside the broker calls the step routes: `shift-begin` and `shift-confirm` on Session, `grant-scopes` on University Record, `create-channels` on Discord DMs (see [Sagas](#sagas)).
 
-No service has a line to another, because none addresses another directly: a call or an event from one service to another goes through the broker. Which service calls which, and with which rule, is listed in [Every arrow in the diagram](#every-arrow-in-the-diagram-and-the-rule-it-follows); that table shows the broker in the middle. The broker keeps its queues and dead letters in SQLite on a volume (#108). It listens for gRPC on `:8071` and serves its HTTP side on `:8070`: `/status`, `/logs`, `/metrics`, the topics listing and the dead letters.
+No service has a line to another, because none addresses another directly: a call or an event from one service to another goes through the broker. The broker keeps its queues, dead letters and saga log in SQLite on a volume. It listens for gRPC on `:8071` and serves its HTTP side on `:8070`.
 
-The gray dashed lines are direct HTTP calls with **Service Discovery**:
+**The chat.** The green dashed line is the one client path that bypasses the Gateway: the chat WebSocket. The client first gets a one-time ticket and a WebSocket URL through the Gateway (see [Gateway](#gateway)), then connects to `dms-ws-proxy` (nginx) on port `8086`, which passes the connection on to one of the two Discord DMs copies, so the Gateway is not kept busy carrying the chat.
 
-- every instance and the broker register, heartbeat and deregister;
-- Service Discovery polls their `GET /status` and fetches their `GET /logs`, and the Gateway's as a static target;
-- the broker reads the instance list and the loads, marks an instance down after its breaker trips, and posts one alert per dead letter;
-- Service Discovery sends its alerts to Telegram.
+**Service Discovery.** The gray dashed lines are direct HTTP calls with **Service Discovery**: every instance, the broker and the ETL Service register, heartbeat and deregister, and Service Discovery polls their `GET /status` and fetches their `GET /logs` (the Gateway's as a static target); the broker reads the instance list and the loads, marks an instance down after its breaker trips and posts one alert per dead letter; Service Discovery sends its alerts to Telegram.
 
-The red dotted lines are the monitoring of #113. Prometheus finds the instances through Service Discovery and scrapes the `/metrics` of every component, the Gateway's as a static target, and Grafana shows them. The host ports are final: `9090` for Prometheus and `3000` for Grafana (#113).
+**Monitoring.** The red dotted lines: Prometheus finds the instances through Service Discovery and scrapes the `/metrics` of every component (the Gateway and Service Discovery as static targets). Alloy reads every container's logs through the Docker socket and pushes them to Loki. Grafana reads Prometheus, Loki and, for its "Analytics" dashboard, the warehouse. Host ports: `9090` Prometheus, `3000` Grafana.
 
-The green dashed line is the one client path that bypasses the Gateway: the chat WebSocket. The client first gets a one-time ticket and a WebSocket URL through the Gateway (see [Gateway](#gateway)), then connects to Discord DMs directly on port `8086`, so the Gateway is not kept busy carrying the chat.
-
-Each service owns its database, drawn beneath it, and no database is shared. Player, Session, Moderation, Server Rules, Applicant and University Record use PostgreSQL, Credential uses MongoDB, and Discord DMs uses MongoDB for messages and Redis for Pub/Sub. Session keeps everything in PostgreSQL ([`docs/SERVER_MODERATION_SESSION_SERVICE.md`](docs/SERVER_MODERATION_SESSION_SERVICE.md)).
+**The data layer.** Each service owns its database, drawn beneath it, and no database is shared. Every service database runs as a primary and two replicas (see [Database replication](#database-replication)): Player, Session, Moderation, Server Rules, Applicant and University Record as PostgreSQL clusters (`<db>-1` starts as the primary, `-2` and `-3` as standbys), Credential and Discord DMs as MongoDB replica sets `rs0`. The teal dotted arrows are the replication. `pg-failover` watches every PostgreSQL cluster and promotes a standby when a primary stops. Discord DMs also uses Redis (`dms-redis`) for Pub/Sub only; Session keeps everything in PostgreSQL and has no Redis. The brown dash-dot lines are the ETL: the ETL Service reads every service database from a standby, as `etl_reader`, and writes the star schema into `warehouse-postgres` (`warehouse_db`); see [Data warehouse and ETL](#data-warehouse-and-etl). The cache nodes, `dms-redis`, the broker's SQLite and the warehouse are not replicated.
 
 ---
 

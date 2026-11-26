@@ -347,7 +347,9 @@ ETL's `etl_reader` user with `read` on `dms_db` only. `dms-redis` stays one Pub/
 - **ETL (#165).** The ETL reads `channels` and `messages` incrementally from a secondary as `etl_reader`. Every id is a
   UUID string (no `ObjectId` time), so the watermarks are `channels.created_at` and `messages.sent_at`, indexed by
   `{ created_at: 1 }` and `{ sent_at: 1 }`. Both are set by the service with one-second precision; messages can be
-  edited (`edited_at`) and deleted by an admin, which an incremental read on `sent_at` does not see.
+  edited (`edited_at`) and deleted by an admin, which an incremental read on `sent_at` does not see. The same goes
+  for a compensation of `create-channels`: it deletes the saga's channels (they hold no message, the shift never
+  started), and a channel the ETL had already copied stays in the warehouse.
 - **This repository's compose files stay one standalone `mongod`**: a local run and CI need no replica set, and the
   saga steps then use ordered writes (see above).
 

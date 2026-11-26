@@ -1821,7 +1821,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1867,7 +1867,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1921,6 +1921,37 @@
           ]
         },
         {
+          "name": "junior B (email-groups, fcim-logs) sees general-mod-chat and faculty-check (Gateway)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Player-Id",
+                "value": "{{junior_b_id}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/sessions/{{saga_session_id}}/channels",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const names = pm.response.json().items.map(c => c.name).sort();",
+                  "pm.test(\"the channels of junior B's scopes, as the step's payload gave them\", () => pm.expect(names).to.eql([\"faculty-check\", \"general-mod-chat\"]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
           "name": "a request that names a player is refused",
           "request": {
             "method": "POST",
@@ -1939,7 +1970,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2021,7 +2052,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2092,7 +2123,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2127,7 +2158,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"saga_id\": \"{{$guid}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "raw": "{\n  \"saga_id\": \"{{$guid}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2207,7 +2238,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2253,7 +2284,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -2322,7 +2353,7 @@
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"email_groups\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"courses\",\n          \"fcim_log\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
+              "raw": "{\n  \"saga_id\": \"{{saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\",\n  \"payload\": {\n    \"session_id\": \"{{saga_session_id}}\",\n    \"moderator_id\": \"{{moderator_id}}\",\n    \"junior_moderators\": [\n      {\n        \"player_id\": \"{{junior_a_id}}\",\n        \"record_scopes\": [\n          \"enrollment\",\n          \"courses\"\n        ]\n      },\n      {\n        \"player_id\": \"{{junior_b_id}}\",\n        \"record_scopes\": [\n          \"email-groups\",\n          \"fcim-logs\"\n        ]\n      }\n    ],\n    \"ruleset_version\": 7,\n    \"started_at\": \"2026-11-27T12:00:00Z\"\n  }\n}",
               "options": {
                 "raw": {
                   "language": "json"

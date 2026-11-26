@@ -2703,7 +2703,8 @@ they are refused.
 From `5.0.0` (`d1vinexd/server-rules-service:5.0.0`, the compose's image) it runs on `rules-postgres-1..3` with the
 multi-host `ConnectionStrings__RulesDb` (see [Database replication](#database-replication)), answers
 `500 DEPENDENCY_UNAVAILABLE` while no primary answers, checks the database on `/health/ready`, and its migrations add
-`rulesets.updated_at` and grant `etl_reader` `SELECT` on `rulesets` and `rules`.
+`rulesets.updated_at` and grant `etl_reader` `SELECT` on `rulesets` and `rules`. `5.0.1` (`d1vinexd/server-rules-service:5.0.1`,
+the compose's image) carries the Lab 5 `shared/broker.proto` byte-identical and changes no API.
 
 `d1vinexd/university-record-service` is published for `linux/amd64` and `linux/arm64`. From `4.0.0`
 (`d1vinexd/university-record-service:4.0.0`) it subscribes to the Message Broker at `MESSAGE_BROKER_URL`

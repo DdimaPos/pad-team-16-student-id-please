@@ -2756,12 +2756,16 @@ Four containers in `docker-compose.yml` (#113), configured from [`monitoring/`](
   sources, from Lab 5 also "Warehouse" (PostgreSQL, uid `warehouse`, `warehouse_db` as the read-only
   `grafana_reader`, `WAREHOUSE_GRAFANA_PASSWORD`), and three dashboards in the folder "Student ID, please":
   - **System:** requests per second and `5xx` per service, latency p50/p95, `tasks_in_flight` per instance, every
-    circuit breaker, instances up per service, warnings and errors of every component, and Service Discovery's
+    circuit breaker, instances up per service, from Lab 5 the Gateway's cache hit ratio per cache node and its
+    `X-Cache` answers by result (`hit`, `miss`, `bypass`) with the failed node calls (#166, #167), warnings and
+    errors of every component, and Service Discovery's
     instance alerts (`health.unreachable`, `registry.marked_down`, `registry.expired`, `registry.recovered`,
     `health.critical`) as a logs panel and as red annotations on the graphs.
   - **Broker:** queue depth per queue, messages per second by outcome, published and delivered per queue,
     redeliveries and dead letters, request latency p50/p95 and rate per called service, the breaker of each
-    instance, and the broker's dead letter, reroute, timeout and trip lines.
+    instance, from Lab 5 the sagas by state (`running`, `compensating`, `completed`, `compensated`, `failed`) and the
+    p95 duration of each saga step and compensation (#168), and the broker's dead letter, reroute, timeout and trip
+    lines.
   - **Analytics** (Lab 5, #165; from the warehouse, not from Prometheus): decisions per day, correct and wrong, the
     accuracy per moderator, the applicants by status and difficulty, the messages per session, the average shift
     score (overall and per day and difficulty), the shifts ended, and the last ETL runs with their rows and failed

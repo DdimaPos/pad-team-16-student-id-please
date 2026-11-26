@@ -1,7 +1,7 @@
 {
   "info": {
     "name": "Server Moderation Session Service",
-    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded comes from the broker -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway, except the DIRECT CALLS below. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`.\n\nDIRECT CALLS. The Lab 4 Gateway serves only the client routes (README \"Gateway\") and answers 404 on every other path. These go to one instance directly through {{session_direct_url}}, with the instance's own paths: GET /health/ready, GET /status, GET /logs, GET /metrics, GET /api/v1/sessions/{id}/deliveries, PUT /api/v1/sessions/{id} (the 405, with X-Player-Id) and GET /api/v1/dev/slow. GET /logs and /deliveries send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. POST /session/events stays on the Gateway to show that no client can push an event.\n\nLAB 4 (4.0.0). decision.recorded arrives from the Message Broker (topic events.decision.recorded), not on POST /events, which is removed; the service's calls to Player, Server Rules and Applicant go through the broker too, so the flow needs those services on the broker: Server Rules, Applicant and Player run 4.0.0 in the CPR compose; or run the session without MESSAGE_BROKER_URL, on its stubs. Postman cannot send the broker's gRPC calls: publish decision.recorded with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711).\n\nLAB 5 (5.0.0). The folder \"saga steps\" calls the saga shift.start's step routes on an instance directly (service-only; the Gateway answers 404). GET /sessions?status= accepts starting. POST /start still answers 200 with the session active and publishes session.started: StartSaga waits for #168. The replicated database and the ETL grants are not visible over HTTP (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a714).\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
+    "description": "Team 16 - \"Student ID, please\". Server Moderation Session Service, owner Postoronca Dumitru.\n\nEvery request name carries the status code it expects, so the collection can be checked mechanically. Folders marked 'run in order' capture ids into collection variables and depend on the requests before them - use the Collection Runner on the folder rather than firing individual requests.\n\nOrder: health -> auth -> caller identity -> sessions (contract) -> events - decision.recorded comes from the broker -> ending the shift -> errors - setup -> error codes -> sessions (beyond contract) -> dev - task timeout -> cleanup.\n\nEvery request goes through the Gateway, except the DIRECT CALLS below. Requests that act for a player send `Authorization: Bearer <jwt>`; the 'auth' folder registers four fresh players through Player Service (POST /player/players), logs them in and stores their ids and tokens, so run it first. Fresh players keep the run independent of the seed - the seeded dima_mod, maxim_jr and vlad_jr are members of the seeded active session, the contract's own example - and of the other collections; the cleanup folder deletes them. The Gateway validates the token and forwards only `X-Player-Id`.\n\nDIRECT CALLS. The Lab 4 Gateway serves only the client routes (README \"Gateway\") and answers 404 on every other path. These go to one instance directly through {{session_direct_url}}, with the instance's own paths: GET /health/ready, GET /status, GET /logs, GET /metrics, GET /api/v1/sessions/{id}/deliveries, PUT /api/v1/sessions/{id} (the 405, with X-Player-Id) and GET /api/v1/dev/slow. GET /logs and /deliveries send `X-Service-Token: {{service_token}}`, which must equal SERVICE_TOKEN in the CPR .env. POST /session/events stays on the Gateway to show that no client can push an event.\n\nLAB 4 (4.0.0). decision.recorded arrives from the Message Broker (topic events.decision.recorded), not on POST /events, which is removed; the service's calls to Player, Server Rules and Applicant go through the broker too, so the flow needs those services on the broker: Server Rules, Applicant and Player run 4.0.0 in the CPR compose; or run the session without MESSAGE_BROKER_URL, on its stubs. Postman cannot send the broker's gRPC calls: publish decision.recorded with the broker's scripts/smoke.py (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a711).\n\nLAB 5 (5.0.0). The folder \"saga steps\" calls the saga shift.start's step routes on an instance directly (service-only; the Gateway answers 404). GET /sessions?status= accepts starting. From 5.0.1 POST /start runs the saga shift.start: 200 when it completed, 202 while it still runs (the next request waits it out), 409 SHIFT_START_FAILED when it was compensated (the folder \"saga start failure\", with Discord DMs' failure switch at {{dms_url}}); session.started is no longer published. The replicated database and the ETL grants are not visible over HTTP (docs/SERVER_MODERATION_SESSION_SERVICE.md, \u00a714).\n\nSet `base_url` if the Gateway is not on http://localhost:8080. The player ids are captured at registration.\n\nFull reference: docs/SERVER_MODERATION_SESSION_SERVICE.md in the Common Public Repository.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -128,6 +128,14 @@
     {
       "key": "saga_id",
       "value": ""
+    },
+    {
+      "key": "dms_url",
+      "value": "http://discord-dms-service:8096"
+    },
+    {
+      "key": "start_wait_tries",
+      "value": "0"
     }
   ],
   "item": [
@@ -1028,7 +1036,7 @@
           ]
         },
         {
-          "name": "4. POST /sessions/{id}/start -> 200 (shift begins)",
+          "name": "4. POST /sessions/{id}/start -> 200 (saga completed) or 202 (still running)",
           "request": {
             "method": "POST",
             "header": [
@@ -1053,7 +1061,7 @@
                 "start"
               ]
             },
-            "description": "The creator starts the shift. Session assigns the roles, splits the four record categories between the Junior Moderators, asks Server Rules for the ruleset and writes session.started. If Server Rules does not answer, the session stays in the lobby and nothing at all is changed.",
+            "description": "The creator starts the shift. Session assigns the roles, splits the four record categories between the Junior Moderators and asks Server Rules for the ruleset, then (5.0.1) runs the saga shift.start through the broker: shift-begin here, grant-scopes in University Record, create-channels in Discord DMs, shift-confirm here. 200 when the saga completed (active), 202 when it still runs after the wait (starting; the next request waits it out). If Server Rules does not answer, the session stays in the lobby and nothing at all is changed. session.started is no longer published.",
             "body": {
               "mode": "raw",
               "raw": "{\n  \"moderator_id\": \"{{moderator_id}}\"\n}",
@@ -1071,9 +1079,10 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('200 (saga completed) or 202 (still running)', () => pm.expect(pm.response.code).to.be.oneOf([200, 202]));",
                   "const b = pm.response.json();",
-                  "pm.test('active', () => pm.expect(b.status).to.eql('active'));",
+                  "pm.test(pm.response.code === 200 ? 'active' : 'starting', () => pm.expect(b.status).to.eql(pm.response.code === 200 ? 'active' : 'starting'));",
+                  "pm.collectionVariables.set('start_wait_tries', '0');",
                   "// difficulty is the mean level rounded and clamped to 1-5.",
                   "// The registered players are all level 1, so: 1. The contract's own example (3) is checked on the seeded session, in 'sessions (beyond contract)'.",
                   "pm.test('difficulty is the rounded mean level', () => pm.expect(b.difficulty).to.eql(1));",
@@ -1088,6 +1097,60 @@
                   "  pm.expect(b.junior_moderators.map(j => j.player_id))",
                   "    .to.not.include(pm.collectionVariables.get('moderator_id'));",
                   "});"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "4a. GET /sessions/{id} -> 200 active (waits out a 202 of the start)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_moderator}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/session/sessions/{{session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "sessions",
+                "{{session_id}}"
+              ]
+            },
+            "description": "After a 202 the saga moves the session to active by itself; this request is repeated (up to 20 times, 500 ms apart) while the session is starting. After a 200 it passes at once."
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (Number(pm.collectionVariables.get('start_wait_tries') || 0) > 0) { setTimeout(() => {}, 500); }"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const s = pm.response.json();",
+                  "const tries = Number(pm.collectionVariables.get('start_wait_tries') || 0);",
+                  "if (s.status === 'starting' && tries < 20) {",
+                  "  pm.collectionVariables.set('start_wait_tries', String(tries + 1));",
+                  "  postman.setNextRequest(pm.info.requestName);",
+                  "} else {",
+                  "  pm.test('200', () => pm.response.to.have.status(200));",
+                  "  pm.test('the saga made the session active', () => pm.expect(s.status).to.eql('active'));",
+                  "  pm.test('started_at is set', () => pm.expect(s.started_at).to.be.a('string'));",
+                  "}"
                 ]
               }
             }
@@ -1355,8 +1418,8 @@
                 "exec": [
                   "pm.test('200', () => pm.response.to.have.status(200));",
                   "const items = pm.response.json().items;",
-                  "pm.test('session.started then session.ended', () => {",
-                  "  pm.expect(items.map(e => e.event_type)).to.eql(['session.started','session.ended']);",
+                  "pm.test('session.ended only (session.started is retired in 5.0.1)', () => {",
+                  "  pm.expect(items.map(e => e.event_type)).to.eql(['session.ended']);",
                   "});",
                   "items.forEach(e => {",
                   "  pm.test(e.event_type + ' uses the shared envelope', () => {",
@@ -1458,8 +1521,8 @@
                 "exec": [
                   "pm.test('200', () => pm.response.to.have.status(200));",
                   "const items = pm.response.json().items;",
-                  "// 4.0.0: one delivery per event, to the broker (session.started, session.ended).",
-                  "pm.test('two deliveries', () => pm.expect(items.length).to.eql(2));",
+                  "// One delivery per event, to the broker: session.ended (session.started is retired in 5.0.1).",
+                  "pm.test('one delivery', () => pm.expect(items.length).to.eql(1));",
                   "pm.test('each to the broker', () => items.forEach(d => pm.expect(d.consumer).to.eql('message-broker')));",
                   "pm.test('each is pending, delivered or parked', () => items.forEach(d =>",
                   "  pm.expect(['pending','delivered','parked']).to.include(d.status)));"
@@ -1923,6 +1986,139 @@
                 "exec": [
                   "pm.test('200', () => pm.response.to.have.status(200));",
                   "pm.test('every item is starting', () => pm.response.json().items.forEach(s => pm.expect(s.status).to.eql('starting')));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "saga start failure (Lab 5) - needs {{dms_url}}, run inside student-id-net",
+      "description": "The saga shift.start compensating (5.0.1): Discord DMs' failure switch makes the next create-channels fail once, so the start answers 409 SHIFT_START_FAILED and the pair lobby stays a lobby (the cleanup folder still leaves and deletes it). {{dms_url}} is a Discord DMs instance's REST port (http://discord-dms-service:8096), reachable inside student-id-net, as in lab5-shift; the switch takes the service token.",
+      "item": [
+        {
+          "name": "1. arm the Discord DMs failure switch -> 204 (called directly, service token)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": {
+              "raw": "{{dms_url}}/api/v1/dev/saga-steps/fail-next",
+              "host": [
+                "{{dms_url}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "dev",
+                "saga-steps",
+                "fail-next"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "2. POST /sessions/{pair lobby}/start -> 409 SHIFT_START_FAILED (create-channels failed, compensated)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_b}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/session/sessions/{{lobby_session_id}}/start",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "sessions",
+                "{{lobby_session_id}}",
+                "start"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moderator_id\": \"{{junior_b_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409', () => pm.response.to.have.status(409));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('SHIFT_START_FAILED', () => pm.expect(e.code).to.eql('SHIFT_START_FAILED'));",
+                  "pm.test('failed at create-channels', () => pm.expect(e.details.failed_step).to.eql('create-channels'));",
+                  "pm.test('the saga is named', () => { pm.expect(e.details.saga_id).to.be.a('string'); pm.expect(e.details.saga_state).to.eql('compensated'); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "3. GET /sessions/{pair lobby} -> 200 (back in the lobby, nothing kept)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{jwt_junior_b}}"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/session/sessions/{{lobby_session_id}}",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "session",
+                "sessions",
+                "{{lobby_session_id}}"
+              ]
+            }
+          },
+          "response": [],
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const s = pm.response.json();",
+                  "pm.test('lobby, no moderator, no ruleset', () => { pm.expect(s.status).to.eql('lobby'); pm.expect(s.moderator_id).to.eql(null); pm.expect(s.ruleset_version).to.eql(null); });"
                 ]
               }
             }

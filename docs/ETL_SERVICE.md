@@ -352,12 +352,11 @@ In the team `docker-compose.yml`, a source whose database has no `etl_reader` th
 named in the run's `failed_sources`; the other sources still load. A database gets a login-capable `etl_reader` from
 the replication pattern's init script (`deployments/postgres-ha/initdb.sh`, `deployments/mongo-rs/init.sh`), and its
 service's migrations grant it what the ETL reads. In this compose that holds for Server Rules `5.0.1`,
-University Record `5.0.1`, Moderation `5.0.0` and Applicant `5.0.0` (three-node PostgreSQL clusters) and for Credential
+University Record `5.0.1`, Moderation `5.0.0`, Applicant `5.0.0` and Player `5.0.0` (three-node PostgreSQL clusters) and for Credential
 `5.0.0` and Discord DMs `5.0.0` (three-member MongoDB replica sets). The sources that fail are:
 
 | Source | Image in the compose | Database | Why |
 | --- | --- | --- | --- |
-| `player` | Player `5.0.0` | `player-postgres`, one container | its migration creates `etl_reader` `NOLOGIN`; the login comes only from the replication pattern's init script |
 | `session` | Session `5.0.1` | `session-postgres`, one container | no login-capable `etl_reader` on a container without the replication pattern |
 
 The ETL loads each of them in the first run after its database runs the replication pattern and its DSN or URI in the

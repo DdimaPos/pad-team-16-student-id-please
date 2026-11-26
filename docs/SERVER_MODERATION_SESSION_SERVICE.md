@@ -21,6 +21,7 @@
 11. [Mocking strategy (grade 9) and testing recipes](#11-mocking-strategy-grade-9-and-testing-recipes)
 12. [Several instances (Lab 3)](#12-several-instances-lab-3)
 13. [Message Broker, logs and metrics (Lab 4)](#13-message-broker-logs-and-metrics-lab-4)
+14. [Replicated database, the ETL and the saga steps (Lab 5)](#14-replicated-database-the-etl-and-the-saga-steps-lab-5)
 
 ---
 
@@ -64,7 +65,7 @@ two, publishes two events and consumes one.
 | **Container port** | `8080` (not published in the team stack; a random host port in the service's own compose) |
 | **Base path** | `/api/v1`; reached through the Gateway as `{gateway}/api/v1/session/...` |
 | **Health** | `GET /health` (liveness), `GET /health/ready` (readiness - reports Postgres plus each of the three dependencies as `stub` or `not_probed`, with its circuit breaker state). `GET /status` for Service Discovery, called directly - see [§12](#12-several-instances-lab-3) |
-| **Database** | PostgreSQL 17, `session_db` (own container, host port `5438`). Schema applied at startup by GORM `AutoMigrate`, under a PostgreSQL advisory lock together with the seed. **No Redis** - see [§8](#8-divergences-from-the-cpr-contract) |
+| **Database** | PostgreSQL 17, `session_db` (own container, host port `5438`). Schema applied at startup by GORM `AutoMigrate`, under a PostgreSQL advisory lock together with the seed. **No Redis** - see [§8](#8-divergences-from-the-cpr-contract). From `5.0.0` it connects to a primary and two standbys with a multi-host connection string and answers `500 DEPENDENCY_UNAVAILABLE` while no primary answers - see [§14](#14-replicated-database-the-etl-and-the-saga-steps-lab-5) |
 | **Service Discovery** | Registers as `session`, instance id `session-<hostname>`, port `8080`; heartbeat every 5 s, `DELETE` on graceful shutdown - see [§12](#12-several-instances-lab-3) |
 | **Circuit breakers** | `4.0.0`: two, both on the broker - `call` (the three synchronous calls) and `relay` (the publishes). Lab 3 had six (three per peer, three per consumer) - see [§12](#12-several-instances-lab-3) |
 | **Message Broker** | `4.0.0`: one gRPC connection to `MESSAGE_BROKER_URL` for the calls, the publishes and the `Subscribe` stream (topic `events.decision.recorded`, queue `requests.session`) - see [§13](#13-message-broker-logs-and-metrics-lab-4) |
@@ -73,7 +74,7 @@ two, publishes two events and consumes one.
 | **Events** | `4.0.0`: produced events are published from the outbox to the broker, one delivery row per event; `decision.recorded` arrives on the broker subscription and is settled with `Ack`. `POST /api/v1/events` is removed - see [§6](#6-events) |
 | **Caller identity** | `X-Player-Id`, set by the Gateway after it validated the player's JWT, and carried in the headers of a broker request; the service validates no player token. The service token travels as gRPC metadata to the broker |
 | **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health`, `/health/ready` and `/status` are exempt |
-| **Docker image** | `dimapos/server-moderation-session-service:4.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `dimapos/server-moderation-session-service:5.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64`, published by GitHub Actions on merge to `main` |
 | **Producer name** | `server-moderation-session-service` - the value in the `producer` member of every event it publishes |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`; `details` is always an object, never `null` |
 | **Timestamps** | ISO-8601, UTC |
@@ -97,7 +98,7 @@ docker run -d --name session-postgres --network student-id-net \
 
 docker run -d --name session-service --network student-id-net -p 8088:8080 \
   -e POSTGRES_HOST=session-postgres -e POSTGRES_PASSWORD=change_me \
-  dimapos/server-moderation-session-service:4.0.0
+  dimapos/server-moderation-session-service:5.0.0
 ```
 
 Simpler: the root [`docker-compose.yml`](../docker-compose.yml) already carries both blocks.
@@ -141,7 +142,9 @@ once.
 | `LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
 | `SERVICE_VERSION` | the image's `VERSION` | Reported by `GET /health`; overrides the version stamped into the image at build time |
 | `HTTP_READ_TIMEOUT` / `HTTP_WRITE_TIMEOUT` / `SHUTDOWN_TIMEOUT` | `10s` / `10s` / `15s` | |
-| `POSTGRES_HOST` / `PORT` / `USER` / `DB` / `SSLMODE` | `localhost` / `5432` / `session_user` / `session_db` / `disable` | |
+| `POSTGRES_HOST` / `PORT` / `USER` / `DB` / `SSLMODE` | `localhost` / `5432` / `session_user` / `session_db` / `disable` | From `5.0.0` `POSTGRES_HOST` may be a comma list (`session-postgres-1,session-postgres-2,session-postgres-3`), each host on `POSTGRES_PORT` |
+| `POSTGRES_TARGET_SESSION_ATTRS` | `read-write` | `5.0.0`. pgx keeps the first host that is the primary, so no write reaches a standby; empty leaves the parameter out |
+| `POSTGRES_CONNECT_TIMEOUT` | `2s` | `5.0.0`. Dial timeout per host, at least `1s` |
 | **`POSTGRES_PASSWORD`** | **none** | **Required.** The service refuses to start without it |
 | `DB_MAX_OPEN_CONNS` / `DB_MAX_IDLE_CONNS` / `DB_CONN_MAX_LIFETIME` | `25` / `5` / `30m` | Connection pool |
 | `DB_AUTO_MIGRATE` | `true` | Applies the schema at startup |
@@ -266,7 +269,7 @@ produces and their delivery can be inspected.
 
 | Method | Path | Identity | Notes |
 | --- | --- | --- | --- |
-| `GET` | `/sessions?status=&limit=&offset=` | no | `{ items, total }`, newest first. `status` filters by `lobby` \| `active` \| `ended` |
+| `GET` | `/sessions?status=&limit=&offset=` | no | `{ items, total }`, newest first. `status` filters by `lobby` \| `starting` (`5.0.0`) \| `active` \| `ended` |
 | `DELETE` | `/sessions/{session_id}` | required | `204`. Creator only, lobby only |
 | `DELETE` | `/sessions/{session_id}/players/{player_id}` | required | `204`. Leave a lobby. The creator leaving deletes the session |
 | `GET` | `/sessions/{session_id}/decisions?limit=&offset=` | no | The decision log, newest first |
@@ -302,6 +305,9 @@ The eleven the contract lists for this service, plus the contract's shared codes
 | `REQUEST_TIMEOUT` | 408 | The task timeout was reached; the transaction was rolled back |
 | `TOO_MANY_REQUESTS` | 429 | The concurrent task limit was reached, with `Retry-After` |
 | `PLAYER_NOT_IN_SESSION` | 404 | Beyond contract: leaving a lobby the player is not in |
+| `DEPENDENCY_UNAVAILABLE` | 500 | `5.0.0`: also no database primary answers (a failover in progress), with `details.dependency: "postgres"`. The broker's breakers do not count it |
+| `SAGA_STEP_COMPENSATED` | 409 | `5.0.0`, step routes only: a saga step after its own compensation; nothing was changed - see [§14](#14-replicated-database-the-etl-and-the-saga-steps-lab-5) |
+| `SAGA_STEP_REJECTED` | 409 | `5.0.0`, step routes only, beyond contract: the step cannot apply to the session (`details.reason`) |
 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` / `INTERNAL_ERROR` | 404 / 405 / 500 | Routing and unexpected failures |
 | `SERVICE_TOKEN_REQUIRED` / `INVALID_SERVICE_TOKEN` | 403 / 401 | `GET /logs` only (`4.0.0`): no `X-Service-Token` / a wrong one |
 | `LOGS_UNAVAILABLE` | 503 | `GET /logs` only: no log file |
@@ -521,6 +527,24 @@ service issues; the contract defines no enum and shows no other value.
    broker: `call` (the requests to Player, Server Rules and Applicant) and `relay` (the publishes),
    each with the README's 17.5 s window and cooldown; the `relay` breaker also counts a publish the
    broker refused for a reason a retry may fix. See [§12](#circuit-breakers).
+
+10. **Not yet wired (Lab 5): `POST /start` through the saga.** `5.0.0` has the saga's step routes and
+   the status `starting`, but `POST /sessions/{id}/start` still moves the lobby to `active` directly
+   and publishes `session.started`, as in `4.0.0`. Calling `StartSaga` (and the answers `202`,
+   `409 SHIFT_START_FAILED`), and retiring `session.started`, wait for the broker's saga coordinator
+   (#168) and ship in a later `5.x.y`. #172 stays open until then.
+   *Who this affects:* the saga demo (grade 9); University Record and Discord DMs keep receiving
+   `session.started` meanwhile, so nothing breaks.
+
+11. **`SAGA_STEP_REJECTED` (Lab 5)** is this service's own `409` on the service-only step routes, for
+   a step that cannot apply: the players changed since the start was asked, the session is not
+   starting for this saga, or the shift was confirmed already. The contract names only
+   `SAGA_STEP_COMPENSATED`; the coordinator treats any other `4xx` as a failed step.
+
+12. **Not yet wired (Lab 5): one database node in the compose.** `5.0.0` connects to three hosts, but
+   the CPR `docker-compose.yml` still runs one `session-postgres` until the replication pattern
+   (#164) is merged; the conversion to `session-postgres-1..3` needs new volumes (the seed runs
+   again).
 
 ---
 
@@ -860,3 +884,101 @@ task timeout.
 | `events_consumed_total` | `event_type` (`decision.recorded` or `other`), `outcome` (`ok`, `duplicate`, `dropped`, `retry`, `permanent`) |
 | `relay_deliveries` | `status` (`pending`, `parked`), counted in the outbox at scrape time |
 | `go_*`, `process_*` | the Go runtime and process collectors |
+
+---
+
+## 14. Replicated database, the ETL and the saga steps (Lab 5)
+
+From `5.0.0` (#172; the pattern is `deployments/postgres-ha/`, #164).
+
+### The connection
+
+`session_db` is a primary and two hot standbys. With
+`POSTGRES_HOST=session-postgres-1,session-postgres-2,session-postgres-3` the service builds
+
+```text
+postgres://session_user:<pw>@session-postgres-1:5432,session-postgres-2:5432,session-postgres-3:5432/session_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=2
+```
+
+pgx keeps the first writable host, so `AutoMigrate`, the seed, the relay and every write reach the
+primary only. The startup line logs `db_hosts` and `db_target_session_attrs`, never the DSN.
+
+### During a failover
+
+- New connections go to the promoted standby, with no restart; the old primary rejoins as a standby
+  (or is fenced read-only) and is never written to.
+- While no primary answers, a request gets `500 DEPENDENCY_UNAVAILABLE` with
+  `details.dependency: "postgres"` (logged `db.unavailable` at `warn`): a dial failure on every host,
+  a broken connection, `25006`, `57P01`-`57P03`, class `08`. The broker's breakers do not count it.
+- `/health/ready` and `/status` answer `503 degraded` meanwhile; the relay logs `relay.failed` each
+  pass and publishes again once a primary answers (consumers dedupe by `event_id`).
+- `decision.recorded` is acked only after its transaction, so an event that hits the failover is
+  redelivered by the broker.
+
+### What the ETL reads
+
+The migrations grant `etl_reader` (created by the pattern with `ETL_READER_PASSWORD`; created here
+`NOLOGIN` when missing):
+
+| Table | Watermark |
+| --- | --- |
+| `sessions` (status, moderator, ruleset, score, penalties, counters) | `updated_at` (new in `5.0.0`, moved by every update) |
+| `session_players` (membership, role, record scopes) | `updated_at` (new in `5.0.0`) |
+| `session_decisions` | `created_at` (new in `5.0.0`, insert time; `recorded_at` is the producer's) |
+| `session_results` | `created_at` |
+| `disciplinary_actions` | `issued_at` |
+
+plus the tables later migrations create (`ALTER DEFAULT PRIVILEGES`). Never `outbox_events`,
+`outbox_deliveries` or `processed_events`. The new columns are `NOT NULL DEFAULT now()`, so a
+database seeded before them takes them.
+
+### The saga `shift.start`: this service's steps
+
+The Message Broker coordinates the saga (#168): `shift-begin` (here), `grant-scopes` (University
+Record), `create-channels` (Discord DMs), `shift-confirm` (here). The step routes are service-only:
+the Gateway does not route them (`404` through it), and the broker calls them through
+`requests.session` with no `X-Player-Id`.
+
+| Method | Path | Does |
+| --- | --- | --- |
+| `POST` | `/api/v1/saga-steps/shift-begin` | Under the session row lock: the session must be `lobby` (else `409 SESSION_NOT_IN_LOBBY`) with exactly the input's moderator and juniors (else `409 SAGA_STEP_REJECTED`); then `lobby` -> `starting` with the moderator, the roles, the juniors' record scopes from the input, the ruleset version and the difficulty recomputed from the locked levels |
+| `POST` | `/api/v1/saga-steps/shift-begin/compensate` | `starting` -> `lobby`; moderator, ruleset, difficulty, roles and scopes cleared. A begin that was never done leaves a tombstone. A confirmed shift is not compensated (`409 SAGA_STEP_REJECTED`) |
+| `POST` | `/api/v1/saga-steps/shift-confirm` | `starting` -> `active`, `started_at` from the input (or now). Only for the session this saga began (else `409 SAGA_STEP_REJECTED`) |
+
+Body of every call:
+
+```json
+{
+  "saga_id": "7f0c2a9e-1b3d-4e5f-8a6b-9c0d1e2f3a4b",
+  "saga_type": "shift.start",
+  "step": "shift-begin",
+  "payload": {
+    "session_id": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e",
+    "moderator_id": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
+    "junior_moderators": [
+      { "player_id": "b2d4f6a8-1c3e-4a5b-9d7f-0e2c4a6b8d10", "record_scopes": ["enrollment", "email-groups", "courses", "fcim-logs"] }
+    ],
+    "ruleset_version": 7,
+    "started_at": "2026-11-17T12:00:00Z"
+  }
+}
+```
+
+The payload is what `session.started` carries. Answer `200 { "saga_id", "step", "state": "done" }`
+(`"compensated"` on the compensation), or the shared error envelope: `400 VALIDATION_ERROR` (no
+`saga_id`, a `saga_type` other than `shift.start`, a `step` other than the route's, a payload that is
+not the input), `404 SESSION_NOT_FOUND`, `409 SAGA_STEP_COMPENSATED`, `409 SAGA_STEP_REJECTED`,
+`500 DEPENDENCY_UNAVAILABLE`.
+
+**Idempotency.** Each step locks the session row, then reads and writes its record in the table
+`saga_steps(saga_id, step, session_id, state, updated_at)` in the same transaction as its effect;
+`sessions.saga_id` names the saga that last began the session. A repeated step answers `200` again
+without redoing it; a compensation of a step never done records a `compensated` tombstone; a step
+arriving after its own compensation answers `409 SAGA_STEP_COMPENSATED` and changes nothing.
+
+**The status `starting`.** A player of a starting session counts as being in a session (no create or
+join elsewhere: `409 PLAYER_ALREADY_IN_SESSION`); join, leave and a second start answer
+`409 SESSION_NOT_IN_LOBBY`, next applicant and end `409 SESSION_NOT_ACTIVE`; `decision.recorded` for
+it is dropped like for any session that is not active.
+
+Not yet wired: `POST /start` calling `StartSaga` - see [§8](#8-divergences-from-the-cpr-contract) item 10.

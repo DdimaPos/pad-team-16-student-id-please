@@ -121,6 +121,30 @@ x-applicant-pg-node: &applicant_pg_node
   networks:
     - student-id-net
 
+# University Record's replicated PostgreSQL (#164, #176): the environment and the node template its three nodes share.
+x-university-record-pg-env: &university_record_pg_env
+  POSTGRES_USER: ${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user}
+  POSTGRES_PASSWORD: ${UNIVERSITY_RECORD_POSTGRES_PASSWORD:?set UNIVERSITY_RECORD_POSTGRES_PASSWORD}
+  POSTGRES_DB: ${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}
+  PGHA_CLUSTER: university-record-postgres
+  PGHA_NODES: "university-record-postgres-1 university-record-postgres-2 university-record-postgres-3"
+  REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD}
+  FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:?set FAILOVER_PASSWORD}
+  ETL_READER_PASSWORD: ${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}
+
+x-university-record-pg-node: &university_record_pg_node
+  image: postgres:17-alpine
+  restart: unless-stopped
+  entrypoint: ["bash", "/ha/node.sh"]
+  stop_grace_period: 30s
+  healthcheck:              # healthy as a primary and as a standby; the output (docker inspect) names the role
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" && psql -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -XAtc \"select case when pg_is_in_recovery() then 'standby' else 'primary' end\""]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  networks:
+    - student-id-net
+
 services:
   # Service Discovery (README "Service Discovery"): the registry every instance and the broker register with, the
   # broker routes from and Prometheus reads its targets from. One copy, registry in memory; after a restart every instance is
@@ -285,28 +309,44 @@ services:
     networks:
       - student-id-net
 
-  university-record-postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user}
-      POSTGRES_PASSWORD: ${UNIVERSITY_RECORD_POSTGRES_PASSWORD:?set UNIVERSITY_RECORD_POSTGRES_PASSWORD}
-      POSTGRES_DB: ${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}
-    volumes:
-      - university_record_pgdata:/var/lib/postgresql/data
+  # University Record's database (Lab 5, #164 pattern, #176): one primary and two hot standbys, failover by
+  # pg-failover (deployments/postgres-ha/README.md). university-record-postgres-1 starts as the primary; the service
+  # lists all three nodes and connects to the writable one (Target Session Attributes=read-write). Port 5435 of node 1
+  # is for debugging.
+  university-record-postgres-1:
+    <<: *university_record_pg_node
+    environment: { <<: *university_record_pg_env, PGHA_NODE: university-record-postgres-1 }
     ports:
       - "5435:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user} -d ${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - student-id-net
+    volumes:
+      - university_record_pgdata_1:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  university-record-postgres-2:
+    <<: *university_record_pg_node
+    environment: { <<: *university_record_pg_env, PGHA_NODE: university-record-postgres-2 }
+    volumes:
+      - university_record_pgdata_2:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  university-record-postgres-3:
+    <<: *university_record_pg_node
+    environment: { <<: *university_record_pg_env, PGHA_NODE: university-record-postgres-3 }
+    volumes:
+      - university_record_pgdata_3:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
 
   university-record-service:
-    image: d1vinexd/university-record-service:4.0.1
+    image: d1vinexd/university-record-service:5.0.1
     restart: unless-stopped
+    # A lookup of a stopped database node fails within 1 s (README "Database replication", Docker Desktop for Windows).
+    dns_opt: ["timeout:1", "attempts:1"]
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
     deploy:
       replicas: 2
@@ -315,18 +355,20 @@ services:
         condition: service_healthy
       message-broker-service:
         condition: service_healthy
-      university-record-postgres:
+      university-record-postgres-1:
         condition: service_healthy
     environment:
-      ConnectionStrings__UniversityRecordDb: "Host=university-record-postgres;Port=5432;Database=${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db};Username=${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user};Password=${UNIVERSITY_RECORD_POSTGRES_PASSWORD:?set UNIVERSITY_RECORD_POSTGRES_PASSWORD}"
+      # Lab 5 (5.0.0): the three nodes, the writable one chosen by Npgsql (README "Database replication").
+      ConnectionStrings__UniversityRecordDb: "Host=university-record-postgres-1,university-record-postgres-2,university-record-postgres-3;Port=5432;Database=${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db};Username=${UNIVERSITY_RECORD_POSTGRES_USER:-university_record_user};Password=${UNIVERSITY_RECORD_POSTGRES_PASSWORD:?set UNIVERSITY_RECORD_POSTGRES_PASSWORD};Target Session Attributes=read-write;Timeout=1;Host Recheck Seconds=2"
       REFERENCE_YEAR: *reference_year
       # The gRPC metadata x-service-token of every broker call and X-Service-Token to Service Discovery; incoming, it is
       # checked on GET /logs and, from 4.0.1, on /admin/* and /dev/* (called directly only, never through the broker).
       SERVICE_TOKEN: ${SERVICE_TOKEN:?set SERVICE_TOKEN}
-      # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers applicant.initialized,
-      # session.started and session.ended (topics events.<event_type>) and the requests of requests.university-record;
-      # its own applicant.initialized is published once to events.applicant.initialized. POST /api/v1/events,
-      # APPLICANT_URL and CREDENTIAL_URL are gone. While the broker is unreachable the instance retries the subscription
+      # Lab 4 (4.0.0): one gRPC subscription to the Message Broker, which delivers applicant.initialized and
+      # session.ended (topics events.<event_type>) and the requests of requests.university-record; from 5.0.0 these
+      # include the saga step grant-scopes of shift.start, which brings the juniors' scopes (session.started is no
+      # longer consumed). Its own applicant.initialized is published once to events.applicant.initialized.
+      # POST /api/v1/events, APPLICANT_URL and CREDENTIAL_URL are gone. While the broker is unreachable the instance retries the subscription
       # with backoff (broker.subscribe_failed), its events wait in the outbox, and it keeps serving /health and /status.
       MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       # GET /logs reads this file. It stays inside each container: copies must never share one.
@@ -880,7 +922,7 @@ services:
       APPLICANT_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@applicant-postgres-1:5432,applicant-postgres-2:5432,applicant-postgres-3:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
       CREDENTIAL_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@credential-mongo:27017/credential_db?authSource=admin"
       RULES_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@rules-postgres-1:5432,rules-postgres-2:5432,rules-postgres-3:5432/${RULES_POSTGRES_DB:-rules_db}?sslmode=disable"
-      UNIVERSITY_RECORD_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@university-record-postgres:5432/${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}?sslmode=disable"
+      UNIVERSITY_RECORD_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@university-record-postgres-1:5432,university-record-postgres-2:5432,university-record-postgres-3:5432/${UNIVERSITY_RECORD_POSTGRES_DB:-university_record_db}?sslmode=disable"
       MODERATION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/${MODERATION_POSTGRES_DB:-moderation_db}?sslmode=disable"
       DMS_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@dms-mongo-1:27017,dms-mongo-2:27017,dms-mongo-3:27017/dms_db?authSource=admin&replicaSet=rs0"
     ports:
@@ -904,7 +946,7 @@ services:
     restart: unless-stopped
     entrypoint: ["bash", "/ha/pg-failover.sh"]
     environment:
-      PGHA_CLUSTERS: "moderation-postgres rules-postgres applicant-postgres"
+      PGHA_CLUSTERS: "moderation-postgres rules-postgres applicant-postgres university-record-postgres"
       FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:-}
       REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-}
     volumes:
@@ -1001,7 +1043,9 @@ volumes:
   rules_pgdata_1:
   rules_pgdata_2:
   rules_pgdata_3:
-  university_record_pgdata:
+  university_record_pgdata_1:
+  university_record_pgdata_2:
+  university_record_pgdata_3:
   moderation_pgdata_1:
   moderation_pgdata_2:
   moderation_pgdata_3:

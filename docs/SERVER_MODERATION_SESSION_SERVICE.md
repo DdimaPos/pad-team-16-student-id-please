@@ -51,8 +51,9 @@ two, publishes two events and consumes one.
   `requests.applicant`.
 - **Is called by:** Moderation Service (`GET /sessions/{session_id}`, before recording every
   decision) and the game client - from `4.0.0` delivered by the broker on `requests.session`.
-- **Produces:** `session.started`, `session.ended`, published to the broker topics
-  `events.session.started`, `events.session.ended`. **Receives:** `decision.recorded`, from its
+- **Produces:** `session.ended`, published to the broker topic `events.session.ended`
+  (`session.started` until `5.0.0`; from `5.0.1` it starts the saga `shift.start` instead - see
+  [§14](#14-replicated-database-the-etl-and-the-saga-steps-lab-5)). **Receives:** `decision.recorded`, from its
   subscription to `events.decision.recorded`. See [§13](#13-message-broker-logs-and-metrics-lab-4).
 
 ---
@@ -74,7 +75,7 @@ two, publishes two events and consumes one.
 | **Events** | `4.0.0`: produced events are published from the outbox to the broker, one delivery row per event; `decision.recorded` arrives on the broker subscription and is settled with `Ack`. `POST /api/v1/events` is removed - see [§6](#6-events) |
 | **Caller identity** | `X-Player-Id`, set by the Gateway after it validated the player's JWT, and carried in the headers of a broker request; the service validates no player token. The service token travels as gRPC metadata to the broker |
 | **Task limits** | `HTTP_REQUEST_TIMEOUT` (`5s`) → `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (`50`) → `429 TOO_MANY_REQUESTS` + `Retry-After`. `/health`, `/health/ready` and `/status` are exempt |
-| **Docker image** | `dimapos/server-moderation-session-service:5.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `dimapos/server-moderation-session-service:5.0.1` (also `:latest`), public on Docker Hub, `linux/amd64` + `linux/arm64`, published by GitHub Actions on merge to `main` |
 | **Producer name** | `server-moderation-session-service` - the value in the `producer` member of every event it publishes |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`; `details` is always an object, never `null` |
 | **Timestamps** | ISO-8601, UTC |
@@ -98,7 +99,7 @@ docker run -d --name session-postgres --network student-id-net \
 
 docker run -d --name session-service --network student-id-net -p 8088:8080 \
   -e POSTGRES_HOST=session-postgres -e POSTGRES_PASSWORD=change_me \
-  dimapos/server-moderation-session-service:5.0.0
+  dimapos/server-moderation-session-service:5.0.1
 ```
 
 Simpler: the root [`docker-compose.yml`](../docker-compose.yml) already carries both blocks.
@@ -193,7 +194,7 @@ and nothing else; a request without it answers `401 UNAUTHENTICATED`.
 | --- | --- | --- | --- | --- |
 | `POST` | `/sessions` | required | *(empty)* | `201` session object, `status: lobby` |
 | `POST` | `/sessions/{session_id}/players` | required | *(empty)* | `200` session object |
-| `POST` | `/sessions/{session_id}/start` | required | `{ "moderator_id": "<uuid>" }` | `200` session object, `status: active` |
+| `POST` | `/sessions/{session_id}/start` | required | `{ "moderator_id": "<uuid>" }` | `200` session object, `status: active`; from `5.0.1` `202` with `status: starting` while the saga still runs (see [§14](#14-replicated-database-the-etl-and-the-saga-steps-lab-5)) |
 | `POST` | `/sessions/{session_id}/applicants/next` | required | *(empty)* | `201` `{ session_id, current_applicant_id, applications_processed }` |
 | `POST` | `/sessions/{session_id}/end` | required | *(empty)* | `200` the end result (below) |
 | `GET` | `/sessions/{session_id}` | **not** required | - | `200` session object |
@@ -308,6 +309,7 @@ The eleven the contract lists for this service, plus the contract's shared codes
 | `DEPENDENCY_UNAVAILABLE` | 500 | `5.0.0`: also no database primary answers (a failover in progress), with `details.dependency: "postgres"`. The broker's breakers do not count it |
 | `SAGA_STEP_COMPENSATED` | 409 | `5.0.0`, step routes only: a saga step after its own compensation; nothing was changed - see [§14](#14-replicated-database-the-etl-and-the-saga-steps-lab-5) |
 | `SAGA_STEP_REJECTED` | 409 | `5.0.0`, step routes only, beyond contract: the step cannot apply to the session (`details.reason`) |
+| `SHIFT_START_FAILED` | 409 | `5.0.1`, `POST /start`: the saga `shift.start` was compensated (or failed); `details.failed_step`, `details.saga_id`, `details.saga_state`; the session is back in the lobby |
 | `NOT_FOUND` / `METHOD_NOT_ALLOWED` / `INTERNAL_ERROR` | 404 / 405 / 500 | Routing and unexpected failures |
 | `SERVICE_TOKEN_REQUIRED` / `INVALID_SERVICE_TOKEN` | 403 / 401 | `GET /logs` only (`4.0.0`): no `X-Service-Token` / a wrong one |
 | `LOGS_UNAVAILABLE` | 503 | `GET /logs` only: no log file |
@@ -335,8 +337,9 @@ envelopes, `GET /sessions/{id}/deliveries` their delivery state.
 Both carry the shared envelope, with `producer: "server-moderation-session-service"` and
 `version: 1`.
 
-**`session.started`** - topic `events.session.started`; consumed by University Record Service (which learns each junior's scopes) and
-Discord DMs Service (which learns the membership so it can scope its channels).
+**`session.started`** - **retired in `5.0.1`** (Lab 5). It told University Record Service each junior's scopes and Discord DMs
+Service the membership; the same object is now the payload of the saga `shift.start`, which they receive as the input of their
+steps ([§14](#14-replicated-database-the-etl-and-the-saga-steps-lab-5)). Its shape, for reference:
 
 ```json
 {
@@ -425,7 +428,12 @@ Settled with the broker's `Ack` (`4.0.0`; it replaced `POST /api/v1/events`):
                   |    - difficulty = round(mean level), clamped 1..5
                   |    - Server Rules answers, or nothing happens at all
                   |    - roles assigned, record categories split
-                  |    - session.started written
+                  |    - 5.0.1: the saga shift.start (nothing committed here)
+                  v
+           [ starting ] <---- shift-begin (saga step 1)
+                  |      ----> back to [ lobby ] on a compensation
+                  |  grant-scopes, create-channels (University Record, Discord DMs)
+                  |  shift-confirm (saga step 4)
                   v
              [ active ] <---- decision.recorded  (score, penalties, counters)
                   |      <---- POST /sessions/{id}/applicants/next
@@ -528,13 +536,10 @@ service issues; the contract defines no enum and shows no other value.
    each with the README's 17.5 s window and cooldown; the `relay` breaker also counts a publish the
    broker refused for a reason a retry may fix. See [§12](#circuit-breakers).
 
-10. **Not yet wired (Lab 5): `POST /start` through the saga.** `5.0.0` has the saga's step routes and
-   the status `starting`, but `POST /sessions/{id}/start` still moves the lobby to `active` directly
-   and publishes `session.started`, as in `4.0.0`. Calling `StartSaga` (and the answers `202`,
-   `409 SHIFT_START_FAILED`), and retiring `session.started`, wait for the broker's saga coordinator
-   (#168) and ship in a later `5.x.y`. #172 stays open until then.
-   *Who this affects:* the saga demo (grade 9); University Record and Discord DMs keep receiving
-   `session.started` meanwhile, so nothing breaks.
+10. **A saga that ends `failed` (Lab 5, `5.0.1`)** also answers `409 SHIFT_START_FAILED`, with
+   `details.saga_state: "failed"`. The contract names only `compensated` for that `409`; `failed` means
+   a compensation gave up and the broker alerted Service Discovery, so the start did not happen either.
+   (Until `5.0.0` this item was "`POST /start` through the saga not yet wired"; `5.0.1` wires it.)
 
 11. **`SAGA_STEP_REJECTED` (Lab 5)** is this service's own `409` on the service-only step routes, for
    a step that cannot apply: the players changed since the start was asked, the session is not
@@ -572,9 +577,10 @@ service issues; the contract defines no enum and shows no other value.
   `session_results`, so the event stays reproducible.
 - **The creator leaves the lobby.** The session is deleted: nobody would be left who is allowed to
   start it.
-- **Two clients press start at once.** The session row is locked (`SELECT ... FOR UPDATE`) and the
-  rules re-run against the locked membership, so exactly one succeeds and exactly one
-  `session.started` is written.
+- **Two clients press start at once.** From `5.0.1` each starts its own saga; `shift-begin` locks the
+  session row (`SELECT ... FOR UPDATE`) and re-checks that it is in the lobby, so exactly one saga
+  begins the shift and the other is compensated at its first step (`409 SHIFT_START_FAILED` with
+  `failed_step: "shift-begin"`).
 - **A player already in a session.** `409 PLAYER_ALREADY_IN_SESSION`, counting lobbies and active
   sessions only. A player whose last shift is over is free to start another.
 - **A negative `penalty` in an event.** Rejected as a validation error: it would credit the session
@@ -738,8 +744,8 @@ the events' `producer`; the Lab 3 name `session` is used in `/status`, the logs 
 ### Registration with Service Discovery
 
 - `PUT {SERVICE_DISCOVERY_URL}/api/v1/instances/{instance_id}` with `X-Service-Token` and
-  `{"service_name": "session", "port": 8080, "version": "4.0.0", "topics": {"publishes":
-  ["events.session.started", "events.session.ended"], "subscribes": ["events.decision.recorded"]}}`
+  `{"service_name": "session", "port": 8080, "version": "5.0.1", "topics": {"publishes":
+  ["events.session.ended"], "subscribes": ["events.decision.recorded"]}}` (`events.session.started` until `5.0.0`)
   (`host` added when `INSTANCE_HOST` is set; `topics` from `4.0.0`), sent right after the HTTP
   listener is up and then every 5 s as the heartbeat.
 - `sd.registered` on the first success; a failure logs `sd.heartbeat_failed` (`warn`) and is retried on
@@ -842,7 +848,7 @@ From `4.0.0`.
 One gRPC connection to `MESSAGE_BROKER_URL`, with the metadata `x-service-token: SERVICE_TOKEN` on
 every call, carries three things:
 
-- **Publish** (the relay): `session.started` and `session.ended` to `events.<event_type>`, the
+- **Publish** (the relay): `session.ended` (and, until `5.0.0`, `session.started`) to `events.<event_type>`, the
   envelope unchanged - see [§6](#6-events).
 - **Request** (the three clients): `requests.player`, `requests.server-rules`, `requests.applicant`,
   with the peer's own path (`/api/v1/players/{id}`), `timeout_ms` = `DEPENDENCY_TIMEOUT`,
@@ -981,4 +987,29 @@ join elsewhere: `409 PLAYER_ALREADY_IN_SESSION`); join, leave and a second start
 `409 SESSION_NOT_IN_LOBBY`, next applicant and end `409 SESSION_NOT_ACTIVE`; `decision.recorded` for
 it is dropped like for any session that is not active.
 
-Not yet wired: `POST /start` calling `StartSaga` - see [§8](#8-divergences-from-the-cpr-contract) item 10.
+### Starting the saga: `POST /sessions/{session_id}/start` (`5.0.1`)
+
+Session is the saga's initiator:
+
+1. The checks (creator, lobby, at least two players, moderator in the session), the difficulty and the
+   Rules call through the broker run first, as before; any failure answers as before and nothing starts.
+2. Nothing is committed and no lock is held. A new `saga_id` and the payload above (the roles, the record
+   scopes split from the current membership, the ruleset version, `started_at`) go to
+   `StartSaga(saga_type "shift.start", wait = true)`, with a deadline of 4 s at most, cut so the answer
+   comes 300 ms before the 5 s task timeout.
+3. The answer:
+
+| The saga | `POST /start` answers |
+| --- | --- |
+| `completed` | `200` with the session object, `status: active` |
+| `compensated` or `failed` | `409 SHIFT_START_FAILED`, `details.failed_step`, `details.saga_id`, `details.saga_state`; the session is in the lobby |
+| `running` or `compensating`, or the wait over before the broker answered | `202 Accepted` with the session object as it is (`starting`); the saga moves it to `active` or back to `lobby` by itself, the client reads `GET /sessions/{id}` |
+| the broker cannot start it (any other gRPC error) | `500 DEPENDENCY_UNAVAILABLE`, `details.dependency: "message-broker"`; nothing changed |
+
+Logged `session.start_completed`, `session.start_accepted` or `session.start_failed`, with `saga_id` and
+`saga_state` (and `failed_step`, `reason`). Without a broker (`MESSAGE_BROKER_URL` empty, the stubs) there
+is no saga: the start moves the lobby to `active` directly and writes no event.
+
+**Demonstration.** Discord DMs' `POST /api/v1/dev/saga-steps/fail-next` (service token, on an instance
+directly) makes the next `create-channels` fail once: the start answers `409 SHIFT_START_FAILED` with
+`failed_step: "create-channels"`, and the session is back in the lobby.

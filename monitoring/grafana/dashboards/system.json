@@ -512,7 +512,7 @@
       "id": 11,
       "type": "timeseries",
       "title": "Cache answers per second, by result (Gateway)",
-      "description": "Lab 5 (#167): X-Cache of the cached routes (gateway_cache_requests_total: hit, miss, bypass), and calls to a cache node that failed (gateway_cache_node_requests_total{result=\"error\"}), per node.",
+      "description": "Lab 5 (#167): the cached routes by result (gateway_cache_requests_total: hit, miss, bypass, and error for a request whose cache call failed and that was answered from the service), and the failed calls to each cache node (gateway_cache_node_requests_total{result=\"error\"}, legend \"node error <node>\").",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -568,7 +568,7 @@
           },
           "refId": "B",
           "expr": "sum by (node) (rate(gateway_cache_node_requests_total{result=\"error\"}[1m]))",
-          "legendFormat": "error {{node}}"
+          "legendFormat": "node error {{node}}"
         }
       ]
     },

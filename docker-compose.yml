@@ -245,7 +245,7 @@ services:
   # (/status, /logs, /metrics, the topics and dead letter listings with the service token). Messages, subscriptions
   # and dead letters are in SQLite on the broker_data volume, so they survive a restart and a new container.
   message-broker-service:
-    image: d1vinexd/message-broker-service:5.0.0
+    image: d1vinexd/message-broker-service:5.0.1
     restart: unless-stopped
     depends_on:
       service-discovery-service:

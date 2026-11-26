@@ -1,9 +1,10 @@
 # Message Broker Service - Integration Reference
 
-> **Status:** `5.0.0` (Lab 5): the saga coordinator (#168) and five delivery attempts of an event, on top of the Lab 4
+> **Status:** `5.0.1` (Lab 5): the saga coordinator (#168) and five delivery attempts of an event, on top of the Lab 4
 > broker: the base (#103), the gRPC API (#106), the log file and `GET /logs` (#112), request/reply, routing by load and
 > a breaker per instance (#107), durable queues and the dead letter channel (#108), `GET /metrics` (#126),
-> thread-per-request and rerouting (#109). Image `d1vinexd/message-broker-service:5.0.0`. Run by the team
+> thread-per-request and rerouting (#109); `5.0.1` changes no code (README, `.env.example` and CI complete). Image
+> `d1vinexd/message-broker-service:5.0.1`. Run by the team
 > `docker-compose.yml` since #113, with Prometheus, Loki, Alloy and Grafana. The shared names below are the README
 > contract of #105 and #163; see [§16](#16-divergences-from-the-contract).
 
@@ -31,7 +32,7 @@ participants' request queues ([§12](#12-sagas-168)).
 | **Calls out** | Service Discovery: registration as `message-broker`, the instance list, the mark-down, one alert per dead letter or failed saga; the saga steps, as requests on the participants' queues (#168) |
 | **Logs / metrics** | `GET /logs` (#112), `GET /metrics` in the Prometheus text format (#126) |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`, same as every service |
-| **Docker image** | `d1vinexd/message-broker-service:5.0.0` and `:latest`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `d1vinexd/message-broker-service:5.0.1` and `:latest`, published by GitHub Actions on merge to `main` |
 | **Instances** | one copy |
 
 **Why Python.** The lab asks for the team's banned language or one not used in a service. Python reuses the logging,
@@ -45,7 +46,7 @@ not parallel CPU. A broker mostly waits, so this is acceptable here.
 docker run --rm --network student-id-net --name message-broker-service -p 8070:8070 -p 8071:8071 \
   -v broker-data:/data \
   -e SERVICE_TOKEN=... -e SERVICE_DISCOVERY_URL=http://service-discovery-service:8090 \
-  d1vinexd/message-broker-service:5.0.0
+  d1vinexd/message-broker-service:5.0.1
 curl http://localhost:8070/health
 # {"status":"ok","service":"message-broker","version":"5.0.0"}
 ```

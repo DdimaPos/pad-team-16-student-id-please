@@ -34,7 +34,7 @@ Owner: Racovita Dumitru. Source: the private `moderation-service` repository, li
 | Calls | Server Moderation Session, Applicant, Credential, University Record, Server Rules - all as `Request`s through the broker (`requests.<peer>`), with the request's `X-Request-ID`, each behind its own circuit breaker; in the mock mode the built-in mocks answer instead |
 | Authentication | Player endpoints read the calling player from `X-Player-Id`, set by the Gateway after it validated the player's JWT. `/logs`, `/api/v1/admin/*` and `/api/v1/dev/*` are not Gateway routes any more (#110): they are called directly inside the network, and this service checks their `X-Service-Token` itself (`403 SERVICE_TOKEN_REQUIRED`, `401 INVALID_SERVICE_TOKEN`) |
 | Task limits | `HTTP_REQUEST_TIMEOUT` (5 s) stops a task with `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (64) refuses the next task with `429 TOO_MANY_REQUESTS`; health endpoints exempt. See [Task timeout and concurrent task limit](#task-timeout-and-concurrent-task-limit) |
-| Docker image | `dmracovit/moderation-service:5.0.0` and `:latest`, public on Docker Hub, linux/amd64 and linux/arm64; published by GitHub Actions on merge to `main` from the `VERSION` file (Lab 4 = `4.x.y`), with the tag `v<VERSION>` and its GitHub Release |
+| Docker image | `dmracovit/moderation-service:5.0.0` and `:latest`, public on Docker Hub, linux/amd64 and linux/arm64; published by GitHub Actions on merge to `main` from the `VERSION` file (Lab 5 = `5.x.y`), with the tag `v<VERSION>` and its GitHub Release |
 
 ## Running it
 

@@ -1,9 +1,9 @@
 # ETL Service - Integration Reference
 
-> **Status:** `5.0.0`, the first release (Lab 5, #165, decision 4 of #163). Image `d1vinexd/etl-service:5.0.0` and
-> `:latest` (`linux/amd64`, `linux/arm64`), run by the team `docker-compose.yml` next to `warehouse-postgres`. The
-> contract is README "Data warehouse and ETL" and "Data Management" (#184); see [§14](#14-divergences-from-the-contract)
-> for what the service does beyond it.
+> **Status:** `5.0.1` (Lab 5, #165, decision 4 of #163; the first release was `5.0.0`). Image
+> `d1vinexd/etl-service:5.0.1` and `:latest` (`linux/amd64`, `linux/arm64`), run by the team `docker-compose.yml` next
+> to `warehouse-postgres`. The contract is README "Data warehouse and ETL" and "Data Management" (#184); see
+> [§14](#14-divergences-from-the-contract) for what the service does beyond it.
 
 ## 1. What this service is
 
@@ -28,7 +28,7 @@ depends on it. Each owner decides what `etl_reader` may read and never grants a 
 | --- | --- |
 | **Language / framework** | Python 3.12, FastAPI + uvicorn, psycopg 3, PyMongo, httpx, pydantic-settings |
 | **Container port** | `8075` (host `8075`) |
-| **Address in the stack** | `http://etl-service:8075`, inside `student-id-net` only; not a Gateway route and no broker queue |
+| **Address in the stack** | `http://etl-service:8075` inside `student-id-net`, and host port `8075` published for the demo; not a Gateway route and no broker queue |
 | **Health** | `GET /health`, `GET /status` (no credential); `/status` follows the warehouse only |
 | **Metrics** | `GET /metrics`, Prometheus text format, no credential |
 | **Logs** | `GET /logs` with `X-Service-Token`, the file `/var/log/etl/etl.jsonl` |
@@ -38,7 +38,7 @@ depends on it. Each owner decides what `etl_reader` may read and never grants a 
 | **Calls out** | Service Discovery: registration as `etl` and a heartbeat every 5 s |
 | **Callers** | an operator or the demo (`POST /api/v1/runs`, `GET /api/v1/runs`), Service Discovery (`/status`, `/logs`), Prometheus (`/metrics`), Grafana (the warehouse, not the service) |
 | **Error envelope** | `{ "error": { "code", "message", "details" } }`, same as every service |
-| **Docker image** | `d1vinexd/etl-service:5.0.0` and `:latest`, published by GitHub Actions on merge to `main` |
+| **Docker image** | `d1vinexd/etl-service:5.0.1` and `:latest`, published by GitHub Actions on merge to `main` |
 | **Instances** | one copy; a second one would never run at the same time (the run lock is in the warehouse) |
 
 **Why Python.** It reuses the logging, status, logs and metrics modules of Service Discovery and the broker, and a
@@ -51,9 +51,9 @@ docker run --rm --network student-id-net --name etl-service -p 8075:8075 \
   -e SERVICE_TOKEN=... -e SERVICE_DISCOVERY_URL=http://service-discovery-service:8090 \
   -e WAREHOUSE_DSN=postgresql://warehouse:...@warehouse-postgres:5432/warehouse_db \
   -e MODERATION_DB_DSN=postgresql://etl_reader:...@moderation-postgres:5432/moderation_db \
-  d1vinexd/etl-service:5.0.0
+  d1vinexd/etl-service:5.0.1
 curl http://localhost:8075/health
-# {"status":"ok","service":"etl","version":"5.0.0"}
+# {"status":"ok","service":"etl","version":"5.0.1"}
 ```
 
 In the team stack `docker-compose.yml` sets everything from `.env`: `WAREHOUSE_PASSWORD`, `ETL_READER_PASSWORD`,
@@ -76,19 +76,21 @@ MongoDB 7) are in the service repository README.
 | `ETL_INTERVAL_SECONDS` | `60` | Time between two scheduled runs; the first run starts right after startup |
 | `ETL_OVERLAP_SECONDS` | `5` | A table is read from its watermark minus this ([§6](#6-watermarks-and-increments)) |
 | `ETL_PAGE_SIZE` | `1000` | Rows per source query (keyset pages) |
-| `ETL_SOURCE_STATEMENT_TIMEOUT_SECONDS` / `ETL_SOURCE_CONNECT_TIMEOUT_SECONDS` | `30` / `3` | Bound every source query (`statement_timeout`, `maxTimeMS`) and every connect |
+| `ETL_SOURCE_STATEMENT_TIMEOUT_SECONDS` / `ETL_SOURCE_CONNECT_TIMEOUT_SECONDS` | `30` / `1` | Bound every source query (`statement_timeout`, `maxTimeMS`) and every connect; the connect timeout is the contract's 1 s (README "Why a 1 s connect timeout") |
 | `WAREHOUSE_DSN` | empty | `warehouse_db`, as its owner; empty = no run and `/status` `503 degraded` |
-| `WAREHOUSE_CONNECT_TIMEOUT_SECONDS` / `WAREHOUSE_STARTUP_TIMEOUT_SECONDS` | `3` / `60` | At startup the migrations wait this long for the warehouse, then the ETL exits (the compose restarts it) |
+| `WAREHOUSE_CONNECT_TIMEOUT_SECONDS` / `WAREHOUSE_STARTUP_TIMEOUT_SECONDS` | `1` / `60` | At startup the migrations wait this long for the warehouse, then the ETL exits (the compose restarts it) |
 | `PLAYER_DB_DSN`, `SESSION_DB_DSN`, `APPLICANT_DB_DSN`, `RULES_DB_DSN`, `UNIVERSITY_RECORD_DB_DSN`, `MODERATION_DB_DSN` | empty | The PostgreSQL sources, as `etl_reader`; empty = the source is skipped |
 | `CREDENTIAL_MONGO_URI`, `DMS_MONGO_URI` | empty | The MongoDB sources, as `etl_reader`; the database is the URI's (`credential_db`, `dms_db`) |
 | `SERVICE_DISCOVERY_URL` | empty | Registers as `etl`; empty = no registration (one warning at startup) |
 | `SERVICE_DISCOVERY_HEARTBEAT_SECONDS` / `SERVICE_DISCOVERY_TIMEOUT_SECONDS` | `5` / `2` | |
 
 A PostgreSQL DSN gets `target_session_attrs=prefer-standby` and a MongoDB URI `readPreference=secondaryPreferred`
-when it names none. With the replication of #164 every DSN lists the three nodes of its cluster
-(`postgresql://etl_reader:<pw>@player-postgres-1:5432,player-postgres-2:5432,player-postgres-3:5432/player_db`) and
-every URI adds `replicaSet=rs0`; until then the compose points at today's single containers (`player-postgres`,
-...), and a single node is read as it is. DSNs and URIs hold passwords: they are never logged, and the passwords
+when it names none. The DSN of a replicated database lists the three nodes of its cluster
+(`postgresql://etl_reader:<pw>@rules-postgres-1:5432,rules-postgres-2:5432,rules-postgres-3:5432/rules_db`) and the
+URI of a replica set adds `replicaSet=rs0`; a database that runs as one container is named alone and read as it is.
+In the team compose Server Rules and Moderation are three-node PostgreSQL clusters, and Player, Session, Applicant,
+University Record (PostgreSQL), Credential and Discord DMs (MongoDB) run one container each
+([§14](#known-gap-sources-without-a-login-capable-etl_reader)). DSNs and URIs hold passwords: they are never logged, and the passwords
 must be URL-safe (letters, digits, `-`, `_`, `.`, `~`).
 
 ## 5. The warehouse
@@ -129,11 +131,11 @@ Accuracy per moderator is `avg(is_correct::int)` of `fact_decision` by `moderato
 | --- | --- | --- |
 | Player | `players` | `updated_at`, else `created_at` |
 | Player | `shifts` | `created_at` |
-| Session | `sessions` | `updated_at` (added by #172), else `GREATEST(created_at, started_at, ended_at)` |
+| Session | `sessions` | `updated_at` where the schema has it, else `GREATEST(created_at, started_at, ended_at)` (Session `4.0.0` has no `updated_at`) |
 | Session | `session_results` | `created_at` |
 | Applicant | `applicants` | `updated_at`, else `created_at` |
 | Credential | `applicants` | `updated_at`, else `created_at` |
-| Server Rules | `rulesets` | `updated_at` (added by #175); before it the table (a handful of rows) is read whole |
+| Server Rules | `rulesets` | `updated_at` (Server Rules `5.0.0`); a database without it (before `5.0.0`) is read whole (a handful of rows) |
 | Server Rules | `rules` | `id` |
 | University Record | `applicants`, `enrollment_records`, `email_group_records` | `created_at` |
 | Moderation | `decisions` | `decided_at` |
@@ -164,14 +166,14 @@ the list.
 
 ### `GET /health`
 
-`200 {"status": "ok", "service": "etl", "version": "5.0.0"}`, no credential.
+`200 {"status": "ok", "service": "etl", "version": "5.0.1"}`, no credential.
 
 ### `GET /status`
 
 The shape of README "Status endpoint", no credential, outside the concurrent task limit:
 
 ```json
-{ "service": "etl", "instance_id": "etl-3f2a1b9c", "version": "5.0.0", "status": "up", "in_flight": 0, "max_concurrent_tasks": 64 }
+{ "service": "etl", "instance_id": "etl-3f2a1b9c", "version": "5.0.1", "status": "up", "in_flight": 0, "max_concurrent_tasks": 64 }
 ```
 
 `200 up` while the warehouse answers, whatever the sources do; `503 degraded` when the warehouse does not answer or
@@ -203,7 +205,7 @@ This instance's log lines in the window, oldest first, as `application/x-ndjson`
 { "error": { "code": "RUN_IN_PROGRESS", "message": "A run is in progress; try again when it has ended.", "details": { "run_id": "0b6f7c3e-2a1d-4c5b-9e8f-7a6b5c4d3e2f" } } }
 ```
 
-`500 DEPENDENCY_UNAVAILABLE` with `details.dependency: "warehouse_db"` when the warehouse does not answer.
+`500 DEPENDENCY_UNAVAILABLE` with `details.dependency: "postgres"` (the engine, as the contract names a database) when the warehouse does not answer.
 
 ### `GET /api/v1/runs?limit=&offset=` - the runs
 
@@ -234,7 +236,7 @@ This instance's log lines in the window, oldest first, as `application/x-ndjson`
 - `rows`: the rows inserted or changed per warehouse table; a table with none is left out, so a run with no new
   source rows has `{}`.
 - `failed_sources`: one entry per source that could not be loaded, with the error's class and message (never a DSN).
-- `400 VALIDATION_ERROR` for a `limit` or `offset` out of range; `500 DEPENDENCY_UNAVAILABLE` (`warehouse_db`) as above.
+- `400 VALIDATION_ERROR` for a `limit` or `offset` out of range; `500 DEPENDENCY_UNAVAILABLE` (`postgres`) as above.
 
 ## 8. Errors and limits
 
@@ -244,7 +246,7 @@ This instance's log lines in the window, oldest first, as `application/x-ndjson`
 | Wrong `X-Service-Token` | `401 INVALID_SERVICE_TOKEN` |
 | `limit`, `offset` or the logs window malformed | `400 VALIDATION_ERROR` with `details.errors` |
 | `POST /api/v1/runs` while a run holds the lock | `409 RUN_IN_PROGRESS` with `details.run_id` |
-| The warehouse does not answer (run routes) | `500 DEPENDENCY_UNAVAILABLE`, `details.dependency: "warehouse_db"` |
+| The warehouse does not answer (run routes) | `500 DEPENDENCY_UNAVAILABLE`, `details.dependency: "postgres"` |
 | `GET /logs` without a log file | `503 LOGS_UNAVAILABLE` |
 | Unknown route, wrong method | `404 NOT_FOUND`, `405 METHOD_NOT_ALLOWED` |
 | Concurrent task limit of `/api/v1` reached | `429 TOO_MANY_REQUESTS` + `Retry-After` |
@@ -341,11 +343,25 @@ Beyond README "Data warehouse and ETL", none of which changes what a caller of t
   watermark is a value of), and `etl_run.skipped_sources` and `instance_id`.
 - **`status: aborted`**, beyond the four of the contract: a run left `running` by a process that died is marked
   `aborted` by the next run.
-- **`500 DEPENDENCY_UNAVAILABLE`** (`warehouse_db`) on the run routes when the warehouse does not answer, the shared
+- **`500 DEPENDENCY_UNAVAILABLE`** (`details.dependency: "postgres"`) on the run routes when the warehouse does not answer, the shared
   code of README "Errors".
-- **Single-node sources in the compose** until #164 and #170 replicate the databases: the DSNs name today's
-  containers, and a source whose database has no `etl_reader` yet (#164) or whose service has not granted it its
-  tables (#171 to #178) fails in every run and is named in `failed_sources`.
+
+### Known gap: sources without a login-capable `etl_reader`
+
+In the team `docker-compose.yml`, a source whose database has no `etl_reader` that may log in fails every run and is
+named in the run's `failed_sources`; the other sources still load. A database gets a login-capable `etl_reader` from
+the replication pattern's init script (`deployments/postgres-ha/initdb.sh`, `deployments/mongo-rs/init.sh`), and its
+service's migrations grant it what the ETL reads. In this compose that holds for Server Rules `5.0.1`,
+University Record `5.0.1`, Moderation `5.0.0` and Applicant `5.0.0` (three-node PostgreSQL clusters) and for Credential
+`5.0.0` and Discord DMs `5.0.0` (three-member MongoDB replica sets). The sources that fail are:
+
+| Source | Image in the compose | Database | Why |
+| --- | --- | --- | --- |
+| `player` | Player `5.0.0` | `player-postgres`, one container | its migration creates `etl_reader` `NOLOGIN`; the login comes only from the replication pattern's init script |
+| `session` | Session `5.0.1` | `session-postgres`, one container | no login-capable `etl_reader` on a container without the replication pattern |
+
+The ETL loads each of them in the first run after its database runs the replication pattern and its DSN or URI in the
+compose lists the three nodes.
 
 ## 15. Postman
 

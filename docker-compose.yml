@@ -945,7 +945,7 @@ services:
   # warehouse_db). Host port 8075 is published for the demo. It registers with Service Discovery as `etl`, so
   # Prometheus scrapes it and the logs download fetches its GET /logs.
   etl-service:
-    image: d1vinexd/etl-service:5.0.0
+    image: d1vinexd/etl-service:5.0.1
     restart: unless-stopped
     # A lookup of a stopped database node fails within 1 s, not after Docker Desktop for Windows' 5 to 16 s (#197).
     dns_opt: ["timeout:1", "attempts:1"]
@@ -966,11 +966,13 @@ services:
       WAREHOUSE_DSN: "postgresql://warehouse:${WAREHOUSE_PASSWORD:?set WAREHOUSE_PASSWORD}@warehouse-postgres:5432/warehouse_db?sslmode=disable"
       # The eight sources, as the read-only role etl_reader (ETL_READER_PASSWORD; letters, digits and - _ . ~ only,
       # since it goes into a URL). The ETL appends target_session_attrs=prefer-standby and
-      # readPreference=secondaryPreferred itself. Today every database is one container under its Lab 4 name; #164 and
-      # #170 turn each into <db>-1, <db>-2 and <db>-3 (the two MongoDB ones into the replica set rs0), and then every
-      # DSN lists the three nodes (player-postgres-1:5432,player-postgres-2:5432,player-postgres-3:5432) and every URI
-      # adds replicaSet=rs0. Until a database has the role (#164) and its service grants it what the ETL reads
-      # (#171 to #178), that source fails in every run and is named in the run's failed_sources; the others still load.
+      # readPreference=secondaryPreferred itself. Server Rules, University Record, Moderation and Applicant run
+      # three-node PostgreSQL clusters and Credential and Discord DMs three-member replica sets (<db>-1, <db>-2, <db>-3),
+      # so their DSN or URI lists the three; Player and Session run one PostgreSQL container each, so their DSN names it. A
+      # database gets a login-capable etl_reader from the replication pattern's init script (deployments/postgres-ha,
+      # deployments/mongo-rs); a source whose database has none fails every run and is named in the run's
+      # failed_sources, the others still load (docs/ETL_SERVICE.md "Known gap"). ETL_SOURCE_CONNECT_TIMEOUT_SECONDS
+      # keeps the image default of 1 s.
       PLAYER_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@player-postgres:5432/${PLAYER_POSTGRES_DB:-player_db}?sslmode=disable"
       SESSION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@session-postgres:5432/${SESSION_POSTGRES_DB:-session_db}?sslmode=disable"
       APPLICANT_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@applicant-postgres-1:5432,applicant-postgres-2:5432,applicant-postgres-3:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"

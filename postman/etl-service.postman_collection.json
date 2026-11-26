@@ -2,7 +2,7 @@
   "info": {
     "name": "ETL Service",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "The ETL Service 5.0.0 (Lab 5, #165) on port 8075: the probes, GET /metrics, the run routes (X-Service-Token, called directly inside student-id-net or on host port 8075, never through the Gateway) and GET /logs. docs/ETL_SERVICE.md is the reference. Set etl_url and service_token (the placeholder of .env.example) for your stack and run the folders in order: \"runs\" starts a run, checks that a second one is refused with 409 RUN_IN_PROGRESS while it holds the lock, and finds it in the listing. run_id is set by the collection."
+    "description": "The ETL Service 5.0.1 (Lab 5, #165) on port 8075: the probes, GET /metrics, the run routes (X-Service-Token, called directly inside student-id-net or on host port 8075, never through the Gateway) and GET /logs. docs/ETL_SERVICE.md is the reference. Set etl_url and service_token (the placeholder of .env.example) for your stack and run the folders in order: \"runs\" starts a run, checks that a second one is refused with 409 RUN_IN_PROGRESS while it holds the lock, and finds it in the listing. run_id is set by the collection."
   },
   "item": [
     {

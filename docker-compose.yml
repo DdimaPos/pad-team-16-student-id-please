@@ -229,7 +229,7 @@ services:
       - student-id-net
 
   gateway-service:
-    image: stewdh/gateway-service:4.0.0
+    image: stewdh/gateway-service:5.0.0
     restart: unless-stopped
     depends_on:
       message-broker-service:
@@ -247,8 +247,10 @@ services:
       # Prometheus scrapes it and Service Discovery fetches its GET /logs as static targets.
       MESSAGE_BROKER_URL: ${MESSAGE_BROKER_URL:-message-broker-service:8071}
       LOG_FILE: /var/log/gateway/gateway.jsonl
-      # Lab 5 (#167, #166): the cache nodes of the consistent hashing ring; ignored by 4.0.0. No depends_on on them
-      # on purpose: the cache fails open, so the Gateway answers through the broker while a cache node is down.
+      # Lab 5 (5.0.0, #167, #166; README "Caching", "Cache sharding"): the cache nodes of the consistent hashing ring.
+      # The TTLs, CACHE_TIMEOUT_MS (50) and CACHE_BREAKER_WINDOW_SECONDS (10) keep their defaults, the contract's values.
+      # No depends_on on the nodes on purpose: the cache fails open, so the Gateway answers through the broker while a
+      # cache node is down.
       CACHE_NODES: ${CACHE_NODES:-cache-1:6379,cache-2:6379,cache-3:6379}
     ports:
       - "8080:8080"

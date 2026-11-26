@@ -5,7 +5,7 @@
 > cross-cutting system pieces. It documents what this service does, how to run it, how to
 > talk to it, what it guarantees, and — importantly — what it does **not** do.
 >
-> Everything here is stated from the implementation shipped as image `4.0.0`, not from the design
+> Everything here is stated from the implementation shipped as image `5.0.0`, not from the design
 > documents. Where that image diverges from the team's Common Public Repository (CPR) contract,
 > the divergence is called out explicitly in [§12](#12-divergences-from-the-cpr-contract).
 >
@@ -14,6 +14,12 @@
 > `events.applicant.initialized`, all over gRPC ([§6.7b](#67b-requests-and-events-through-the-message-broker),
 > [§9](#9-events)). The REST port stays for the probes, `/logs`, `/metrics` and direct calls
 > inside the network.
+>
+> **Lab 5** runs the database as a primary and two hot standbys behind one multi-host
+> `DATABASE_URL`: when the primary stops, calls answer `500 DEPENDENCY_UNAVAILABLE` for a few
+> seconds and the pool moves to the promoted standby by itself, with nothing lost
+> ([§13.5](#135-database-outage)). The data warehouse's ETL reads the database as `etl_reader`,
+> a role that cannot read the email addresses ([§10](#10-what-and-how-it-stores)).
 
 ---
 
@@ -89,13 +95,13 @@ non-negotiable for anyone integrating:
 | **Health (readiness)** | `GET /health/ready` |
 | **Status (Service Discovery)** | `GET /status` - load and health of this copy, polled by Service Discovery ([§6.8](#68-health)) |
 | **Logs and metrics** | `GET /logs` (service token) and `GET /metrics` (Prometheus), on the REST port ([§16](#16-observability)) |
-| **Database** | PostgreSQL 16, `applicant_db` (private — no other service may connect) |
+| **Database** | PostgreSQL 16, `applicant_db`; from Lab 5 a primary and two hot standbys (`applicant-postgres-1..3`), reached with one multi-host `DATABASE_URL` ([§13.5](#135-database-outage)). Private: no other service may connect, except the data warehouse's ETL, read-only, as `etl_reader` ([§10](#10-what-and-how-it-stores)) |
 | **Events** | Through the Message Broker over gRPC (CPR README "Event delivery"): published once from a transactional outbox to `events.applicant.initialized`, received on the instance's subscription to that topic and acked |
 | **Produces** | `applicant.initialized`; the broker hands a copy to Credential and University Record Service |
 | **Consumes** | `applicant.initialized` (from Credential / University Record; its own copy is ignored) |
 | **Authentication** | None in the service: the broker checks the service token on every gRPC call, and the Gateway checks a player's JWT before it hands a request to the broker, which passes on only `X-Player-Id`. `GET /logs` is the exception: it checks `X-Service-Token` itself ([§14](#14-gateway-and-broker-requirements)) |
 | **Outbound calls** | gRPC to the broker at `MESSAGE_BROKER_URL` (`Subscribe`, `Publish`, `Ack`, `Reply`) with `x-service-token` metadata and one circuit breaker for the publishes; its own registration, `PUT`/`DELETE {SERVICE_DISCOVERY_URL}/api/v1/instances/{instance_id}`, directly to Service Discovery |
-| **Docker image** | `stewdh/applicant-service:4.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64`, published by CI on every merge to `main` |
+| **Docker image** | `stewdh/applicant-service:5.0.0` (also `:latest`), public on Docker Hub, `linux/amd64` and `linux/arm64`, published by CI on every merge to `main` |
 | **Instances** | 2-3 copies share the one database; each subscribes to the broker, which hands every request to the least loaded copy ([§15](#15-scaling-concurrency-and-statefulness)) |
 | **Hard dependency** | PostgreSQL only. The broker and Service Discovery are soft: without the broker no request reaches the instance and its events wait in the outbox, and it subscribes again with backoff; the registration is retried every 5 s |
 
@@ -201,7 +207,7 @@ A misconfiguration fails fast with the offending variable named.
 
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | — | **yes** | PostgreSQL connection string (pgx format) |
+| `DATABASE_URL` | — | **yes** | PostgreSQL connection string (pgx format). From Lab 5 it lists the three nodes of the replicated cluster and asks for the primary: `postgres://<user>:<pw>@applicant-postgres-1:5432,applicant-postgres-2:5432,applicant-postgres-3:5432/applicant_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=1` ([§13.5](#135-database-outage)) |
 | `APP_PORT` | `8081` | no | HTTP listen port. Must be 1–65535 |
 | `APP_ENV` | `local` | no | `local` / `test` / `development` → Gin debug mode. Anything else → Gin release mode. Logs are JSON either way ([§16](#16-observability)) |
 | `SERVICE_VERSION` | `dev` | no | Reported by `/health`, `/status`, every log line and the registration. The image sets it via ldflags |
@@ -476,7 +482,7 @@ does not check dependencies: a liveness probe that fails on a dependency restart
 container because somebody else is having a bad day.
 
 ```json
-{ "status": "ok", "service": "applicant-service", "version": "4.0.0" }
+{ "status": "ok", "service": "applicant-service", "version": "5.0.0" }
 ```
 
 **`GET /health/ready`** — readiness.
@@ -485,7 +491,7 @@ container because somebody else is having a bad day.
 {
   "status": "ok",
   "service": "applicant-service",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "components": {
     "postgres": { "status": "up" },
     "message_broker": { "status": "up" },
@@ -522,7 +528,7 @@ at full load reports itself busy instead of looking broken.
 {
   "service": "applicant",
   "instance_id": "applicant-3f4e2a9b1c7d",
-  "version": "4.0.0",
+  "version": "5.0.0",
   "status": "up",
   "in_flight": 3,
   "max_concurrent_tasks": 64
@@ -699,7 +705,7 @@ normally belong to that person's own year of their own programme. Properties you
 - The curriculum is shipped as `internal/generator/catalog/data/courses.json`: 53 entries, the 49
   of the CPR's [`shared/courses.json`](../shared/courses.json) plus `LEN1` ("Limba Engleză I",
   year 1, spring) for each of the four majors. The contract requires a byte-identical copy of the
-  CPR file and codes matching `^[A-Z]{2,4}$`; image `4.0.0` still meets neither
+  CPR file and codes matching `^[A-Z]{2,4}$`; image `5.0.0` still meets neither
   ([§12](#12-divergences-from-the-cpr-contract)). Credential Service ships the same file.
 - A separate `fake_courses.json` holds eight codes that exist nowhere (`ELSE-NET`, `QBIT-101`,
   `WEB5`, …). They do not follow the catalog format, so a fabrication can be told apart at a
@@ -1020,6 +1026,27 @@ rejected merely for spelling a student ID differently.
   downstream.
 - **All `actual_*` columns are nullable**, because a peer's event may omit that profile.
 
+### What the ETL reads (Lab 5)
+
+The data warehouse's ETL Service (CPR README "Data warehouse and ETL") is the one reader from
+outside: as the role `etl_reader`, read-only, from a standby. Migration `0007` grants it `SELECT`
+on the columns of `applicants` except `claimed_email` and `actual_email` - both profiles, the lie
+metadata, `difficulty`, `session_id`, `origin`, `initialized_by`, `created_at` and `updated_at` -
+and on nothing else: not `university_emails` (its key is the address), `processed_events`, the
+outbox tables or the `applicants_claimed` view. It sets no default privileges, so a table a later
+migration adds stays closed until that migration grants it. The ETL names its columns; `SELECT *`
+is refused.
+
+The role and its password come from the replication pattern's init script on the primary (CPR
+#164). Where it does not exist - CI, a plain local run - the migration creates it without `LOGIN`,
+so the grant never fails and never stops the start. The integration tests act as the role and
+check both what it reads and what it cannot.
+
+**Watermark: `updated_at`**, indexed by `idx_applicants_updated`. It only grows: a row is written
+with `created_at = updated_at`, and a `PATCH` sets `updated_at = now()`. The first one comes from
+the application's clock, to the second, before the transaction commits, so the ETL reads `>=` its
+watermark and its upsert absorbs the overlap.
+
 ### Retention
 
 Nothing is deleted automatically. Applicants, processed event ids and delivered outbox rows
@@ -1038,7 +1065,9 @@ persisted volume the second schema change would silently never apply.
 `0005` (image `3.0.0`) adds `outbox_events.request_id`, the originating `X-Request-ID` sent
 with each publish, and `outbox_deliveries.claim_token`, the claim currently holding a delivery.
 `0006` (image `4.0.0`) gives every event still waiting for a Lab 3 consumer its one delivery to
-the broker and drops the pending per-consumer rows; delivered and parked rows stay.
+the broker and drops the pending per-consumer rows; delivered and parked rows stay. `0007` (image
+`5.0.0`) creates `etl_reader` where it is missing, grants it the applicants without their email
+addresses, and indexes `updated_at` ([What the ETL reads](#what-the-etl-reads-lab-5)).
 
 ---
 
@@ -1125,9 +1154,14 @@ Raise these in the CPR before integration; they are the parts other services mus
 | # | Divergence | Who is affected |
 | --- | --- | --- |
 | 2 | **`422 VALIDATION_ERROR`** for an incoherent profile. The contract keeps `VALIDATION_ERROR` for `400` and reserves `422` for endpoint-specific codes | Generic clients |
-| 3 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, and the fake codes must follow `^[A-Z]{2,4}$`. Image `4.0.0` still does not match: its catalog has 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format - and none of its eight fake codes (`ELSE-NET`, `QBIT-101`, `WEB5`, …) follow the format. Credential Service ships the same two files | University Record and Credential Service, Moderation |
+| 3 | **`courses.json` must be the CPR's [`shared/courses.json`](../shared/courses.json)**, byte-identical, and the fake codes must follow `^[A-Z]{2,4}$`. Image `5.0.0` still does not match: its catalog has 53 entries against the CPR's 49 - the same 49 plus `LEN1` ("Limba Engleză I", year 1, spring) for each of the four majors, a code that also breaks the format - and none of its eight fake codes (`ELSE-NET`, `QBIT-101`, `WEB5`, …) follow the format. Credential Service ships the same two files | University Record and Credential Service, Moderation |
 | 5 | **Four CRUD endpoints exist beyond the contract** (`GET` list, `POST`, `PATCH`, `DELETE`) | The broker and the Gateway — see [§14](#14-gateway-and-broker-requirements) |
 | 6 | **`POST /api/v1/applicants` does not produce `applicant.initialized`** | Anyone expecting every applicant to be announced |
+| 7 | **`etl_reader` gets no default privileges** (Lab 5). #173 asks for the tables later migrations create too (`ALTER DEFAULT PRIVILEGES`); the Lab 5 contract (CPR README "Data warehouse and ETL") grants future tables only where every column may be read, and every table here but `applicants` holds an email address or nothing the warehouse needs. A later migration grants what it adds | The ETL (#165) |
+
+**Lab 5 (`5.0.0`).** Follows the Lab 5 contract (CPR #163: README "Database replication" and "Data
+warehouse and ETL"); divergence 7 is the only one. `api/proto/broker.proto` is the CPR's Lab 5
+`shared/broker.proto` byte for byte, with `StartSaga` and `GetSaga`, which this service does not call.
 
 **Lab 4 (`4.0.0`).** Built against the broker contract proposed for CPR issue #105 before it was
 merged: `broker.proto` (package `broker.v1`) is vendored in `api/proto/` byte for byte, with
@@ -1207,6 +1241,32 @@ on `claimed.student_id`.
   no restart needed. Confirmed by hand against the running stack, not by an automated test.
 - At *startup*, an unreachable database for longer than `DB_CONNECT_TIMEOUT` (30s) exits the
   process non-zero — rely on the orchestrator's restart policy.
+
+**Failover (Lab 5).** The database runs as a primary and two hot standbys, and `DATABASE_URL`
+lists all three with `target_session_attrs=read-write` (CPR README "Database replication"). When
+the primary stops:
+
+- Until `pg-failover` has promoted a standby (after 6 s without an answer from the primary; writes
+  again within 15 s), every call that needs the database answers `500 DEPENDENCY_UNAVAILABLE`
+  (`details.dependency = "postgres"`), never `INTERNAL_ERROR`, so the broker's breakers do not
+  count it; `/health/ready` and `GET /status` answer `503`. A transaction cut by the failover is
+  rolled back: an applicant and its outbox row are stored together or not at all.
+  Measured on the replication pattern (#164) with a writer on `POST /applicants/next` every 200 ms:
+  writes back 5.5 s after `docker stop` of the primary and 4.9 s after `docker kill`, every failed
+  call a `500 DEPENDENCY_UNAVAILABLE` answered within 44 ms, and the 702 applicants created all on
+  every node with their 702 outbox rows.
+- pgx pings a pooled connection that sat idle for more than a second before it hands it out and
+  drops it when the ping fails, and a new connection tries the three nodes in turn
+  (`connect_timeout=1` each: on Docker Desktop for Windows the DNS lookup of a stopped node takes
+  seconds, which no connect timeout covers, so the compose also sets `dns_opt` to one 1 s try) and
+  keeps only the one that accepts writes. So the pool moves to the
+  new primary by itself, with no restart, and never writes to a standby - the old primary back as
+  one included.
+- An `applicant.initialized` that arrives meanwhile is acked `RETRY` and delivered again 5 s
+  later; the broker tries 5 times (broker `5.0.0`; 3 with `4.0.0`) before it sends it to the dead
+  letter channel, so the event outlasts a write outage of up to 20 s. The relay cannot claim from the outbox meanwhile; an event it published but
+  could not mark is published again when its lease (`OUTBOX_LEASE`, 5 min) runs out, and the
+  consumers drop the repeat by `event_id`.
 
 ### 13.6 Poison events
 
@@ -1415,7 +1475,7 @@ Every line carries:
 | `correlation_id` | on every line of a request the broker delivered |
 
 ```json
-{"time":"2026-11-02T12:00:00.123Z","level":"info","msg":"request","service":"applicant","instance_id":"applicant-3f4e2a9b1c7d","version":"4.0.0","event":"http.request","method":"POST","path":"/api/v1/applicants/next","status":201,"duration_ms":42,"client_ip":"172.18.0.12","request_id":"9d2d…","correlation_id":"7a74…"}
+{"time":"2026-11-02T12:00:00.123Z","level":"info","msg":"request","service":"applicant","instance_id":"applicant-3f4e2a9b1c7d","version":"5.0.0","event":"http.request","method":"POST","path":"/api/v1/applicants/next","status":201,"duration_ms":42,"client_ip":"172.18.0.12","request_id":"9d2d…","correlation_id":"7a74…"}
 ```
 
 **`X-Request-ID`** is read from the request or generated (uuid4), echoed on the response,

@@ -2679,7 +2679,9 @@ letters); it writes its log lines to `LOG_FILE` (default `/var/log/service-disco
 back by `GET /logs`) and builds the whole system's logs download, `GET /api/v1/logs` (see [Logs download](#logs-download)).
 `/openapi.json` is no longer served. From `4.0.1` (`d1vinexd/service-discovery-service:4.0.1`, the compose's image, #156)
 it keeps an idle keep-alive connection 120 s instead of uvicorn's 5 s, the heartbeat interval, so heartbeats no longer
-fail now and then; the API is unchanged. Details and the Prometheus scrape configuration:
+fail now and then; the API is unchanged. From `5.0.0` (`d1vinexd/service-discovery-service:5.0.0`, the compose's image,
+#165) `etl` is a known service: the ETL Service registers under it (no topics), and the logs download and the alerts
+accept it. Details and the Prometheus scrape configuration:
 [`docs/SERVICE_DISCOVERY.md`](docs/SERVICE_DISCOVERY.md).
 
 `d1vinexd/server-rules-service` is published for `linux/amd64` and `linux/arm64`.

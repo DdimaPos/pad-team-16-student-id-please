@@ -669,6 +669,8 @@ services:
   etl-service:
     image: d1vinexd/etl-service:5.0.0
     restart: unless-stopped
+    # A lookup of a stopped database node fails within 1 s, not after Docker Desktop for Windows' 5 to 16 s (#197).
+    dns_opt: ["timeout:1", "attempts:1"]
     depends_on:
       service-discovery-service:
         condition: service_healthy
@@ -728,6 +730,8 @@ services:
       - pg_ha_state:/ha-state
     networks:
       - student-id-net
+    # A check of a stopped node fails within 1 s instead of using its whole 3 s bound on a DNS lookup (#197).
+    dns_opt: ["timeout:1", "attempts:1"]
 
   # Monitoring (Lab 4, #113; README "Deployments", "Monitoring stack"). Prometheus reads the scrape targets from
   # Service Discovery (every up instance and the broker) plus the Gateway and Service Discovery as static targets,

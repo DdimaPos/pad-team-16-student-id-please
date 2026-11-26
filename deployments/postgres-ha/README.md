@@ -49,9 +49,15 @@ official `postgres` image (16 or 17); this folder is bind-mounted read-only into
   standby streams from, with the leader file's choice marked.
 - **Clients.** A service lists the three nodes and asks for the read-write one; the driver tries them in order and
   skips the standbys, so no proxy sits in between:
-  - pgx (Go): `postgres://<user>:<pw>@<db>-1:5432,<db>-2:5432,<db>-3:5432/<name>?sslmode=disable&target_session_attrs=read-write&connect_timeout=2`
-  - Npgsql (C#): `Host=<db>-1,<db>-2,<db>-3;Port=5432;Database=<name>;Username=<user>;Password=<pw>;Target Session Attributes=read-write;Timeout=3;Host Recheck Seconds=2`
+  - pgx (Go): `postgres://<user>:<pw>@<db>-1:5432,<db>-2:5432,<db>-3:5432/<name>?sslmode=disable&target_session_attrs=read-write&connect_timeout=1`
+  - Npgsql (C#): `Host=<db>-1,<db>-2,<db>-3;Port=5432;Database=<name>;Username=<user>;Password=<pw>;Target Session Attributes=read-write;Timeout=1;Host Recheck Seconds=2`
   - the ETL reads with `target_session_attrs=prefer-standby`.
+
+  **1 s timeouts and `dns_opt`.** On Docker Desktop for Windows the DNS lookup of a stopped container's name fails
+  only after 5 to 16 s, and no connect timeout covers DNS, so a longer timeout made every new connection wait while
+  `<db>-1` was down, with the new primary up (measured on #184: `408` on every create with `Timeout=3`). Every
+  compose block that connects to a replicated database (the services, `pg-failover`, the ETL) therefore also gets
+  `dns_opt: ["timeout:1", "attempts:1"]`, and a request takes one connection from the pool, never one per query.
   While no primary answers, the service answers `500 DEPENDENCY_UNAVAILABLE` (`details.dependency` naming the
   database) and its `/status` says `degraded`; see the shared brief and decision 3.
 
@@ -59,7 +65,8 @@ official `postgres` image (16 or 17); this folder is bind-mounted read-only into
 
 1. Replace the database block with three nodes from the block below (one named volume per node), and add the cluster
    to `PGHA_CLUSTERS` of `pg-failover`.
-2. Change the service's connection string to the multi-host form above; point its `depends_on` at `<db>-1`.
+2. Change the service's connection string to the multi-host form above; point its `depends_on` at `<db>-1`, and
+   give its block `dns_opt: ["timeout:1", "attempts:1"]`.
 3. Start with **new volumes** (`docker compose down -v` or new volume names): `initdb.sh` runs only on an empty data
    directory, and the roles of the pattern must exist. The services seed their data again on start.
 4. Grant `etl_reader` in the service's own migrations what the ETL may read (never secrets; see #165).

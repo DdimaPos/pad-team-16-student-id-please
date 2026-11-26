@@ -218,6 +218,15 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"saga_t0\", new Date(Date.now() - 2000).toISOString());"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -308,15 +317,33 @@
           "name": "Broker: the saga is completed",
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Wait until the saga of this start has ended (at most 15 s): a start answered 202 finishes on its own.",
+                  "const url = pm.variables.replaceIn(\"{{broker_url}}/api/v1/sagas?limit=20\");",
+                  "const header = [{ key: \"X-Service-Token\", value: pm.collectionVariables.get(\"service_token\") }];",
+                  "const t0 = Date.parse(pm.collectionVariables.get(\"saga_t0\"));",
+                  "const deadline = Date.now() + 15000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  const saga = !err && res.code === 200 && res.json().items.find(x => x.saga_type === \"shift.start\" && Date.parse(x.started_at) >= t0);",
+                  "  if ((!saga || saga.state === \"running\" || saga.state === \"compensating\") && Date.now() < deadline) setTimeout(poll, 500);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
-                  "const sid = pm.collectionVariables.get(\"session_id\");",
-                  "const saga = pm.response.json().items.find(x => JSON.stringify(x).includes(sid));",
-                  "pm.test(\"the saga of this session is completed\", () => { pm.expect(saga, \"no completed saga names \" + sid).to.exist; pm.expect(saga.state).to.eql(\"completed\"); });",
-                  "if (saga) console.log(\"saga\", saga.saga_id, saga.state, JSON.stringify(saga.steps.map(s => [s.step, s.state, s.attempts])));"
+                  "const t0 = Date.parse(pm.collectionVariables.get(\"saga_t0\"));",
+                  "const saga = pm.response.json().items.find(x => x.saga_type === \"shift.start\" && Date.parse(x.started_at) >= t0);",
+                  "pm.test(\"the saga of this start is completed\", () => { pm.expect(saga, \"no shift.start saga since the start\").to.exist; pm.expect(saga.state).to.eql(\"completed\"); });",
+                  "if (saga) console.log(\"saga\", saga.saga_id, saga.state, saga.failed_step, JSON.stringify(saga.steps.map(s => [s.step, s.state, s.attempts])));"
                 ]
               }
             }
@@ -329,7 +356,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": "{{broker_url}}/api/v1/sagas?state=completed&limit=20",
+            "url": "{{broker_url}}/api/v1/sagas?limit=20",
             "description": ""
           }
         }
@@ -521,11 +548,32 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The scope was granted by the saga step grant-scopes before the start answered; the applicant's records reach",
+                  "// University Record with applicant.initialized, through the broker: until then the search answers 200 with no item.",
+                  "// Wait for them (at most 10 s).",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/university-record/records/{{junior_category}}?session_id={{session_id}}&q={{student_id}}\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"junior_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  const b = !err && res.code === 200 && res.json();",
+                  "  if ((!b || (b.items || b).length === 0) && Date.now() < deadline) setTimeout(poll, 500);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"the applicant's records are found\", () => pm.expect((b.items || b).length).to.be.above(0));"
                 ]
               }
             }
@@ -923,6 +971,15 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"failed_saga_t0\", new Date(Date.now() - 2000).toISOString());"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
@@ -993,18 +1050,38 @@
           }
         },
         {
-          "name": "Broker: the saga is compensated",
+          "name": "Broker: the saga is compensated, create-channels its failed step",
           "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Wait until the saga of this start has ended (at most 15 s): a start answered 202 finishes on its own.",
+                  "const url = pm.variables.replaceIn(\"{{broker_url}}/api/v1/sagas?limit=20\");",
+                  "const header = [{ key: \"X-Service-Token\", value: pm.collectionVariables.get(\"service_token\") }];",
+                  "const t0 = Date.parse(pm.collectionVariables.get(\"failed_saga_t0\"));",
+                  "const deadline = Date.now() + 15000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  const saga = !err && res.code === 200 && res.json().items.find(x => x.saga_type === \"shift.start\" && Date.parse(x.started_at) >= t0);",
+                  "  if ((!saga || saga.state === \"running\" || saga.state === \"compensating\") && Date.now() < deadline) setTimeout(poll, 500);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
                   "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
-                  "const sid = pm.collectionVariables.get(\"failed_session_id\");",
-                  "const saga = pm.response.json().items.find(x => JSON.stringify(x).includes(sid));",
-                  "pm.test(\"the saga of this session is compensated\", () => { pm.expect(saga, \"no compensated saga names \" + sid).to.exist; pm.expect(saga.state).to.eql(\"compensated\"); });",
-                  "if (saga) console.log(\"saga\", saga.saga_id, saga.state, JSON.stringify(saga.steps.map(s => [s.step, s.state, s.attempts])));"
+                  "const t0 = Date.parse(pm.collectionVariables.get(\"failed_saga_t0\"));",
+                  "const saga = pm.response.json().items.find(x => x.saga_type === \"shift.start\" && Date.parse(x.started_at) >= t0);",
+                  "pm.test(\"the saga of this start is compensated\", () => { pm.expect(saga, \"no shift.start saga since the start\").to.exist; pm.expect(saga.state).to.eql(\"compensated\"); });",
+                  "if (saga) console.log(\"saga\", saga.saga_id, saga.state, saga.failed_step, JSON.stringify(saga.steps.map(s => [s.step, s.state, s.attempts])));",
+                  "",
+                  "pm.test(\"failed_step create-channels\", () => pm.expect(saga && saga.failed_step).to.eql(\"create-channels\"));"
                 ]
               }
             }
@@ -1017,7 +1094,7 @@
                 "value": "{{service_token}}"
               }
             ],
-            "url": "{{broker_url}}/api/v1/sagas?state=compensated&limit=20",
+            "url": "{{broker_url}}/api/v1/sagas?limit=20",
             "description": ""
           }
         },
@@ -1073,6 +1150,71 @@
             ],
             "url": "{{base_url}}/api/v1/session/sessions/{{failed_session_id}}/players/{{moderator_id}}",
             "description": ""
+          }
+        },
+        {
+          "name": "Clean up: no armed failure switch is left behind",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The switch counts its arms ($inc). When the start above did not reach create-channels (no saga), the arm is still",
+                  "// there and would fail the next run's step: send the step on a throwaway saga until one goes through (at most 5), and",
+                  "// the request itself compensates that saga, so nothing is left behind.",
+                  "const url = pm.variables.replaceIn(\"{{dms_url}}/api/v1/saga-steps/create-channels\");",
+                  "const header = [{ key: \"Content-Type\", value: \"application/json\" }, { key: \"X-Service-Token\", value: pm.collectionVariables.get(\"service_token\") }];",
+                  "const step = () => {",
+                  "  const saga_id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "  pm.collectionVariables.set(\"cleanup_saga_id\", saga_id);",
+                  "  return JSON.stringify({ saga_id, saga_type: \"shift.start\", step: \"create-channels\", payload: {",
+                  "    session_id: pm.variables.replaceIn(\"{{$guid}}\"), moderator_id: pm.collectionVariables.get(\"moderator_id\"),",
+                  "    junior_moderators: [{ player_id: pm.collectionVariables.get(\"junior_id\"), record_scopes: [\"enrollment\"] }],",
+                  "    ruleset_version: 1, started_at: new Date().toISOString() } });",
+                  "};",
+                  "let tries = 0;",
+                  "const fire = () => pm.sendRequest({ url, method: \"POST\", header, body: { mode: \"raw\", raw: step() } }, (err, res) => {",
+                  "  tries += 1;",
+                  "  if (!err && res.code === 500 && tries < 5) { console.log(\"fired a leftover arm of the failure switch\"); fire(); }",
+                  "});",
+                  "fire();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200: the throwaway saga is compensated\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{dms_url}}/api/v1/saga-steps/create-channels/compensate",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{cleanup_saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
           }
         }
       ]
@@ -1460,6 +1602,18 @@
     },
     {
       "key": "etl_run_id",
+      "value": ""
+    },
+    {
+      "key": "saga_t0",
+      "value": ""
+    },
+    {
+      "key": "failed_saga_t0",
+      "value": ""
+    },
+    {
+      "key": "cleanup_saga_id",
       "value": ""
     }
   ]

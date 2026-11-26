@@ -755,6 +755,26 @@ write reach the primary only; no proxy is involved. The startup line (`startup`)
   standby, a commit the old primary acknowledged is on the promoted standby: the XP of an ended shift
   is not lost.
 
+### The failover, measured (2026-11-26)
+
+On the CPR compose (`player-postgres-1..3`, `pg-failover`, Player `5.0.0` with two copies, Service Discovery and the
+broker; the example values of `.env.example`), a client registered a player every 200 ms while `docker stop` stopped
+the primary `player-postgres-1`:
+
+- the first request after the stop answered `500 DEPENDENCY_UNAVAILABLE` (`details.dependency: "postgres"`), 27 in
+  all, and writes worked again **6.3 s** after the stop (the target is 15 s): `pg-failover` saw 5 failed checks
+  1 s apart, promoted `player-postgres-2` (the most advanced standby), re-pointed `player-postgres-3` to it and turned
+  synchronous replication on again;
+- **every acknowledged write was on the new primary** (181 of 181), and no failed request left a row;
+- started again, `player-postgres-1` rejoined as a standby of `player-postgres-2` (`pg_rewind`: nothing had
+  diverged), held the 181 rows and refused a write (`cannot execute INSERT in a read-only transaction`);
+- both copies answered `/health/ready` with `postgres: ok` again, with no restart;
+- `etl_reader` logged in on a standby and read `players` (6 seeded rows) and was refused `password_hash`.
+
+Not part of this run: a whole shift ended through the saga across the failover (it needs the full stack); the XP of
+`session.ended` is applied in one transaction and acked only after it, so the broker redelivers an event that hits
+the switch (above).
+
 ### What the ETL reads
 
 The migrations, after `AutoMigrate` and under the same startup lock, grant the warehouse ETL's role

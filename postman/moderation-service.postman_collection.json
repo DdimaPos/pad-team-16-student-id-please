@@ -3,7 +3,7 @@
     "name": "Moderation Service",
     "_postman_id": "9d2f7c1e-6a4b-4f3e-8b2d-1c5e7a9f0b34",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Moderation Service through the Gateway. Set base_url to the Gateway (http://localhost:8080) and service_token to the stack's SERVICE_TOKEN; every request carries the service prefix /api/v1/moderation. The scenarios use the built-in mocks (SESSION_URL, APPLICANT_URL, CREDENTIAL_URL, UNIVERSITY_RECORD_URL and RULES_URL empty, DEV_ENDPOINTS=true). Run the folders in order; the Setup folder resets the session so the run can be repeated."
+    "description": "Moderation Service on the team stack (Lab 4 and Lab 5). Folders 1-5 run a real shift through the Gateway and the Message Broker: two seeded players log in (veteran_max moderates, rookie_one is the junior, password seed-password), open and start a session, and decide on three real applicants; the tests check the verdict's invariants, because the verdict depends on the generated applicant (the fixed verdicts are unit tests in internal/domain). Folders 0, 4, 6, 7 and 8 also call one Moderation instance directly at service_url (health, the audit snapshot, the outbox, the admin and dev routes, logs and metrics): the CPR compose publishes no Moderation port, so run the collection inside student-id-net with service_url set to one instance, for example docker run --rm --network student-id-net -v \"$PWD/postman:/etc/newman\" postman/newman:6-alpine run moderation-service.postman_collection.json --env-var base_url=http://gateway-service:8080 --env-var service_url=http://<instance-ip>:8085 --env-var service_token=<SERVICE_TOKEN>. Run the folders in order; folder 5 ends the shift, so the run can be repeated. The collection's pre-request script still signs a JWT for a request that names a player in X-Player-Id (kept for the Lab 2 mock mode)."
   },
   "variable": [
     {
@@ -22,23 +22,6 @@
       "description": "The stack's SERVICE_TOKEN (.env of the team compose); the Gateway checks it on /admin/* and /dev/*"
     },
     {
-      "key": "moderator_id",
-      "value": "8c1f6a2e-5b7d-4e1a-9c3f-2d4b6a8e0f11",
-      "description": "The Moderator of the mock session. Sent as X-Player-Id, the header the Gateway sets after validating the player's JWT"
-    },
-    {
-      "key": "last_decision_id",
-      "value": ""
-    },
-    {
-      "key": "ban_id",
-      "value": ""
-    },
-    {
-      "key": "session_id",
-      "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
-    },
-    {
       "key": "max_concurrent_tasks",
       "value": "64",
       "description": "The service's MAX_CONCURRENT_TASKS; the 429 demo fires this many slow requests first"
@@ -47,6 +30,82 @@
       "key": "service_url",
       "value": "http://localhost:8085",
       "description": "One instance of the service, reached directly like Service Discovery does (the development stack publishes 8085; in the team stack use `docker compose port` of a copy or run the request from inside the network)"
+    },
+    {
+      "key": "password",
+      "value": "seed-password"
+    },
+    {
+      "key": "moderator_username",
+      "value": "veteran_max"
+    },
+    {
+      "key": "moderator_id",
+      "value": "e5a7b9c3-4f6d-4e8b-a012-3c5d7e9f1a43"
+    },
+    {
+      "key": "junior_username",
+      "value": "rookie_one"
+    },
+    {
+      "key": "junior_id",
+      "value": "d4f6a8c1-3e5b-4d7c-9f1a-2b4c6d8e0f32"
+    },
+    {
+      "key": "seeded_lobby_id",
+      "value": "4b8fac2d-3e50-4c7b-9d1f-2a3b4c5d6e7f"
+    },
+    {
+      "key": "moderator_token",
+      "value": ""
+    },
+    {
+      "key": "junior_token",
+      "value": ""
+    },
+    {
+      "key": "session_id",
+      "value": ""
+    },
+    {
+      "key": "ruleset_version",
+      "value": ""
+    },
+    {
+      "key": "applicant_id",
+      "value": ""
+    },
+    {
+      "key": "student_id",
+      "value": ""
+    },
+    {
+      "key": "decided_applicant_id",
+      "value": ""
+    },
+    {
+      "key": "banned_student_id",
+      "value": ""
+    },
+    {
+      "key": "applicant_name",
+      "value": ""
+    },
+    {
+      "key": "bans_query",
+      "value": "ban"
+    },
+    {
+      "key": "decisions_made",
+      "value": "0"
+    },
+    {
+      "key": "last_decision_id",
+      "value": ""
+    },
+    {
+      "key": "ban_id",
+      "value": ""
     }
   ],
   "item": [
@@ -158,100 +217,30 @@
       ]
     },
     {
-      "name": "1. Setup (dev endpoints)",
+      "name": "1. Setup: a real shift through the Gateway",
+      "description": "Logs in two seeded players (veteran_max moderates, rookie_one is the junior; password seed-password), takes both out of the seeded lobby, opens a session, starts it and reads its ruleset. Every call goes through the Gateway and the broker, as a client's would.",
       "item": [
         {
-          "name": "list mock applicants",
+          "name": "login: moderator",
           "request": {
-            "method": "GET",
+            "method": "POST",
             "header": [
               {
                 "key": "Content-Type",
                 "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
               }
             ],
-            "url": "{{service_url}}/api/v1/dev/mock/applicants",
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('8 fixtures', () => pm.expect(pm.response.json().total).to.eql(8));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "list mock sessions",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions",
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('1 session', () => pm.expect(pm.response.json().total).to.eql(1));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "reset: delete this session's decisions and bans (admin)",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions?session_id={{session_id}}&limit=100",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ],
-              "query": [
-                {
-                  "key": "session_id",
-                  "value": "{{session_id}}"
-                },
-                {
-                  "key": "limit",
-                  "value": "100"
+            "url": "{{base_url}}/api/v1/player/auth/login",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{moderator_username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
                 }
-              ]
-            },
-            "description": "Decisions are immutable, so a second run of this collection would get 409 ALREADY_DECIDED. This request lists the session's decisions and deletes them, plus the ban list entries they created, through the admin endpoints, so the collection can be run again and again."
+              }
+            }
           },
           "event": [
             {
@@ -259,23 +248,231 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "// Direct on the service's REST port: /admin/* left the Gateway in Lab 4 (#110), and a player route called",
-                  "// directly takes X-Player-Id as the service trusts it. The Gateway is only for the collection's own requests.",
-                  "const svc = pm.variables.get('service_url');",
-                  "const svcHeaders = [{ key: 'X-Service-Token', value: pm.variables.get('service_token') }];",
-                  "const playerHeaders = [{ key: 'X-Player-Id', value: pm.variables.get('moderator_id') }];",
-                  "const sid = pm.variables.get('session_id');",
-                  "const items = pm.response.json().items || [];",
-                  "console.log('reset: deleting ' + items.length + ' decision(s) of session ' + sid);",
-                  "items.forEach(d => pm.sendRequest({ url: svc + '/api/v1/admin/decisions/' + d.decision_id, method: 'DELETE', header: svcHeaders }, (err, res) => console.log('delete decision', d.decision_id.slice(0, 8), err ? String(err) : res.code)));",
-                  "pm.sendRequest({ url: svc + '/api/v1/bans?q=FAF23104&limit=100', method: 'GET', header: playerHeaders }, (err, res) => {",
-                  "  if (err || !res) { console.log('ban lookup failed', String(err)); return; }",
-                  "  pm.test('ban lookup succeeded', () => pm.expect(res.code).to.eql(200));",
-                  "  (res.json().items || []).filter(b => b.session_id === sid).forEach(b => pm.sendRequest({ url: svc + '/api/v1/admin/bans/' + b.ban_id, method: 'DELETE', header: svcHeaders }, (e, r) => console.log('delete ban', b.ban_id.slice(0, 8), e ? String(e) : r.code)));",
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"moderator_token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "login: junior",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/player/auth/login",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{junior_username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"junior_token\", pm.response.json().access_token);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "junior leaves the seeded lobby",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{seeded_lobby_id}}/players/{{junior_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"left, or was not in it\", () => pm.expect(pm.response.code).to.be.oneOf([204, 404]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "moderator leaves the seeded lobby",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{seeded_lobby_id}}/players/{{moderator_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"left, or was not in it\", () => pm.expect(pm.response.code).to.be.oneOf([204, 404]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "open a session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"session_id\", pm.response.json().session_id);",
+                  "pm.collectionVariables.set(\"decisions_made\", \"0\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the junior joins",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/players",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "start the shift",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/start",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moderator_id\": \"{{moderator_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 200 with the session active (Lab 4, and Lab 5 when the shift.start saga completes within the wait);",
+                  "// 202 with the session starting when the saga is still running (Lab 5): the next request waits for active.",
+                  "pm.test(\"started\", () => pm.expect(pm.response.code).to.be.oneOf([200, 202]));",
+                  "pm.test(\"active or starting\", () => pm.expect([\"active\", \"starting\"]).to.include(pm.response.json().status));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the session is active and has its ruleset",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/session/sessions/{{session_id}}\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const deadline = Date.now() + 15000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  if (!err && res.code === 200 && res.json().status === \"active\") return;",
+                  "  if (Date.now() < deadline) setTimeout(poll, 500);",
                   "});",
-                  "pm.collectionVariables.set('last_decision_id', '');",
-                  "pm.collectionVariables.set('ban_id', '');"
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const s = pm.response.json();",
+                  "pm.test(\"active\", () => pm.expect(s.status).to.eql(\"active\"));",
+                  "pm.test(\"a ruleset version\", () => pm.expect(s.ruleset_version).to.be.a(\"number\"));",
+                  "pm.collectionVariables.set(\"ruleset_version\", String(s.ruleset_version));"
                 ]
               }
             }
@@ -284,33 +481,21 @@
       ]
     },
     {
-      "name": "2. Decisions, one scenario each",
+      "name": "2. Decisions on real applicants",
+      "description": "Three applicants of the running shift, each decided once: reject, ban and accept. The verdict itself depends on the generated applicant, so the tests check its invariants: a correct decision took the expected action, another action is wrong, the penalty is 0 exactly when the decision is correct, the ruleset is the session's. A second decision on the same applicant is refused.",
       "item": [
         {
-          "name": "dev: current applicant = honest",
+          "name": "next applicant (1)",
           "request": {
             "method": "POST",
             "header": [
               {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/applicants/next",
+            "description": ""
           },
           "event": [
             {
@@ -318,14 +503,42 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"applicant_id\", pm.response.json().current_applicant_id);"
                 ]
               }
             }
           ]
         },
         {
-          "name": "honest student accepted correctly",
+          "name": "the applicant's student id (1)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id || \"\");",
+                  "pm.collectionVariables.set(\"applicant_name\", pm.response.json().name || \"\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "reject the first applicant",
           "request": {
             "method": "POST",
             "header": [
@@ -334,27 +547,15 @@
                 "value": "application/json"
               },
               {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
+            "url": "{{base_url}}/api/v1/moderation/decisions",
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\",\n    \"dark-memes\",\n    \"groapa\"\n  ]\n}",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"reject\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -364,24 +565,50 @@
           },
           "event": [
             {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// applicant.initialized reaches Credential through the outbox relay and the broker: wait until it has the applicant,",
+                  "// or Moderation's own read of the documents would find nothing yet.",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/credential/applicants/{{applicant_id}}/documents\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  if (!err && res.code === 200) { setTimeout(() => {}, 1000); return; }",
+                  "  if (Date.now() < deadline) setTimeout(poll, 300);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
+            {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
                   "const d = pm.response.json();",
-                  "pm.test('expected_action is accept', () => pm.expect(d.expected_action).to.eql('accept'));",
-                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
-                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
-                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
-                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                  "const action = \"reject\";",
+                  "pm.test(\"a decision id and the session's ruleset\", () => {",
+                  "  pm.expect(d.decision_id).to.be.a(\"string\");",
+                  "  pm.expect(d.ruleset_version).to.eql(Number(pm.collectionVariables.get(\"ruleset_version\")));",
+                  "});",
+                  "pm.test(\"expected_action is one of accept, reject, flag, ban (README Shared values)\", () => pm.expect([\"accept\", \"reject\", \"flag\", \"ban\"]).to.include(d.expected_action));",
+                  "pm.test(\"a correct decision took the expected action\", () => { if (d.is_correct) pm.expect(action).to.eql(d.expected_action); });",
+                  "pm.test(\"another action than the expected one is wrong\", () => { if (action !== d.expected_action) pm.expect(d.is_correct).to.eql(false); });",
+                  "pm.test(\"the penalty is 0 exactly when the decision is correct\", () => pm.expect(d.penalty === 0).to.eql(d.is_correct));",
+                  "pm.collectionVariables.set(\"last_decision_id\", d.decision_id);",
+                  "pm.collectionVariables.set(\"decided_applicant_id\", pm.collectionVariables.get(\"applicant_id\"));",
+                  "const n = Number(pm.collectionVariables.get(\"decisions_made\") || 0) + 1;",
+                  "pm.collectionVariables.set(\"decisions_made\", String(n));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "same applicant again is refused",
+          "name": "the same applicant again is refused",
           "request": {
             "method": "POST",
             "header": [
@@ -390,27 +617,126 @@
                 "value": "application/json"
               },
               {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
+            "url": "{{base_url}}/api/v1/moderation/decisions",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 409\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"ALREADY_DECIDED\", () => pm.expect(pm.response.json().error.code).to.eql(\"ALREADY_DECIDED\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "next applicant (2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/applicants/next",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Session gives a new applicant only when the current one has a decision, and learns about it from decision.recorded",
+                  "// a moment after Moderation answered (409 CURRENT_APPLICANT_NOT_DECIDED until then): wait until Session has it.",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/session/sessions/{{session_id}}/decisions\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const want = Number(pm.collectionVariables.get(\"decisions_made\") || 0);",
+                  "const deadline = Date.now() + 15000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  if (!err && res.code === 200 && (res.json().items || res.json()).length >= want) return;",
+                  "  if (Date.now() < deadline) setTimeout(poll, 300);",
+                  "});",
+                  "poll();"
+                ]
+              }
             },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"applicant_id\", pm.response.json().current_applicant_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the applicant's student id (2)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id || \"\");",
+                  "pm.collectionVariables.set(\"applicant_name\", pm.response.json().name || \"\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "ban the second applicant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/moderation/decisions",
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"reject\"\n}",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"ban\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -420,180 +746,142 @@
           },
           "event": [
             {
-              "listen": "test",
+              "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 409', () => pm.response.to.have.status(409));",
-                  "pm.test('error code ALREADY_DECIDED', () => pm.expect(pm.response.json().error.code).to.eql('ALREADY_DECIDED'));"
+                  "// applicant.initialized reaches Credential through the outbox relay and the broker: wait until it has the applicant,",
+                  "// or Moderation's own read of the documents would find nothing yet.",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/credential/applicants/{{applicant_id}}/documents\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  if (!err && res.code === 200) { setTimeout(() => {}, 1000); return; }",
+                  "  if (Date.now() < deadline) setTimeout(poll, 300);",
+                  "});",
+                  "poll();"
                 ]
               }
-            }
-          ]
-        },
-        {
-          "name": "dev: current applicant = forged",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"applicant_id\": \"6e3d9f5b-8c2a-4d4e-af7b-1c9a3e5d7f24\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "forged outsider wrongly accepted",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
             },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"6e3d9f5b-8c2a-4d4e-af7b-1c9a3e5d7f24\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
                   "const d = pm.response.json();",
-                  "pm.test('expected_action is ban', () => pm.expect(d.expected_action).to.eql('ban'));",
-                  "pm.test('is_correct is false', () => pm.expect(d.is_correct).to.eql(false));",
-                  "pm.test('penalty is 30', () => pm.expect(d.penalty).to.eql(30));",
-                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
-                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                  "const action = \"ban\";",
+                  "pm.test(\"a decision id and the session's ruleset\", () => {",
+                  "  pm.expect(d.decision_id).to.be.a(\"string\");",
+                  "  pm.expect(d.ruleset_version).to.eql(Number(pm.collectionVariables.get(\"ruleset_version\")));",
+                  "});",
+                  "pm.test(\"expected_action is one of accept, reject, flag, ban (README Shared values)\", () => pm.expect([\"accept\", \"reject\", \"flag\", \"ban\"]).to.include(d.expected_action));",
+                  "pm.test(\"a correct decision took the expected action\", () => { if (d.is_correct) pm.expect(action).to.eql(d.expected_action); });",
+                  "pm.test(\"another action than the expected one is wrong\", () => { if (action !== d.expected_action) pm.expect(d.is_correct).to.eql(false); });",
+                  "pm.test(\"the penalty is 0 exactly when the decision is correct\", () => pm.expect(d.penalty === 0).to.eql(d.is_correct));",
+                  "pm.collectionVariables.set(\"last_decision_id\", d.decision_id);",
+                  "pm.collectionVariables.set(\"decided_applicant_id\", pm.collectionVariables.get(\"applicant_id\"));",
+                  "const n = Number(pm.collectionVariables.get(\"decisions_made\") || 0) + 1;",
+                  "pm.collectionVariables.set(\"decisions_made\", String(n));",
+                  "pm.collectionVariables.set(\"banned_student_id\", pm.collectionVariables.get(\"student_id\"));",
+                  "// Bans are searchable by student ID and by name; an outsider or a staff member has no student ID (q may not be empty).",
+                  "pm.collectionVariables.set(\"bans_query\", pm.collectionVariables.get(\"student_id\") || pm.collectionVariables.get(\"applicant_name\") || \"ban\");"
                 ]
               }
             }
           ]
         },
         {
-          "name": "dev: current applicant = expired",
+          "name": "next applicant (3)",
           "request": {
             "method": "POST",
             "header": [
               {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"applicant_id\": \"7f4ea06c-9d3b-4e5f-b08c-2daa4f6e8a35\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/applicants/next",
+            "description": ""
           },
           "event": [
             {
-              "listen": "test",
+              "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
+                  "// Session gives a new applicant only when the current one has a decision, and learns about it from decision.recorded",
+                  "// a moment after Moderation answered (409 CURRENT_APPLICANT_NOT_DECIDED until then): wait until Session has it.",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/session/sessions/{{session_id}}/decisions\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const want = Number(pm.collectionVariables.get(\"decisions_made\") || 0);",
+                  "const deadline = Date.now() + 15000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  if (!err && res.code === 200 && (res.json().items || res.json()).length >= want) return;",
+                  "  if (Date.now() < deadline) setTimeout(poll, 300);",
+                  "});",
+                  "poll();"
                 ]
               }
-            }
-          ]
-        },
-        {
-          "name": "expired card rejected correctly",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
             },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"applicant_id\", pm.response.json().current_applicant_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "the applicant's student id (3)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id || \"\");",
+                  "pm.collectionVariables.set(\"applicant_name\", pm.response.json().name || \"\");"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "accept the third applicant into #general",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/moderation/decisions",
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"7f4ea06c-9d3b-4e5f-b08c-2daa4f6e8a35\",\n  \"action\": \"reject\"\n}",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -603,487 +891,43 @@
           },
           "event": [
             {
-              "listen": "test",
+              "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "const d = pm.response.json();",
-                  "pm.test('expected_action is reject', () => pm.expect(d.expected_action).to.eql('reject'));",
-                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
-                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
-                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
-                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                  "// applicant.initialized reaches Credential through the outbox relay and the broker: wait until it has the applicant,",
+                  "// or Moderation's own read of the documents would find nothing yet.",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/credential/applicants/{{applicant_id}}/documents\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  if (!err && res.code === 200) { setTimeout(() => {}, 1000); return; }",
+                  "  if (Date.now() < deadline) setTimeout(poll, 300);",
+                  "});",
+                  "poll();"
                 ]
               }
-            }
-          ]
-        },
-        {
-          "name": "dev: current applicant = incomplete",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"applicant_id\": \"8a5fb17d-ae4c-4f60-919d-3ebb507f9b46\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "incomplete papers flagged correctly",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
             },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"8a5fb17d-ae4c-4f60-919d-3ebb507f9b46\",\n  \"action\": \"flag\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
             {
               "listen": "test",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
                   "const d = pm.response.json();",
-                  "pm.test('expected_action is flag', () => pm.expect(d.expected_action).to.eql('flag'));",
-                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
-                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
-                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
-                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "dev: current applicant = banned",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"applicant_id\": \"9b60c28e-bf5d-4a71-a2ae-4fcc618a0c57\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "previously banned person accepted by mistake",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"9b60c28e-bf5d-4a71-a2ae-4fcc618a0c57\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "const d = pm.response.json();",
-                  "pm.test('expected_action is reject', () => pm.expect(d.expected_action).to.eql('reject'));",
-                  "pm.test('is_correct is false', () => pm.expect(d.is_correct).to.eql(false));",
-                  "pm.test('penalty is 20', () => pm.expect(d.penalty).to.eql(20));",
-                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
-                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "dev: current applicant = theft",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"applicant_id\": \"a071d39f-c06e-4b82-b3bf-50dd729b1d68\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "identity theft banned correctly",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"a071d39f-c06e-4b82-b3bf-50dd729b1d68\",\n  \"action\": \"ban\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "const d = pm.response.json();",
-                  "pm.test('expected_action is ban', () => pm.expect(d.expected_action).to.eql('ban'));",
-                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
-                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
-                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
-                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "dev: current applicant = staff",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"applicant_id\": \"b182e4a0-d17f-4c93-84c0-61ee83ac2e79\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "staff accepted with wrong channels",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"b182e4a0-d17f-4c93-84c0-61ee83ac2e79\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "const d = pm.response.json();",
-                  "pm.test('expected_action is accept', () => pm.expect(d.expected_action).to.eql('accept'));",
-                  "pm.test('is_correct is false', () => pm.expect(d.is_correct).to.eql(false));",
-                  "pm.test('penalty is 5', () => pm.expect(d.penalty).to.eql(5));",
-                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
-                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "dev: current applicant = firstyear",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions/3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e/current-applicant",
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"applicant_id\": \"c293f5b1-e280-4da4-95d1-72ff94bd3f8a\"\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "first-year accepted with #general only",
-          "request": {
-            "method": "POST",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
-            "description": "",
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"c293f5b1-e280-4da4-95d1-72ff94bd3f8a\",\n  \"action\": \"accept\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
-              "options": {
-                "raw": {
-                  "language": "json"
-                }
-              }
-            }
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 201', () => pm.response.to.have.status(201));",
-                  "const d = pm.response.json();",
-                  "pm.test('expected_action is accept', () => pm.expect(d.expected_action).to.eql('accept'));",
-                  "pm.test('is_correct is true', () => pm.expect(d.is_correct).to.eql(true));",
-                  "pm.test('penalty is 0', () => pm.expect(d.penalty).to.eql(0));",
-                  "pm.test('has decision_id and ruleset_version', () => { pm.expect(d.decision_id).to.be.a('string'); pm.expect(d.ruleset_version).to.eql(7); });",
-                  "pm.collectionVariables.set('last_decision_id', d.decision_id);"
+                  "const action = \"accept\";",
+                  "pm.test(\"a decision id and the session's ruleset\", () => {",
+                  "  pm.expect(d.decision_id).to.be.a(\"string\");",
+                  "  pm.expect(d.ruleset_version).to.eql(Number(pm.collectionVariables.get(\"ruleset_version\")));",
+                  "});",
+                  "pm.test(\"expected_action is one of accept, reject, flag, ban (README Shared values)\", () => pm.expect([\"accept\", \"reject\", \"flag\", \"ban\"]).to.include(d.expected_action));",
+                  "pm.test(\"a correct decision took the expected action\", () => { if (d.is_correct) pm.expect(action).to.eql(d.expected_action); });",
+                  "pm.test(\"another action than the expected one is wrong\", () => { if (action !== d.expected_action) pm.expect(d.is_correct).to.eql(false); });",
+                  "pm.test(\"the penalty is 0 exactly when the decision is correct\", () => pm.expect(d.penalty === 0).to.eql(d.is_correct));",
+                  "pm.collectionVariables.set(\"last_decision_id\", d.decision_id);",
+                  "pm.collectionVariables.set(\"decided_applicant_id\", pm.collectionVariables.get(\"applicant_id\"));",
+                  "const n = Number(pm.collectionVariables.get(\"decisions_made\") || 0) + 1;",
+                  "pm.collectionVariables.set(\"decisions_made\", String(n));"
                 ]
               }
             }
@@ -1093,6 +937,7 @@
     },
     {
       "name": "3. Validation and errors",
+      "description": "Malformed decisions and the refusals of the real flow.",
       "item": [
         {
           "name": "accept without granted_channels",
@@ -1104,27 +949,15 @@
                 "value": "application/json"
               },
               {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
+            "url": "{{base_url}}/api/v1/moderation/decisions",
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"c293f5b1-e280-4da4-95d1-72ff94bd3f8a\",\n  \"action\": \"accept\"\n}",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"accept\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1138,8 +971,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 422', () => pm.response.to.have.status(422));",
-                  "pm.test('error code GRANTED_CHANNELS_REQUIRED', () => pm.expect(pm.response.json().error.code).to.eql('GRANTED_CHANNELS_REQUIRED'));"
+                  "pm.test(\"status 422\", () => pm.response.to.have.status(422));",
+                  "pm.test(\"GRANTED_CHANNELS_REQUIRED\", () => pm.expect(pm.response.json().error.code).to.eql(\"GRANTED_CHANNELS_REQUIRED\"));"
                 ]
               }
             }
@@ -1155,27 +988,15 @@
                 "value": "application/json"
               },
               {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
+            "url": "{{base_url}}/api/v1/moderation/decisions",
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"c293f5b1-e280-4da4-95d1-72ff94bd3f8a\",\n  \"action\": \"reject\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"reject\",\n  \"granted_channels\": [\n    \"general\"\n  ]\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1189,15 +1010,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('400', () => pm.response.to.have.status(400));",
-                  "pm.test('VALIDATION_ERROR naming granted_channels', () => { const e = pm.response.json().error; pm.expect(e.code).to.eql('VALIDATION_ERROR'); pm.expect(e.details.granted_channels).to.be.a('string'); });"
+                  "pm.test(\"400\", () => pm.response.to.have.status(400));",
+                  "pm.test(\"VALIDATION_ERROR naming granted_channels\", () => { const e = pm.response.json().error; pm.expect(e.code).to.eql(\"VALIDATION_ERROR\"); pm.expect(e.details.granted_channels).to.be.a(\"string\"); });"
                 ]
               }
             }
           ]
         },
         {
-          "name": "applicant that is not current",
+          "name": "an applicant that is not the session's current one",
           "request": {
             "method": "POST",
             "header": [
@@ -1206,27 +1027,15 @@
                 "value": "application/json"
               },
               {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
+            "url": "{{base_url}}/api/v1/moderation/decisions",
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"reject\"\n}",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"reject\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1240,15 +1049,15 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 409', () => pm.response.to.have.status(409));",
-                  "pm.test('error code NOT_CURRENT_APPLICANT', () => pm.expect(pm.response.json().error.code).to.eql('NOT_CURRENT_APPLICANT'));"
+                  "pm.test(\"status 409\", () => pm.response.to.have.status(409));",
+                  "pm.test(\"NOT_CURRENT_APPLICANT\", () => pm.expect(pm.response.json().error.code).to.eql(\"NOT_CURRENT_APPLICANT\"));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "no player identity: neither the Gateway nor the caller identified a player",
+          "name": "no player token: the Gateway refuses it",
           "request": {
             "method": "POST",
             "header": [
@@ -1257,22 +1066,11 @@
                 "value": "application/json"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
+            "url": "{{base_url}}/api/v1/moderation/decisions",
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"reject\"\n}",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"reject\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1286,8 +1084,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('401', () => pm.response.to.have.status(401));",
-                  "pm.test('UNAUTHENTICATED', () => pm.expect(pm.response.json().error.code).to.eql('UNAUTHENTICATED'));"
+                  "pm.test(\"401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"UNAUTHENTICATED\", () => pm.expect(pm.response.json().error.code).to.eql(\"UNAUTHENTICATED\"));"
                 ]
               }
             }
@@ -1303,27 +1101,15 @@
                 "value": "application/json"
               },
               {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ]
-            },
+            "url": "{{base_url}}/api/v1/moderation/decisions",
             "description": "",
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"session_id\": \"6f9619ff-8b86-4d11-b42d-00c04fc964ff\",\n  \"applicant_id\": \"5d2c8e4a-7b1f-4c3d-9e6a-0b8f2d4c6e13\",\n  \"action\": \"reject\"\n}",
+              "raw": "{\n  \"session_id\": \"6f9619ff-8b86-4d11-b42d-00c04fc964ff\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"reject\"\n}",
               "options": {
                 "raw": {
                   "language": "json"
@@ -1337,8 +1123,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('404', () => pm.response.to.have.status(404));",
-                  "pm.test('SESSION_NOT_FOUND', () => pm.expect(pm.response.json().error.code).to.eql('SESSION_NOT_FOUND'));"
+                  "pm.test(\"404\", () => pm.response.to.have.status(404));",
+                  "pm.test(\"SESSION_NOT_FOUND\", () => pm.expect(pm.response.json().error.code).to.eql(\"SESSION_NOT_FOUND\"));"
                 ]
               }
             }
@@ -1348,6 +1134,7 @@
     },
     {
       "name": "4. Read back",
+      "description": "The decisions of the shift through the Gateway, the audit snapshot and the outbox directly (service token; service_url must reach one Moderation instance, see the collection description), and the decisions as Session recorded them from decision.recorded.",
       "item": [
         {
           "name": "GET /decisions?session_id=",
@@ -1355,37 +1142,11 @@
             "method": "GET",
             "header": [
               {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions?session_id=3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e&limit=20",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions"
-              ],
-              "query": [
-                {
-                  "key": "session_id",
-                  "value": "3a7e9b1c-2d4f-4b6a-8c0e-1f2a3b4c5d6e"
-                },
-                {
-                  "key": "limit",
-                  "value": "20"
-                }
-              ]
-            },
+            "url": "{{base_url}}/api/v1/moderation/decisions?session_id={{session_id}}&limit=20",
             "description": ""
           },
           "event": [
@@ -1394,8 +1155,8 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.test('8 decisions in this session', () => pm.expect(pm.response.json().total).to.eql(8));"
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"the shift's three decisions\", () => pm.expect(pm.response.json().items.length).to.eql(Number(pm.collectionVariables.get(\"decisions_made\"))));"
                 ]
               }
             }
@@ -1407,28 +1168,11 @@
             "method": "GET",
             "header": [
               {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/decisions/{{last_decision_id}}",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "decisions",
-                "{{last_decision_id}}"
-              ]
-            },
+            "url": "{{base_url}}/api/v1/moderation/decisions/{{last_decision_id}}",
             "description": ""
           },
           "event": [
@@ -1437,22 +1181,18 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.test('no snapshot for players', () => pm.expect(pm.response.json()).to.not.have.property('snapshot'));"
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"the last decision\", () => pm.expect(pm.response.json().decision_id).to.eql(pm.collectionVariables.get(\"last_decision_id\")));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "GET /admin/decisions/{id} (with snapshot)",
+          "name": "GET /admin/decisions/{id} (with snapshot, direct)",
           "request": {
             "method": "GET",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
               {
                 "key": "X-Service-Token",
                 "value": "{{service_token}}"
@@ -1467,46 +1207,24 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.test('snapshot present', () => pm.expect(pm.response.json()).to.have.property('snapshot'));"
+                  "pm.test(\"200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"snapshot present\", () => pm.expect(pm.response.json()).to.have.property(\"snapshot\"));"
                 ]
               }
             }
           ]
         },
         {
-          "name": "GET /bans?q=lungu",
+          "name": "GET /bans?q=<the banned applicant's student id, or name>",
           "request": {
             "method": "GET",
             "header": [
               {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/bans?q=lungu",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "bans"
-              ],
-              "query": [
-                {
-                  "key": "q",
-                  "value": "lungu"
-                }
-              ]
-            },
+            "url": "{{base_url}}/api/v1/moderation/bans?q={{bans_query}}",
             "description": ""
           },
           "event": [
@@ -1515,104 +1233,48 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('200', () => pm.response.to.have.status(200));",
-                  "pm.test('seeded ban found', () => pm.expect(pm.response.json().total).to.be.at.least(1));"
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "// A ban decision records a ban only for an applicant with a student id (outsiders and staff have none).",
+                  "if (pm.collectionVariables.get(\"banned_student_id\")) {",
+                  "  pm.test(\"the ban of the second applicant is listed\", () => pm.expect(pm.response.json().items.map(b => b.student_id)).to.include(pm.collectionVariables.get(\"banned_student_id\")));",
+                  "}"
                 ]
               }
             }
           ]
         },
         {
-          "name": "GET /bans?q=FAF23104 (identity thief's claimed ID)",
+          "name": "GET /admin/events: decision.recorded delivered to the broker (direct)",
           "request": {
             "method": "GET",
             "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Player-Id",
-                "value": "{{moderator_id}}",
-                "description": "Set by the Gateway in the real flow; sent here because the Gateway auth part is not merged yet, and a client value is discarded once it is"
-              }
-            ],
-            "url": {
-              "raw": "{{base_url}}/api/v1/moderation/bans?q=FAF23104",
-              "host": [
-                "{{base_url}}"
-              ],
-              "path": [
-                "api",
-                "v1",
-                "moderation",
-                "bans"
-              ],
-              "query": [
-                {
-                  "key": "q",
-                  "value": "FAF23104"
-                }
-              ]
-            },
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('ban created by the ban decision', () => pm.expect(pm.response.json().total).to.be.at.least(1));"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "GET /admin/events (outbox with the delivery state per consumer, oldest first)",
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
               {
                 "key": "X-Service-Token",
                 "value": "{{service_token}}"
               }
             ],
-            "url": "{{service_url}}/api/v1/admin/events?limit=10",
-            "description": "Every decision.recorded event with its envelope and the delivery state per consumer: the relay pushes it to Server Moderation Session Service's POST /api/v1/events through the Gateway (2xx = delivered, 422 = parked, anything else retried with backoff)."
+            "url": "{{service_url}}/api/v1/admin/events?limit=100",
+            "description": ""
           },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "pm.test('events listed', () => pm.expect(pm.response.json().total).to.be.at.least(1));",
-                  "const e = pm.response.json().items[0];",
-                  "pm.test('event type', () => pm.expect(e.event_type).to.eql('decision.recorded'));",
-                  "pm.test('envelope', () => { pm.expect(e.event.producer).to.eql('moderation-service'); pm.expect(e.event.version).to.eql(1); pm.expect(e.event.payload.decision_id).to.be.a('string'); });",
-                  "pm.test('one delivery per consumer, addressed to session', () => { pm.expect(e.deliveries).to.have.lengthOf(1); pm.expect(e.deliveries[0].consumer).to.eql('session'); pm.expect(['pending', 'delivered']).to.include(e.deliveries[0].status); });"
-                ]
-              }
-            }
-          ]
-        },
-        {
-          "name": "GET /dev/mock/events (the relay delivered decision.recorded to the mock Session)",
           "event": [
             {
               "listen": "prerequest",
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// The relay pushes the outbox every RELAY_INTERVAL (1 s by default); give it a moment.",
-                  "setTimeout(() => {}, 1500);"
+                  "// The relay publishes within about a second; wait until the newest event is delivered.",
+                  "const url = pm.variables.replaceIn(\"{{service_url}}/api/v1/admin/events?limit=100\");",
+                  "const header = [{ key: \"X-Service-Token\", value: pm.collectionVariables.get(\"service_token\") }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  if (!err && res.code === 200) {",
+                  "    const items = res.json().items;",
+                  "    const last = items[items.length - 1];",
+                  "    if (last && last.deliveries.every(x => x.status === \"delivered\")) return;",
+                  "  }",
+                  "  if (Date.now() < deadline) setTimeout(poll, 300);",
+                  "});",
+                  "poll();"
                 ]
               }
             },
@@ -1621,101 +1283,102 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "const body = pm.response.json();",
-                  "pm.test('the mock Session accepted the events of this run', () => pm.expect(body.total).to.be.at.least(1));",
-                  "pm.test('they are decision.recorded envelopes', () => pm.expect(body.items[0].event_type).to.eql('decision.recorded'));",
-                  "pm.test('the last one is the first-year decision', () => pm.expect(body.items[body.items.length - 1].payload.decision_id).to.eql(pm.variables.get('last_decision_id')));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/dev/mock/events",
-            "description": "Only meaningful while SESSION_URL is empty (mock Session). With the real Session, check its own session object instead."
-          },
-          "response": []
-        },
-        {
-          "name": "GET /dev/mock/sessions (the relayed event marked the current applicant as decided)",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
-                  "const s = pm.response.json().items.find(x => x.session_id === pm.variables.get('session_id'));",
-                  "pm.test('current applicant decided', () => pm.expect(s.current_applicant_decided).to.eql(true));",
-                  "pm.test('applications counted', () => pm.expect(s.applications_processed).to.be.at.least(1));"
-                ]
-              }
-            }
-          ],
-          "request": {
-            "method": "GET",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/dev/mock/sessions"
-          },
-          "response": []
-        },
-        {
-          "name": "GET /admin/events again: the delivery to session is now delivered",
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('status 200', () => pm.response.to.have.status(200));",
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
                   "const items = pm.response.json().items;",
-                  "const mine = items.find(e => e.event.payload.decision_id === pm.variables.get('last_decision_id'));",
-                  "pm.test('delivered to session', () => { pm.expect(mine.deliveries[0].status).to.eql('delivered'); pm.expect(mine.deliveries[0].last_status).to.eql(200); });",
-                  "pm.test('published once every consumer accepted it', () => pm.expect(mine.published_at).to.be.a('string'));"
+                  "const e = items[items.length - 1];",
+                  "pm.test(\"decision.recorded of this service\", () => { pm.expect(e.event_type).to.eql(\"decision.recorded\"); pm.expect(e.event.producer).to.eql(\"moderation-service\"); });",
+                  "pm.test(\"one delivery, to the broker, delivered\", () => {",
+                  "  pm.expect(e.deliveries).to.have.lengthOf(1);",
+                  "  pm.expect(e.deliveries[0].consumer).to.eql(\"message-broker\");",
+                  "  pm.expect(e.deliveries[0].status).to.eql(\"delivered\");",
+                  "});"
                 ]
               }
             }
-          ],
+          ]
+        },
+        {
+          "name": "Session recorded the decisions from decision.recorded",
           "request": {
             "method": "GET",
             "header": [
               {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
               }
             ],
-            "url": "{{service_url}}/api/v1/admin/events?limit=100"
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/decisions",
+            "description": ""
           },
-          "response": []
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/session/sessions/{{session_id}}/decisions\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const want = Number(pm.collectionVariables.get(\"decisions_made\"));",
+                  "const deadline = Date.now() + 15000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  if (!err && res.code === 200 && (res.json().items || res.json()).length >= want) return;",
+                  "  if (Date.now() < deadline) setTimeout(poll, 500);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "const items = body.items || body;",
+                  "pm.test(\"every decision of the shift reached Session\", () => pm.expect(items.length).to.eql(Number(pm.collectionVariables.get(\"decisions_made\"))));",
+                  "pm.test(\"the last one among them\", () => pm.expect(items.map(x => x.decision_id)).to.include(pm.collectionVariables.get(\"last_decision_id\")));"
+                ]
+              }
+            }
+          ]
         }
       ]
     },
     {
-      "name": "5. Admin",
+      "name": "5. End the shift",
+      "description": "Ends the session, so both players are free for the next run.",
+      "item": [
+        {
+          "name": "end the shift",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/end",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ended\", () => pm.expect(pm.response.json().status).to.eql(\"ended\"));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Admin (direct, service token)",
       "item": [
         {
           "name": "POST /admin/bans",
@@ -1824,40 +1487,11 @@
               }
             }
           ]
-        },
-        {
-          "name": "DELETE /admin/decisions/{id} (reset for a re-run)",
-          "request": {
-            "method": "DELETE",
-            "header": [
-              {
-                "key": "Content-Type",
-                "value": "application/json"
-              },
-              {
-                "key": "X-Service-Token",
-                "value": "{{service_token}}"
-              }
-            ],
-            "url": "{{service_url}}/api/v1/admin/decisions/{{last_decision_id}}",
-            "description": ""
-          },
-          "event": [
-            {
-              "listen": "test",
-              "script": {
-                "type": "text/javascript",
-                "exec": [
-                  "pm.test('204', () => pm.response.to.have.status(204));"
-                ]
-              }
-            }
-          ]
         }
       ]
     },
     {
-      "name": "6. Task timeout and concurrent task limit",
+      "name": "7. Task timeout and concurrent task limit",
       "item": [
         {
           "name": "GET /dev/slow?ms=200 answers normally",
@@ -2020,7 +1654,7 @@
       ]
     },
     {
-      "name": "7. Lab 4: logs, metrics and the direct routes",
+      "name": "8. Lab 4: logs, metrics and the direct routes",
       "description": "Direct to one instance ({{service_url}}), as Service Discovery and Prometheus call it. /admin and /dev are not Gateway routes from Lab 4 on (#110): this service checks their X-Service-Token itself.",
       "item": [
         {
@@ -2035,7 +1669,7 @@
                   "const body = pm.response.text();",
                   "['http_requests_total', 'http_request_duration_seconds', 'tasks_in_flight', 'outbox_pending', 'outbox_parked'].forEach(n =>",
                   "  pm.test(n, () => pm.expect(body).to.include(n)));",
-                  "pm.test('breaker_state of the broker and the five peers, unless in the mock mode', () => { if (body.includes('breaker_state')) ['message-broker', 'session', 'applicant', 'credential', 'university-record', 'server-rules'].forEach(t => pm.expect(body).to.include(`breaker_state{target=\"${t}\"}`)); });",
+                  "pm.test('breaker_state of the broker and the five peers, unless in the mock mode', () => { if (body.includes('breaker_state')) ['message-broker', 'message-broker', 'applicant', 'credential', 'university-record', 'server-rules'].forEach(t => pm.expect(body).to.include(`breaker_state{target=\"${t}\"}`)); });",
                   "pm.test('route is a template, never a raw id', () => pm.expect(body).to.not.match(/route=\"[^\"]*[0-9a-f]{8}-[0-9a-f]{4}/));"
                 ]
               }

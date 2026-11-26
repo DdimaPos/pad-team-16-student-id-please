@@ -2599,15 +2599,19 @@ new container: `docker-compose.yml` mounts the named volume `broker_data` there 
 Rules start after its healthcheck (`GET /health` on `8070`); a service started before it retries its subscription
 with backoff. Its contract is [Message Broker](#message-broker); details in [`docs/MESSAGE_BROKER.md`](docs/MESSAGE_BROKER.md).
 
-**ETL Service and the warehouse (Lab 5).** `d1vinexd/etl-service:5.0.0` runs one copy on `8075` (`/health`,
+**ETL Service and the warehouse (Lab 5).** `d1vinexd/etl-service:5.0.1` runs one copy on `8075` (`/health`,
 `/status`, `/logs`, `/metrics`, and `POST`/`GET /api/v1/runs` with the service token, called directly, not through the
 Gateway) and starts after Service Discovery and `warehouse-postgres` are healthy. `warehouse-postgres` (PostgreSQL 17,
 `warehouse_db`, owner `warehouse`, host port `5440`, named volume `warehouse_pgdata`) is the only database it writes;
 its schema comes from the ETL's migrations, and its init script `deployments/warehouse/init-grafana-reader.sh` creates
 `grafana_reader`, the read-only role of Grafana's "Analytics" dashboard (on an empty volume only). The ETL reads the
-eight service databases as `etl_reader` (`ETL_READER_PASSWORD`); until the replication of #164 the compose points its
-DSNs at today's single database containers, and a database without `etl_reader` and its grants (#164, #171 to #178)
-fails in every run as a named failed source while the others load. Details in [`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md).
+eight service databases as `etl_reader` (`ETL_READER_PASSWORD`): the DSNs of Server Rules and Moderation list their
+three nodes, the others name the one container their database runs as. Details in
+[`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md).
+
+> **Known gap:** with ETL `5.0.1` in this compose, the sources whose database has no login-capable `etl_reader`
+> (Player `5.0.0` and Session `5.0.1`, each on one PostgreSQL container) fail every run and are
+> named in `failed_sources`; see [`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md#known-gap-sources-without-a-login-capable-etl_reader).
 
 **Published host ports.** The Gateway (`8080`), the chat port `8086` (since Discord DMs `3.0.0` published by
 `dms-ws-proxy`, an nginx in front of the Discord DMs copies, for the direct WebSocket connection the Gateway

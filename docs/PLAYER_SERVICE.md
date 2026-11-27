@@ -348,8 +348,8 @@ a level of 0 would distort the average Session divides by.
 `POST /events`, `X-Player-Id`, the shared error codes, the task timeout and the concurrent task
 limit. `4.0.0` implements the Lab 4 contract (#105): the broker subscription, the queue
 `requests.player`, `GET /logs` and `GET /metrics`. `5.0.0` implements the Lab 5 slice (#163, #171):
-`jti`, the multi-host connection, `DEPENDENCY_UNAVAILABLE`, the ETL grants. Items 9 and 10 are where
-it differs from the README; the rest is beyond the contract rather than against it:
+`jti`, the multi-host connection, `DEPENDENCY_UNAVAILABLE`, the ETL grants. Item 9 is where it
+differs from the README; the rest is beyond the contract rather than against it:
 
 1. **Ten endpoints beyond the contract** (register, list, profile, edit, delete, shifts,
    disciplinary actions, friends) and `GET /dev/slow`.
@@ -397,12 +397,6 @@ it differs from the README; the rest is beyond the contract rather than against 
    until then it is recorded here and in the README.
    *Who this affects:* anyone filtering the logs in Grafana by `event`, where Player's requests do not
    appear under `request.received` / `request.replied`.
-
-10. **Not yet wired (Lab 5): one database node in the compose.** `5.0.0` connects to three hosts, but
-   the CPR `docker-compose.yml` still runs one `player-postgres` until the replication pattern (#164)
-   is merged; the conversion to `player-postgres-1..3` needs new volumes (the seed runs again). Until
-   then there is no failover to demonstrate.
-   *Who this affects:* the Lab 5 demo of grade 5; nothing over the API.
 
 ---
 
@@ -731,11 +725,12 @@ From `5.0.0` (#171; the pattern is `deployments/postgres-ha/`, #164).
 ### The connection
 
 `player_db` is a primary and two hot standbys (`player-postgres-1` starts as the primary, `-2` and
-`-3` as synchronous-capable standbys). With
-`POSTGRES_HOST=player-postgres-1,player-postgres-2,player-postgres-3` the service builds
+`-3` as its standbys, one of them synchronous), one of the clusters of `pg-failover` in the CPR compose. With
+`POSTGRES_HOST=player-postgres-1,player-postgres-2,player-postgres-3` and `POSTGRES_CONNECT_TIMEOUT=1s`, as the
+compose sets them, the service builds
 
 ```text
-postgres://player_user:<pw>@player-postgres-1:5432,player-postgres-2:5432,player-postgres-3:5432/player_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=2
+postgres://player_user:<pw>@player-postgres-1:5432,player-postgres-2:5432,player-postgres-3:5432/player_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=1
 ```
 
 pgx tries the hosts in order and keeps the first that is writable, so `AutoMigrate`, the seed and every
@@ -759,6 +754,26 @@ write reach the primary only; no proxy is involved. The startup line (`startup`)
   event that hits the failover is redelivered by the broker. With synchronous replication to one
   standby, a commit the old primary acknowledged is on the promoted standby: the XP of an ended shift
   is not lost.
+
+### The failover, measured (2026-11-26)
+
+On the CPR compose (`player-postgres-1..3`, `pg-failover`, Player `5.0.0` with two copies, Service Discovery and the
+broker; the example values of `.env.example`), a client registered a player every 200 ms while `docker stop` stopped
+the primary `player-postgres-1`:
+
+- the first request after the stop answered `500 DEPENDENCY_UNAVAILABLE` (`details.dependency: "postgres"`), 27 in
+  all, and writes worked again **6.3 s** after the stop (the target is 15 s): `pg-failover` saw 5 failed checks
+  1 s apart, promoted `player-postgres-2` (the most advanced standby), re-pointed `player-postgres-3` to it and turned
+  synchronous replication on again;
+- **every acknowledged write was on the new primary** (181 of 181), and no failed request left a row;
+- started again, `player-postgres-1` rejoined as a standby of `player-postgres-2` (`pg_rewind`: nothing had
+  diverged), held the 181 rows and refused a write (`cannot execute INSERT in a read-only transaction`);
+- both copies answered `/health/ready` with `postgres: ok` again, with no restart;
+- `etl_reader` logged in on a standby and read `players` (6 seeded rows) and was refused `password_hash`.
+
+Not part of this run: a whole shift ended through the saga across the failover (it needs the full stack); the XP of
+`session.ended` is applied in one transaction and acked only after it, so the broker redelivers an event that hits
+the switch (above).
 
 ### What the ETL reads
 

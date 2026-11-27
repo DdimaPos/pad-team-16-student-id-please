@@ -2647,7 +2647,8 @@ From `5.0.0` (`dimapos/player-service:5.0.0`) the login token also carries `jti`
 takes the primary and its standbys as a comma list (pgx keeps the writable one,
 `POSTGRES_TARGET_SESSION_ATTRS=read-write`), a request answers `500 DEPENDENCY_UNAVAILABLE` while no
 primary answers, and the migrations grant `etl_reader` its reads (never `email` or `password_hash`).
-The compose still runs one `player-postgres` until the replication pattern (#164) is merged.
+In the compose the database is `player-postgres-1..3` on the replication pattern (#164), one of the clusters of
+`pg-failover`, and the service lists the three nodes with a 1 s dial timeout per node.
 
 `dimapos/server-moderation-session-service` is published for `linux/amd64` and `linux/arm64`.
 `POSTGRES_PASSWORD` is its only required variable, plus `SERVICE_TOKEN` as soon as

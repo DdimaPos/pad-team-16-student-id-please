@@ -2605,13 +2605,9 @@ Gateway) and starts after Service Discovery and `warehouse-postgres` are healthy
 `warehouse_db`, owner `warehouse`, host port `5440`, named volume `warehouse_pgdata`) is the only database it writes;
 its schema comes from the ETL's migrations, and its init script `deployments/warehouse/init-grafana-reader.sh` creates
 `grafana_reader`, the read-only role of Grafana's "Analytics" dashboard (on an empty volume only). The ETL reads the
-eight service databases as `etl_reader` (`ETL_READER_PASSWORD`): the DSNs of Server Rules and Moderation list their
-three nodes, the others name the one container their database runs as. Details in
+eight service databases as `etl_reader` (`ETL_READER_PASSWORD`): every DSN or URI lists the three nodes of its
+database (six PostgreSQL clusters, two MongoDB replica sets). Details in
 [`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md).
-
-> **Known gap:** with ETL `5.0.1` in this compose, the sources whose database has no login-capable `etl_reader`
-> (Player `5.0.0` and Session `5.0.1`, each on one PostgreSQL container) fail every run and are
-> named in `failed_sources`; see [`docs/ETL_SERVICE.md`](docs/ETL_SERVICE.md#known-gap-sources-without-a-login-capable-etl_reader).
 
 **Published host ports.** The Gateway (`8080`), the chat port `8086` (since Discord DMs `3.0.0` published by
 `dms-ws-proxy`, an nginx in front of the Discord DMs copies, for the direct WebSocket connection the Gateway
@@ -2669,7 +2665,8 @@ the saga `shift.start`'s steps `POST /api/v1/saga-steps/shift-begin`, `.../shift
 (`dimapos/server-moderation-session-service:5.0.1`) `POST /start` runs the saga `shift.start` through the
 broker (`StartSaga`, a wait of at most 4 s): `200` when it completed, `202` with the session `starting`
 while it still runs, `409 SHIFT_START_FAILED` when it was compensated, and `session.started` is no longer
-published. Not yet wired: the compose still runs one `session-postgres`.
+published. In the compose the database is `session-postgres-1..3` on the replication pattern (#164), one of the
+clusters of `pg-failover`, and the service lists the three nodes with a 1 s dial timeout per node.
 
 It is the one service that calls three others, and `MESSAGE_BROKER_URL` is the one switch for all of
 them. Set (the compose sets `message-broker-service:8071`), the calls to Player, Server Rules and

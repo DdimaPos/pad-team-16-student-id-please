@@ -546,11 +546,6 @@ service issues; the contract defines no enum and shows no other value.
    starting for this saga, or the shift was confirmed already. The contract names only
    `SAGA_STEP_COMPENSATED`; the coordinator treats any other `4xx` as a failed step.
 
-12. **Not yet wired (Lab 5): one database node in the compose.** `5.0.0` connects to three hosts, but
-   the CPR `docker-compose.yml` still runs one `session-postgres` until the replication pattern
-   (#164) is merged; the conversion to `session-postgres-1..3` needs new volumes (the seed runs
-   again).
-
 ---
 
 ## 9. Edge cases
@@ -899,11 +894,12 @@ From `5.0.0` (#172; the pattern is `deployments/postgres-ha/`, #164).
 
 ### The connection
 
-`session_db` is a primary and two hot standbys. With
-`POSTGRES_HOST=session-postgres-1,session-postgres-2,session-postgres-3` the service builds
+`session_db` is a primary and two hot standbys, one of the clusters of `pg-failover` in the CPR compose. With
+`POSTGRES_HOST=session-postgres-1,session-postgres-2,session-postgres-3` and `POSTGRES_CONNECT_TIMEOUT=1s`, as the
+compose sets them, the service builds
 
 ```text
-postgres://session_user:<pw>@session-postgres-1:5432,session-postgres-2:5432,session-postgres-3:5432/session_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=2
+postgres://session_user:<pw>@session-postgres-1:5432,session-postgres-2:5432,session-postgres-3:5432/session_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=1
 ```
 
 pgx keeps the first writable host, so `AutoMigrate`, the seed, the relay and every write reach the
@@ -920,6 +916,27 @@ primary only. The startup line logs `db_hosts` and `db_target_session_attrs`, ne
   pass and publishes again once a primary answers (consumers dedupe by `event_id`).
 - `decision.recorded` is acked only after its transaction, so an event that hits the failover is
   redelivered by the broker.
+
+### The failover, measured (2026-11-26)
+
+On the CPR compose (`session-postgres-1..3`, `pg-failover`, Session `5.0.1` and Player `5.0.0` with two copies each,
+Service Discovery and the broker; the example values of `.env.example`), a client opened a lobby every 200 ms, each
+for another player (a write here, and a request to Player through the broker), while `docker stop` stopped the
+primary `session-postgres-1`:
+
+- the first request after the stop answered `500 DEPENDENCY_UNAVAILABLE` (`details.dependency: "postgres"`, logged
+  `db.unavailable` at `warn`), 25 in all, and writes worked again **5.7 s** after the stop (the target is 15 s):
+  `pg-failover` promoted `session-postgres-2`, re-pointed `session-postgres-3` to it and turned synchronous
+  replication on again;
+- **every acknowledged write was on the new primary** (156 of 156 lobbies);
+- started again, `session-postgres-1` rejoined as a standby (the 156 lobbies and the seeded one) and refused a write
+  (`cannot execute DELETE in a read-only transaction`);
+- both copies answered `/health/ready` with `postgres: ok` again, with no restart;
+- `etl_reader` logged in on a standby and read `sessions` and was refused `outbox_events`.
+
+Not part of this run: a shift through the saga and its decisions across the failover (it needs the full stack);
+`decision.recorded` is applied in one transaction and acked only after it, so the broker redelivers an event that
+hits the switch.
 
 ### What the ETL reads
 

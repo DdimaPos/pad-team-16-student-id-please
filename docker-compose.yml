@@ -69,6 +69,30 @@ x-player-pg-node: &player_pg_node
   networks:
     - student-id-net
 
+# Session's replicated PostgreSQL (#164, #172): the environment and the node template its three nodes share.
+x-session-pg-env: &session_pg_env
+  POSTGRES_USER: ${SESSION_POSTGRES_USER:-session_user}
+  POSTGRES_PASSWORD: ${SESSION_POSTGRES_PASSWORD:?set SESSION_POSTGRES_PASSWORD}
+  POSTGRES_DB: ${SESSION_POSTGRES_DB:-session_db}
+  PGHA_CLUSTER: session-postgres
+  PGHA_NODES: "session-postgres-1 session-postgres-2 session-postgres-3"
+  REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?set REPLICATION_PASSWORD}
+  FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:?set FAILOVER_PASSWORD}
+  ETL_READER_PASSWORD: ${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}
+
+x-session-pg-node: &session_pg_node
+  image: postgres:17-alpine
+  restart: unless-stopped
+  entrypoint: ["bash", "/ha/node.sh"]
+  stop_grace_period: 30s
+  healthcheck:              # healthy as a primary and as a standby; the output (docker inspect) names the role
+    test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" && psql -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\" -XAtc \"select case when pg_is_in_recovery() then 'standby' else 'primary' end\""]
+    interval: 5s
+    timeout: 5s
+    retries: 20
+  networks:
+    - student-id-net
+
 # The members of Discord DMs' replica set (#164, #178): the template the three share.
 x-dms-mongo-member: &dms_mongo_member
   image: mongo:7
@@ -692,26 +716,41 @@ services:
     networks:
       - student-id-net
 
-  session-postgres:
-    image: postgres:17-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${SESSION_POSTGRES_USER:-session_user}
-      POSTGRES_PASSWORD: ${SESSION_POSTGRES_PASSWORD:?set SESSION_POSTGRES_PASSWORD}
-      POSTGRES_DB: ${SESSION_POSTGRES_DB:-session_db}
-    volumes:
-      - session_pgdata:/var/lib/postgresql/data
+  # Session's database (Lab 5, #164 pattern, #172): one primary and two hot standbys, failover by pg-failover
+  # (deployments/postgres-ha/README.md). session-postgres-1 starts as the primary; the service lists all three nodes
+  # and connects to the writable one (target_session_attrs=read-write). Port 5438 of node 1 is for debugging.
+  session-postgres-1:
+    <<: *session_pg_node
+    environment: { <<: *session_pg_env, PGHA_NODE: session-postgres-1 }
     ports:
       - "5438:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${SESSION_POSTGRES_USER:-session_user} -d ${SESSION_POSTGRES_DB:-session_db}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    networks:
-      - student-id-net
+    volumes:
+      - session_pgdata_1:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  session-postgres-2:
+    <<: *session_pg_node
+    environment: { <<: *session_pg_env, PGHA_NODE: session-postgres-2 }
+    volumes:
+      - session_pgdata_2:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
+
+  session-postgres-3:
+    <<: *session_pg_node
+    environment: { <<: *session_pg_env, PGHA_NODE: session-postgres-3 }
+    volumes:
+      - session_pgdata_3:/var/lib/postgresql/data
+      - ./deployments/postgres-ha:/ha:ro
+      - ./deployments/postgres-ha/initdb.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      - pg_ha_state:/ha-state:ro
 
   session-service:
+    # A lookup of a stopped database node fails within 1 s (README "Database replication").
+    dns_opt: ["timeout:1", "attempts:1"]
     image: dimapos/server-moderation-session-service:5.0.1
     restart: unless-stopped
     # Lab 3: two instances (README "Deployments"); no container_name and no host port, so more can be added with --scale.
@@ -722,14 +761,15 @@ services:
         condition: service_healthy
       message-broker-service:
         condition: service_healthy
-      session-postgres:
+      session-postgres-1:
         condition: service_healthy
     environment:
       APP_ENV: docker
-      # Lab 5 (5.0.0): POSTGRES_HOST takes the primary and its standbys as a comma list
-      # (session-postgres-1,session-postgres-2,session-postgres-3, with target_session_attrs=read-write);
-      # the block moves to session-postgres-1..3 once the replication pattern (#164) is merged.
-      POSTGRES_HOST: session-postgres
+      # Lab 5 (#164): the primary and its two standbys; the service connects to the writable one
+      # (POSTGRES_TARGET_SESSION_ATTRS defaults to read-write) and dials each node for at most 1 s, as the pattern's
+      # client strings do (#197).
+      POSTGRES_HOST: session-postgres-1,session-postgres-2,session-postgres-3
+      POSTGRES_CONNECT_TIMEOUT: 1s
       POSTGRES_PORT: 5432
       POSTGRES_USER: ${SESSION_POSTGRES_USER:-session_user}
       POSTGRES_PASSWORD: ${SESSION_POSTGRES_PASSWORD:?set SESSION_POSTGRES_PASSWORD}
@@ -1008,15 +1048,13 @@ services:
       WAREHOUSE_DSN: "postgresql://warehouse:${WAREHOUSE_PASSWORD:?set WAREHOUSE_PASSWORD}@warehouse-postgres:5432/warehouse_db?sslmode=disable"
       # The eight sources, as the read-only role etl_reader (ETL_READER_PASSWORD; letters, digits and - _ . ~ only,
       # since it goes into a URL). The ETL appends target_session_attrs=prefer-standby and
-      # readPreference=secondaryPreferred itself. Server Rules, University Record, Moderation, Applicant and Player run
-      # three-node PostgreSQL clusters and Credential and Discord DMs three-member replica sets (<db>-1, <db>-2, <db>-3),
-      # so their DSN or URI lists the three; Session runs one PostgreSQL container, so its DSN names it. A
+      # readPreference=secondaryPreferred itself. The six PostgreSQL databases run as three-node clusters and Credential
+      # and Discord DMs as three-member replica sets (<db>-1, <db>-2, <db>-3), so every DSN or URI lists the three. Each
       # database gets a login-capable etl_reader from the replication pattern's init script (deployments/postgres-ha,
-      # deployments/mongo-rs); a source whose database has none fails every run and is named in the run's
-      # failed_sources, the others still load (docs/ETL_SERVICE.md "Known gap"). ETL_SOURCE_CONNECT_TIMEOUT_SECONDS
-      # keeps the image default of 1 s.
+      # deployments/mongo-rs), and its service's migrations grant it what the ETL reads.
+      # ETL_SOURCE_CONNECT_TIMEOUT_SECONDS keeps the image default of 1 s.
       PLAYER_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@player-postgres-1:5432,player-postgres-2:5432,player-postgres-3:5432/${PLAYER_POSTGRES_DB:-player_db}?sslmode=disable"
-      SESSION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@session-postgres:5432/${SESSION_POSTGRES_DB:-session_db}?sslmode=disable"
+      SESSION_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@session-postgres-1:5432,session-postgres-2:5432,session-postgres-3:5432/${SESSION_POSTGRES_DB:-session_db}?sslmode=disable"
       APPLICANT_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@applicant-postgres-1:5432,applicant-postgres-2:5432,applicant-postgres-3:5432/${APPLICANT_POSTGRES_DB:-applicant_db}?sslmode=disable"
       CREDENTIAL_MONGO_URI: "mongodb://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@credential-mongo-1:27017,credential-mongo-2:27017,credential-mongo-3:27017/credential_db?authSource=admin&replicaSet=rs0"
       RULES_DB_DSN: "postgresql://etl_reader:${ETL_READER_PASSWORD:?set ETL_READER_PASSWORD}@rules-postgres-1:5432,rules-postgres-2:5432,rules-postgres-3:5432/${RULES_POSTGRES_DB:-rules_db}?sslmode=disable"
@@ -1044,7 +1082,7 @@ services:
     restart: unless-stopped
     entrypoint: ["bash", "/ha/pg-failover.sh"]
     environment:
-      PGHA_CLUSTERS: "moderation-postgres rules-postgres applicant-postgres university-record-postgres player-postgres"
+      PGHA_CLUSTERS: "moderation-postgres rules-postgres applicant-postgres university-record-postgres player-postgres session-postgres"
       FAILOVER_PASSWORD: ${FAILOVER_PASSWORD:-}
       REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:-}
     volumes:
@@ -1153,7 +1191,9 @@ volumes:
   player_pgdata_1:
   player_pgdata_2:
   player_pgdata_3:
-  session_pgdata:
+  session_pgdata_1:
+  session_pgdata_2:
+  session_pgdata_3:
   applicant_pgdata_1:
   applicant_pgdata_2:
   applicant_pgdata_3:

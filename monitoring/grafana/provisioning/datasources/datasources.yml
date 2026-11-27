@@ -12,3 +12,19 @@ datasources:
     uid: loki
     access: proxy
     url: http://loki:3100
+  # Lab 5 (#165): warehouse_db, read by the "Analytics" dashboard as grafana_reader, a read-only role created by
+  # deployments/warehouse/init-grafana-reader.sh. The password comes from Grafana's environment (compose).
+  - name: Warehouse
+    type: grafana-postgresql-datasource
+    uid: warehouse
+    access: proxy
+    url: warehouse-postgres:5432
+    user: grafana_reader
+    jsonData:
+      database: warehouse_db
+      sslmode: disable
+      postgresVersion: 1700
+      timescaledb: false
+      maxOpenConns: 5
+    secureJsonData:
+      password: ${WAREHOUSE_GRAFANA_PASSWORD}

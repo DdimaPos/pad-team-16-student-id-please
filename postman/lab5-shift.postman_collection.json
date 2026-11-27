@@ -1,0 +1,1620 @@
+{
+  "info": {
+    "name": "Lab 5 shift",
+    "description": "A full shift through the Gateway on the Lab 5 stack (#170): login, the shift start as the saga shift.start (Session, University Record, Discord DMs, coordinated by the Message Broker), a ruleset read twice through the Gateway's cache (MISS, then HIT), applicant, chat, decision, end, a second start with the Discord DMs failure switch (409 SHIFT_START_FAILED, the session back in the lobby, no channel left, the saga compensated), the logout and the 401 after it, an ETL run with its row counts, and the monitoring. Run the folders in order inside student-id-net, since the failure switch and the ETL are called directly:\n\ndocker run --rm --network student-id-net -v \"$PWD/postman:/etc/newman\" postman/newman:6-alpine run lab5-shift.postman_collection.json --env-var service_token=<SERVICE_TOKEN> --env-var grafana_password=<GRAFANA_ADMIN_PASSWORD>\n\nUses the seeded players repeat_offender and rookie_one (password seed-password), as the Lab 4 shift does; every run leaves them out of any session, so it can run again.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Login",
+      "item": [
+        {
+          "name": "Moderator logs in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/player/auth/login",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{moderator_username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"moderator_token\", pm.response.json().access_token);",
+                  "const payload = JSON.parse(atob(pm.response.json().access_token.split(\".\")[1].replace(/-/g, \"+\").replace(/_/g, \"/\")));",
+                  "pm.test(\"the token carries a jti (what the logout revokes)\", () => pm.expect(payload.jti).to.match(/^[0-9a-f-]{36}$/));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior Moderator logs in",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/player/auth/login",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{junior_username}}\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"junior_token\", pm.response.json().access_token);",
+                  "const payload = JSON.parse(atob(pm.response.json().access_token.split(\".\")[1].replace(/-/g, \"+\").replace(/_/g, \"/\")));",
+                  "pm.test(\"the token carries a jti (what the logout revokes)\", () => pm.expect(payload.jti).to.match(/^[0-9a-f-]{36}$/));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "2. Session: the shift starts as the saga shift.start",
+      "item": [
+        {
+          "name": "Junior leaves the seeded lobby",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{seeded_lobby_id}}/players/{{junior_id}}",
+            "description": "The seed (SESSION_SEED_ON_START) puts rookie_one in a lobby, and a player in a lobby or an active session cannot join another one (409 PLAYER_ALREADY_IN_SESSION). Leaving is beyond the contract (docs/SERVER_MODERATION_SESSION_SERVICE.md). 404 when the junior already left it (a second run) or the stack is not seeded."
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"left the lobby, or was not in it\", () => pm.expect(pm.response.code).to.be.oneOf([204, 404]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator creates a session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"session_id\", pm.response.json().session_id);",
+                  "pm.test(\"in the lobby\", () => pm.expect(pm.response.json().status).to.eql(\"lobby\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior joins",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/players",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator starts the shift: the saga shift.start",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/start",
+            "description": "Session checks the request and calls StartSaga with a 4 s wait: shift-begin (Session), grant-scopes (University Record), create-channels (Discord DMs), shift-confirm (Session). 200 when the saga completed, 202 while it still runs.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moderator_id\": \"{{moderator_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"saga_t0\", new Date(Date.now() - 2000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 (saga completed) or 202 (still running)\", () => pm.expect(pm.response.code).to.be.oneOf([200, 202]));",
+                  "const s = pm.response.json();",
+                  "pm.test(pm.response.code === 200 ? \"active\" : \"starting\", () => pm.expect(s.status).to.eql(pm.response.code === 200 ? \"active\" : \"starting\"));",
+                  "const j = (s.junior_moderators || []).find(x => x.player_id === pm.collectionVariables.get(\"junior_id\"));",
+                  "pm.test(\"the junior got a record category\", () => pm.expect(j && j.record_scopes.length).to.be.above(0));",
+                  "if (j) pm.collectionVariables.set(\"junior_category\", j.record_scopes[0]);",
+                  "pm.collectionVariables.set(\"ruleset_version\", s.ruleset_version);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The session is active",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// A start answered 202 finishes on its own: wait until the session is active (at most 25 s, the saga's step budget).",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/session/sessions/{{session_id}}\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const deadline = Date.now() + 25000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  if ((err || res.code !== 200 || res.json().status !== \"active\") && Date.now() < deadline) setTimeout(poll, 500);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"active\", () => pm.expect(pm.response.json().status).to.eql(\"active\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Discord DMs: the step create-channels made the session's four channels",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const c = pm.response.json().items;",
+                  "pm.test(\"four channels\", () => pm.expect(c.length).to.eql(4));",
+                  "pm.collectionVariables.set(\"channel_id\", (c.find(x => x.name === \"general-mod-chat\") || c[0]).channel_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels",
+            "description": ""
+          }
+        },
+        {
+          "name": "Broker: the saga is completed",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Wait until the saga of this start has ended (at most 15 s): a start answered 202 finishes on its own.",
+                  "const url = pm.variables.replaceIn(\"{{broker_url}}/api/v1/sagas?limit=20\");",
+                  "const header = [{ key: \"X-Service-Token\", value: pm.collectionVariables.get(\"service_token\") }];",
+                  "const t0 = Date.parse(pm.collectionVariables.get(\"saga_t0\"));",
+                  "const deadline = Date.now() + 15000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  const saga = !err && res.code === 200 && res.json().items.find(x => x.saga_type === \"shift.start\" && Date.parse(x.started_at) >= t0);",
+                  "  if ((!saga || saga.state === \"running\" || saga.state === \"compensating\") && Date.now() < deadline) setTimeout(poll, 500);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const t0 = Date.parse(pm.collectionVariables.get(\"saga_t0\"));",
+                  "const saga = pm.response.json().items.find(x => x.saga_type === \"shift.start\" && Date.parse(x.started_at) >= t0);",
+                  "pm.test(\"the saga of this start is completed\", () => { pm.expect(saga, \"no shift.start saga since the start\").to.exist; pm.expect(saga.state).to.eql(\"completed\"); });",
+                  "if (saga) console.log(\"saga\", saga.saga_id, saga.state, saga.failed_step, JSON.stringify(saga.steps.map(s => [s.step, s.state, s.attempts])));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{broker_url}}/api/v1/sagas?limit=20",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Cache: a ruleset read twice",
+      "description": "The Gateway caches GET /rulesets/{version} for an hour (#167), on the node of the ring that owns the key (#166). On a fresh stack the first read is a MISS; when the collection ran in the last hour it is a HIT already.",
+      "item": [
+        {
+          "name": "First read of the shift's ruleset: MISS on a cold cache",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const x = pm.response.headers.get(\"X-Cache\");",
+                  "pm.test(\"X-Cache MISS (HIT when this ruleset was read in the last hour)\", () => pm.expect(x).to.be.oneOf([\"MISS\", \"HIT\"]));",
+                  "console.log(\"first read: X-Cache\", x);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/server-rules/rulesets/{{ruleset_version}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Second read: HIT, from the cache",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"X-Cache HIT\", () => pm.expect(pm.response.headers.get(\"X-Cache\")).to.eql(\"HIT\"));",
+                  "pm.test(\"the same ruleset\", () => pm.expect(pm.response.json().version).to.eql(Number(pm.collectionVariables.get(\"ruleset_version\"))));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/server-rules/rulesets/{{ruleset_version}}",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Applicant",
+      "item": [
+        {
+          "name": "Moderator asks for the next applicant",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/applicants/next",
+            "description": "Session -> broker -> Applicant (requests.applicant); Applicant publishes applicant.initialized to Credential and University Record.",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"applicant_id\", pm.response.json().current_applicant_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator reads the applicant",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/applicant/applicants/{{applicant_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.collectionVariables.set(\"student_id\", pm.response.json().student_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator reads the documents",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/credential/applicants/{{applicant_id}}/documents",
+            "description": "Waits (pre-request, up to 10 s) until Credential has received applicant.initialized; until then it answers 404."
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// applicant.initialized reaches Credential through the outbox relay and the broker: wait until it has the applicant",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/credential/applicants/{{applicant_id}}/documents\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () =>",
+                  "  pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "    if ((err || res.code !== 200) && Date.now() < deadline) setTimeout(poll, 500);",
+                  "  });",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior searches a record category",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/university-record/records/{{junior_category}}?session_id={{session_id}}&q={{student_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The scope was granted by the saga step grant-scopes before the start answered; the applicant's records reach",
+                  "// University Record with applicant.initialized, through the broker: until then the search answers 200 with no item.",
+                  "// Wait for them (at most 10 s).",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/university-record/records/{{junior_category}}?session_id={{session_id}}&q={{student_id}}\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"junior_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  const b = !err && res.code === 200 && res.json();",
+                  "  if ((!b || (b.items || b).length === 0) && Date.now() < deadline) setTimeout(poll, 500);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test(\"the applicant's records are found\", () => pm.expect((b.items || b).length).to.be.above(0));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "5. Chat",
+      "item": [
+        {
+          "name": "Junior negotiates the chat",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/ws-tickets",
+            "description": "Waits (pre-request, up to 10 s) until Discord DMs has received session.started; until then it answers 403 NOT_IN_SESSION.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// session.started reaches Discord DMs through the outbox relay and the broker: wait until it knows the session",
+                  "const url = pm.variables.replaceIn(\"{{base_url}}/api/v1/discord-dms/sessions/{{session_id}}/channels\");",
+                  "const header = [{ key: \"Authorization\", value: `Bearer ${pm.collectionVariables.get(\"moderator_token\")}` }];",
+                  "const deadline = Date.now() + 10000;",
+                  "const poll = () =>",
+                  "  pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "    if ((err || res.code !== 200) && Date.now() < deadline) setTimeout(poll, 500);",
+                  "  });",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.test(\"ws_url with a ticket\", () => pm.expect(pm.response.json().ws_url).to.include(\"ticket=\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator posts a message",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/channels/{{channel_id}}/messages",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"content\": \"Checking the applicant's student ID\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"sent\", () => pm.response.to.be.success);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior reads the history",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/channels/{{channel_id}}/messages",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "6. Decision and end",
+      "item": [
+        {
+          "name": "Moderator submits a decision",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/moderation/decisions",
+            "description": "Moderation calls Session, then Applicant, Credential and University Record in parallel, then Server Rules, all through the broker; it publishes decision.recorded to Session.",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"session_id\": \"{{session_id}}\",\n  \"applicant_id\": \"{{applicant_id}}\",\n  \"action\": \"reject\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator lists the session's decisions",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/decisions",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator ends the shift",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{session_id}}/end",
+            "description": "Session publishes session.ended to Player, Discord DMs and University Record.",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"ended\", () => pm.expect(pm.response.json().status).to.eql(\"ended\"));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Moderator reads the profile (XP after session.ended)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/player/players/{{moderator_id}}",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "7. A start that fails: the saga compensates",
+      "description": "The Discord DMs failure switch (service-only, inside student-id-net) makes the next create-channels answer 500 once; the coordinator compensates create-channels, grant-scopes and shift-begin in reverse, and Session answers 409 SHIFT_START_FAILED with the session back in the lobby.",
+      "item": [
+        {
+          "name": "Moderator creates a second session",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 201\", () => pm.response.to.have.status(201));",
+                  "pm.collectionVariables.set(\"failed_session_id\", pm.response.json().session_id);"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Junior joins",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{failed_session_id}}/players",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Arm the Discord DMs failure switch",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{dms_url}}/api/v1/dev/saga-steps/fail-next",
+            "description": ""
+          }
+        },
+        {
+          "name": "Moderator starts it: 409 SHIFT_START_FAILED, the saga compensated",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{failed_session_id}}/start",
+            "description": "Session asks Server Rules for the ruleset through the broker and publishes session.started (University Record, Discord DMs).",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"moderator_id\": \"{{moderator_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          },
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set(\"failed_saga_t0\", new Date(Date.now() - 2000).toISOString());"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 409\", () => pm.response.to.have.status(409));",
+                  "const e = pm.response.json().error;",
+                  "pm.test(\"SHIFT_START_FAILED at create-channels\", () => { pm.expect(e.code).to.eql(\"SHIFT_START_FAILED\"); pm.expect(e.details.failed_step).to.eql(\"create-channels\"); });"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "The session is back in the lobby",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"lobby\", () => pm.expect(pm.response.json().status).to.eql(\"lobby\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{failed_session_id}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "No channel was left behind",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The compensation deleted the session's channels and its session document: 403 (not a member of any session there),",
+                  "// 404, or an empty list.",
+                  "pm.test(\"no channel\", () => {",
+                  "  if (pm.response.code === 403 || pm.response.code === 404) return;",
+                  "  pm.expect(pm.response.code).to.eql(200);",
+                  "  pm.expect(pm.response.json().items.length).to.eql(0);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/discord-dms/sessions/{{failed_session_id}}/channels",
+            "description": ""
+          }
+        },
+        {
+          "name": "Broker: the saga is compensated, create-channels its failed step",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Wait until the saga of this start has ended (at most 15 s): a start answered 202 finishes on its own.",
+                  "const url = pm.variables.replaceIn(\"{{broker_url}}/api/v1/sagas?limit=20\");",
+                  "const header = [{ key: \"X-Service-Token\", value: pm.collectionVariables.get(\"service_token\") }];",
+                  "const t0 = Date.parse(pm.collectionVariables.get(\"failed_saga_t0\"));",
+                  "const deadline = Date.now() + 15000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  const saga = !err && res.code === 200 && res.json().items.find(x => x.saga_type === \"shift.start\" && Date.parse(x.started_at) >= t0);",
+                  "  if ((!saga || saga.state === \"running\" || saga.state === \"compensating\") && Date.now() < deadline) setTimeout(poll, 500);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const t0 = Date.parse(pm.collectionVariables.get(\"failed_saga_t0\"));",
+                  "const saga = pm.response.json().items.find(x => x.saga_type === \"shift.start\" && Date.parse(x.started_at) >= t0);",
+                  "pm.test(\"the saga of this start is compensated\", () => { pm.expect(saga, \"no shift.start saga since the start\").to.exist; pm.expect(saga.state).to.eql(\"compensated\"); });",
+                  "if (saga) console.log(\"saga\", saga.saga_id, saga.state, saga.failed_step, JSON.stringify(saga.steps.map(s => [s.step, s.state, s.attempts])));",
+                  "",
+                  "pm.test(\"failed_step create-channels\", () => pm.expect(saga && saga.failed_step).to.eql(\"create-channels\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{broker_url}}/api/v1/sagas?limit=20",
+            "description": ""
+          }
+        },
+        {
+          "name": "Clean up: end the session if the start went through anyway",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"409 for a lobby (expected), 200 when it had become active\", () => pm.expect(pm.response.code).to.be.oneOf([409, 200]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{failed_session_id}}/end",
+            "description": ""
+          }
+        },
+        {
+          "name": "Clean up: the creator leaves, which deletes the lobby",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"204 (the lobby is deleted), or 409/404 when the session was ended above\", () => pm.expect(pm.response.code).to.be.oneOf([204, 409, 404]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{moderator_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/session/sessions/{{failed_session_id}}/players/{{moderator_id}}",
+            "description": ""
+          }
+        },
+        {
+          "name": "Clean up: no armed failure switch is left behind",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// The switch counts its arms ($inc). When the start above did not reach create-channels (no saga), the arm is still",
+                  "// there and would fail the next run's step: send the step on a throwaway saga until one goes through (at most 5), and",
+                  "// the request itself compensates that saga, so nothing is left behind.",
+                  "const url = pm.variables.replaceIn(\"{{dms_url}}/api/v1/saga-steps/create-channels\");",
+                  "const header = [{ key: \"Content-Type\", value: \"application/json\" }, { key: \"X-Service-Token\", value: pm.collectionVariables.get(\"service_token\") }];",
+                  "const step = () => {",
+                  "  const saga_id = pm.variables.replaceIn(\"{{$guid}}\");",
+                  "  pm.collectionVariables.set(\"cleanup_saga_id\", saga_id);",
+                  "  return JSON.stringify({ saga_id, saga_type: \"shift.start\", step: \"create-channels\", payload: {",
+                  "    session_id: pm.variables.replaceIn(\"{{$guid}}\"), moderator_id: pm.collectionVariables.get(\"moderator_id\"),",
+                  "    junior_moderators: [{ player_id: pm.collectionVariables.get(\"junior_id\"), record_scopes: [\"enrollment\"] }],",
+                  "    ruleset_version: 1, started_at: new Date().toISOString() } });",
+                  "};",
+                  "let tries = 0;",
+                  "const fire = () => pm.sendRequest({ url, method: \"POST\", header, body: { mode: \"raw\", raw: step() } }, (err, res) => {",
+                  "  tries += 1;",
+                  "  if (!err && res.code === 500 && tries < 5) { console.log(\"fired a leftover arm of the failure switch\"); fire(); }",
+                  "});",
+                  "fire();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200: the throwaway saga is compensated\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{dms_url}}/api/v1/saga-steps/create-channels/compensate",
+            "description": "",
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"saga_id\": \"{{cleanup_saga_id}}\",\n  \"saga_type\": \"shift.start\",\n  \"step\": \"create-channels\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "8. Logout",
+      "item": [
+        {
+          "name": "Junior logs out",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 204\", () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/player/auth/logout",
+            "description": "Answered by the Gateway: the token's jti is revoked on two cache nodes until the token expires."
+          }
+        },
+        {
+          "name": "The same token after the logout: 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 401\", () => pm.response.to.have.status(401));",
+                  "pm.test(\"UNAUTHENTICATED\", () => pm.expect(pm.response.json().error.code).to.eql(\"UNAUTHENTICATED\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{junior_token}}"
+              }
+            ],
+            "url": "{{base_url}}/api/v1/player/players/{{junior_id}}",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "9. ETL: a run and its row counts",
+      "item": [
+        {
+          "name": "Start a run",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"202, or 409 while a scheduled run is in progress\", () => pm.expect(pm.response.code).to.be.oneOf([202, 409]));",
+                  "const b = pm.response.json();",
+                  "pm.collectionVariables.set(\"etl_run_id\", pm.response.code === 202 ? b.run_id : b.error.details.run_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs",
+            "description": ""
+          }
+        },
+        {
+          "name": "The run ends with its row counts",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Wait until the run is no longer running (at most 60 s).",
+                  "const url = pm.variables.replaceIn(\"{{etl_url}}/api/v1/runs?limit=10\");",
+                  "const header = [{ key: \"X-Service-Token\", value: pm.collectionVariables.get(\"service_token\") }];",
+                  "const id = pm.collectionVariables.get(\"etl_run_id\");",
+                  "const deadline = Date.now() + 60000;",
+                  "const poll = () => pm.sendRequest({ url, method: \"GET\", header }, (err, res) => {",
+                  "  const run = !err && res.code === 200 && res.json().items.find(r => r.run_id === id);",
+                  "  if ((!run || run.status === \"running\") && Date.now() < deadline) setTimeout(poll, 1000);",
+                  "});",
+                  "poll();"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const run = pm.response.json().items.find(r => r.run_id === pm.collectionVariables.get(\"etl_run_id\"));",
+                  "pm.test(\"the run is listed\", () => pm.expect(run).to.exist);",
+                  "pm.test(\"succeeded (every source read)\", () => pm.expect(run.status).to.eql(\"succeeded\"));",
+                  "pm.test(\"rows counted per warehouse table\", () => pm.expect(run.rows).to.be.an(\"object\"));",
+                  "console.log(\"ETL run\", run.run_id, run.status, JSON.stringify(run.rows), JSON.stringify(run.failed_sources));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs?limit=10",
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "10. Monitoring",
+      "item": [
+        {
+          "name": "Grafana health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{grafana_url}}/api/health",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Broker topics and queues",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{broker_url}}/api/v1/topics",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Broker dead letters",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{broker_url}}/api/v1/dead-letters",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Prometheus ready",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{prometheus_url}}/-/ready",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Prometheus targets",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{prometheus_url}}/api/v1/targets?state=active",
+            "description": ""
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "const t = pm.response.json().data.activeTargets;",
+                  "pm.test(\"instances and static targets\", () => pm.expect(t.map(x => x.scrapePool)).to.include.members([\"instances\", \"static\"]));"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "name": "Grafana dashboards",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"status 200\", () => pm.response.to.have.status(200));",
+                  "pm.test(\"System, Broker and Analytics\", () => pm.expect(pm.response.json().map(d => d.title)).to.include.members([\"System\", \"Broker\", \"Analytics\"]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{grafana_url}}/api/search?type=dash-db",
+            "description": "",
+            "auth": {
+              "type": "basic",
+              "basic": [
+                {
+                  "key": "username",
+                  "value": "admin"
+                },
+                {
+                  "key": "password",
+                  "value": "{{grafana_password}}"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://gateway-service:8080"
+    },
+    {
+      "key": "broker_url",
+      "value": "http://message-broker-service:8070"
+    },
+    {
+      "key": "prometheus_url",
+      "value": "http://prometheus:9090"
+    },
+    {
+      "key": "grafana_url",
+      "value": "http://grafana:3000"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me_too"
+    },
+    {
+      "key": "grafana_password",
+      "value": "change_me"
+    },
+    {
+      "key": "password",
+      "value": "seed-password"
+    },
+    {
+      "key": "moderator_username",
+      "value": "repeat_offender"
+    },
+    {
+      "key": "moderator_id",
+      "value": "f6b8c0d4-5a7e-4f9c-b123-4d6e8f0a2b54"
+    },
+    {
+      "key": "junior_username",
+      "value": "rookie_one"
+    },
+    {
+      "key": "junior_id",
+      "value": "d4f6a8c1-3e5b-4d7c-9f1a-2b4c6d8e0f32"
+    },
+    {
+      "key": "moderator_token",
+      "value": ""
+    },
+    {
+      "key": "junior_token",
+      "value": ""
+    },
+    {
+      "key": "seeded_lobby_id",
+      "value": "4b8fac2d-3e50-4c7b-9d1f-2a3b4c5d6e7f"
+    },
+    {
+      "key": "session_id",
+      "value": ""
+    },
+    {
+      "key": "junior_category",
+      "value": ""
+    },
+    {
+      "key": "applicant_id",
+      "value": ""
+    },
+    {
+      "key": "student_id",
+      "value": ""
+    },
+    {
+      "key": "channel_id",
+      "value": ""
+    },
+    {
+      "key": "etl_url",
+      "value": "http://etl-service:8075"
+    },
+    {
+      "key": "dms_url",
+      "value": "http://discord-dms-service:8096"
+    },
+    {
+      "key": "ruleset_version",
+      "value": ""
+    },
+    {
+      "key": "failed_session_id",
+      "value": ""
+    },
+    {
+      "key": "etl_run_id",
+      "value": ""
+    },
+    {
+      "key": "saga_t0",
+      "value": ""
+    },
+    {
+      "key": "failed_saga_t0",
+      "value": ""
+    },
+    {
+      "key": "cleanup_saga_id",
+      "value": ""
+    }
+  ]
+}

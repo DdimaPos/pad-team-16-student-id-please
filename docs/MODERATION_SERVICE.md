@@ -9,7 +9,7 @@ verdict with a penalty and publishes it to the Message Broker, which gives it to
 Owner: Racovita Dumitru. Source: the private `moderation-service` repository, linked as a submodule of this CPR.
 
 > **Audience:** developers of the other services of *"Student ID, please"* (Team 16, FAF.PAD21.1), or the Gateway.
-> Copied from the service's own README at `v4.0.0`; relative paths below refer to the `moderation-service/` submodule.
+> Copied from the service's own README at `v5.0.0`; relative paths below refer to the `moderation-service/` submodule.
 > Where the implementation diverges from the CPR contract, the divergence is called out in the last section.
 
 ## Integration card
@@ -34,7 +34,7 @@ Owner: Racovita Dumitru. Source: the private `moderation-service` repository, li
 | Calls | Server Moderation Session, Applicant, Credential, University Record, Server Rules - all as `Request`s through the broker (`requests.<peer>`), with the request's `X-Request-ID`, each behind its own circuit breaker; in the mock mode the built-in mocks answer instead |
 | Authentication | Player endpoints read the calling player from `X-Player-Id`, set by the Gateway after it validated the player's JWT. `/logs`, `/api/v1/admin/*` and `/api/v1/dev/*` are not Gateway routes any more (#110): they are called directly inside the network, and this service checks their `X-Service-Token` itself (`403 SERVICE_TOKEN_REQUIRED`, `401 INVALID_SERVICE_TOKEN`) |
 | Task limits | `HTTP_REQUEST_TIMEOUT` (5 s) stops a task with `408 REQUEST_TIMEOUT`; `MAX_CONCURRENT_TASKS` (64) refuses the next task with `429 TOO_MANY_REQUESTS`; health endpoints exempt. See [Task timeout and concurrent task limit](#task-timeout-and-concurrent-task-limit) |
-| Docker image | `dmracovit/moderation-service:4.0.0` and `:latest`, public on Docker Hub, linux/amd64 and linux/arm64; published by GitHub Actions on merge to `main` from the `VERSION` file (Lab 4 = `4.x.y`), with the tag `v<VERSION>` and its GitHub Release |
+| Docker image | `dmracovit/moderation-service:5.0.0` and `:latest`, public on Docker Hub, linux/amd64 and linux/arm64; published by GitHub Actions on merge to `main` from the `VERSION` file (Lab 5 = `5.x.y`), with the tag `v<VERSION>` and its GitHub Release |
 
 ## Running it
 
@@ -81,7 +81,7 @@ naming the variable.
 
 | Variable | Default | Required | Meaning |
 | --- | --- | --- | --- |
-| `DATABASE_URL` | - | yes | PostgreSQL connection string (pgx format) |
+| `DATABASE_URL` | - | yes | PostgreSQL connection string (pgx format). Lab 5, the team stack: every node of the cluster, `postgres://<user>:<pw>@moderation-postgres-1:5432,moderation-postgres-2:5432,moderation-postgres-3:5432/moderation_db?sslmode=disable&target_session_attrs=read-write&connect_timeout=1`; the driver connects to whichever node is the primary |
 | `SERVICE_TOKEN` | - | yes | The stack's one `X-Service-Token`: the `x-service-token` metadata of every call to the broker, sent to Service Discovery, and checked here on `/logs`, `/api/v1/admin/*` and `/api/v1/dev/*` |
 | `MESSAGE_BROKER_URL` | empty | no | The broker's gRPC address, `message-broker-service:8071` in the team stack. Every peer is called and every event published through it. Empty = the mock mode: the built-in mocks answer for every peer and receive the events. Replaces Lab 3's `SESSION_URL`, `APPLICANT_URL`, `CREDENTIAL_URL`, `UNIVERSITY_RECORD_URL` and `RULES_URL` |
 | `LOG_FILE` | `/var/log/moderation/moderation.jsonl` | no | The log file next to stdout, read by `GET /logs`. Set but empty = stdout only. Outside Docker, a writable path such as `./logs/moderation.jsonl` |
@@ -420,10 +420,30 @@ need is handled here:
 
 PostgreSQL `moderation_db`: `decisions` (one row per applicant per session, immutable, with a `snapshot` jsonb column), `bans` (filled by ban decisions, searchable by student ID and name), `outbox` (the `decision.recorded` envelopes, oldest first) and `outbox_deliveries` (the state of every event for every consumer, and which instance holds or last held it). Migrations are embedded and applied at startup under an advisory lock; the demo seed runs under another one.
 
+**Replicated database (Lab 5, #164, #177).** In the team stack `moderation_db` runs as `moderation-postgres-1` (the
+first primary) and two hot standbys, `moderation-postgres-2` and `moderation-postgres-3`, built with
+`deployments/postgres-ha/` of the CPR; the `pg-failover` agent promotes the most advanced standby when the primary
+stops, and a commit waits for one standby, so a failover loses no decision that was answered.
+
+- **Connection.** The multi-host `DATABASE_URL` above; pgx tries the nodes in order and keeps only a writable one,
+  so the service follows a failover without a restart. The pool checks idle connections every 5 s.
+  `connect_timeout=1` and `dns_opt: ["timeout:1", "attempts:1"]` on the compose block keep a stopped node from
+  costing every new connection the 5 to 16 s that Docker Desktop for Windows takes to fail its DNS lookup; the pool
+  reuses its open connections, so only a new one tries the nodes again.
+- **While no primary answers** (a few seconds during a failover) a store call answers `500 DEPENDENCY_UNAVAILABLE`
+  with `details.dependency: "postgres"`, never `500 INTERNAL_ERROR`, because the broker's breakers count every
+  `5xx` but that one; `GET /status` answers `503 degraded` and `/health/ready` is not ready. A decision is written
+  with its outbox row in one transaction, so either both exist or neither; the relay gives each pass a deadline and
+  publishes a pending `decision.recorded` once the new primary answers.
+- **The ETL** (#165) reads `decisions` as `etl_reader` (migration `0006`): every column but the audit `snapshot`;
+  nothing of `bans` or the outbox. Its watermark is `decided_at`.
+- **Measured** on the team stack: a standby promoted 5.8 s after `docker stop` of the primary, and the Postman
+  collection green before, after the failover and after the old primary rejoined as a standby.
+
 ## Docker image, versioning and CI
 
 The image tag is the single line of the `VERSION` file; its MAJOR is the laboratory number, so every
-Lab 4 release is `4.x.y` (`4.0.0` now). Images are never pushed by hand:
+Lab 5 release is `5.x.y` (`5.0.0` now). Images are never pushed by hand:
 
 - `moderation-service/.github/workflows/ci.yml`: on every pull request into `dev` or `main`, and on every push to a work branch, checks that the checked-in gRPC stubs match `broker.proto` (`scripts/gen-proto.sh`), runs `go vet` and the tests against a PostgreSQL service and builds the image without pushing it.
 - `moderation-service/.github/workflows/release.yml`: on every push to `main` (a merge of `dev`), runs the tests and, only if they pass, builds `linux/amd64` and `linux/arm64` and pushes `dmracovit/moderation-service:<VERSION>` and `:latest`, then tags the commit `v<VERSION>` and creates its GitHub Release from the CHANGELOG section of that version (skipped when the release exists). It stops when `VERSION` is not `MAJOR.MINOR.PATCH`.

@@ -1,0 +1,7 @@
+# Files read inside Linux containers keep LF line endings on every checkout. Git for Windows' default
+# core.autocrlf=true would otherwise check them out with CRLF, and bash then fails on them
+# ("set: pipefail: invalid option name", "$'\r': command not found").
+*.sh text eol=lf
+deployments/**/*.conf text eol=lf
+deployments/**/*.yml text eol=lf
+docker-compose*.yml text eol=lf

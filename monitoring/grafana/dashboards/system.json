@@ -452,6 +452,127 @@
       ]
     },
     {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Cache hit ratio, per node (Gateway)",
+      "description": "Lab 5 (#166, #167): hits / (hits + misses) of the Gateway's lookups on each cache node, over 1 min (gateway_cache_node_requests_total; writes and errors are not lookups). A node whose breaker is open gets no call, so its line stops and its keys go to the next node of the ring; a moved key is a miss on that node until it is read again.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 30,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineInterpolation": "linear"
+          },
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (node) (rate(gateway_cache_node_requests_total{result=\"hit\"}[1m])) / sum by (node) (rate(gateway_cache_node_requests_total{result=~\"hit|miss\"}[1m]))",
+          "legendFormat": "{{node}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "Cache answers per second, by result (Gateway)",
+      "description": "Lab 5 (#167): the cached routes by result (gateway_cache_requests_total: hit, miss, bypass, and error for a request whose cache call failed and that was answered from the service), and the failed calls to each cache node (gateway_cache_node_requests_total{result=\"error\"}, legend \"node error <node>\").",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 30,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "spanNulls": false,
+            "showPoints": "never",
+            "drawStyle": "line",
+            "lineInterpolation": "linear"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "A",
+          "expr": "sum by (result) (rate(gateway_cache_requests_total[1m]))",
+          "legendFormat": "{{result}}"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "refId": "B",
+          "expr": "sum by (node) (rate(gateway_cache_node_requests_total{result=\"error\"}[1m]))",
+          "legendFormat": "node error {{node}}"
+        }
+      ]
+    },
+    {
       "id": 8,
       "type": "logs",
       "title": "Warnings and errors, every component",
@@ -462,7 +583,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 30,
+        "y": 38,
         "w": 24,
         "h": 10
       },
@@ -496,7 +617,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 40,
+        "y": 48,
         "w": 24,
         "h": 8
       },

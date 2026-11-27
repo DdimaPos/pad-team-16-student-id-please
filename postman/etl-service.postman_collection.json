@@ -1,0 +1,446 @@
+{
+  "info": {
+    "name": "ETL Service",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "The ETL Service 5.0.1 (Lab 5, #165) on port 8075: the probes, GET /metrics, the run routes (X-Service-Token, called directly inside student-id-net or on host port 8075, never through the Gateway) and GET /logs. docs/ETL_SERVICE.md is the reference. Set etl_url and service_token (the placeholder of .env.example) for your stack and run the folders in order: \"runs\" starts a run, checks that a second one is refused with 409 RUN_IN_PROGRESS while it holds the lock, and finds it in the listing. run_id is set by the collection."
+  },
+  "item": [
+    {
+      "name": "probes",
+      "item": [
+        {
+          "name": "GET /health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('names the ETL', () => pm.expect(b.service).to.eql('etl'));",
+                  "pm.test('ok', () => pm.expect(b.status).to.eql('ok'));",
+                  "pm.test('a Lab 5 version', () => pm.expect(b.version).to.match(/^5\\.\\d+\\.\\d+$/));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{etl_url}}/health"
+          }
+        },
+        {
+          "name": "GET /status",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 while the warehouse answers', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('contract shape', () => pm.expect(b).to.have.all.keys('service','instance_id','version','status','in_flight','max_concurrent_tasks'));",
+                  "pm.test('names the ETL', () => pm.expect(b.service).to.eql('etl'));",
+                  "pm.test('up', () => pm.expect(b.status).to.eql('up'));",
+                  "pm.test('integer load', () => { pm.expect(b.in_flight).to.be.a('number'); pm.expect(b.max_concurrent_tasks).to.be.a('number'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{etl_url}}/status"
+          }
+        },
+        {
+          "name": "GET /metrics",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('the Prometheus text format', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('text/plain'));",
+                  "const body = pm.response.text();",
+                  "pm.test('the shared series', () => {",
+                  "  pm.expect(body).to.include('# TYPE http_requests_total counter');",
+                  "  pm.expect(body).to.include('tasks_in_flight');",
+                  "});",
+                  "pm.test('the ETL series', () => {",
+                  "  ['etl_rows_loaded_total', 'etl_run_duration_seconds', 'etl_source_failures_total', 'etl_runs_total',",
+                  "   'etl_last_run_timestamp_seconds'].forEach(s => pm.expect(body).to.include(s));",
+                  "});",
+                  "pm.test('a series per warehouse table', () => pm.expect(body).to.include('etl_rows_loaded_total{table=\"fact_decision\"}'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{etl_url}}/metrics"
+          }
+        }
+      ]
+    },
+    {
+      "name": "runs",
+      "item": [
+        {
+          "name": "POST /api/v1/runs without the token - 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('the shared error envelope', () => pm.expect(e).to.have.all.keys('code', 'message', 'details'));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": "{{etl_url}}/api/v1/runs"
+          }
+        },
+        {
+          "name": "POST /api/v1/runs with a wrong token - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('the shared error envelope', () => pm.expect(e).to.have.all.keys('code', 'message', 'details'));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(e.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong-token"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs"
+          }
+        },
+        {
+          "name": "POST /api/v1/runs - 202, a run starts",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// 409 only when a scheduled run holds the lock right now: send it again after the run ends.",
+                  "pm.test('202', () => pm.response.to.have.status(202));",
+                  "const b = pm.response.json();",
+                  "pm.test('only run_id', () => pm.expect(b).to.have.all.keys('run_id'));",
+                  "pm.test('run_id is a UUID', () => pm.expect(b.run_id).to.match(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/));",
+                  "pm.collectionVariables.set('run_id', b.run_id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs"
+          }
+        },
+        {
+          "name": "POST /api/v1/runs again at once - 409 RUN_IN_PROGRESS",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "// Sent right after the 202: the run usually still holds the lock. A run that already ended (a very fast",
+                  "// stack) answers 202 instead, which is not a failure of the ETL; the 409 tests then do not apply.",
+                  "pm.test('409 or, if the run already ended, 202', () => pm.expect(pm.response.code).to.be.oneOf([409, 202]));",
+                  "if (pm.response.code === 409) {",
+                  "  const e = pm.response.json().error;",
+                  "  pm.test('RUN_IN_PROGRESS', () => pm.expect(e.code).to.eql('RUN_IN_PROGRESS'));",
+                  "  pm.test('details.run_id names the running run', () => pm.expect(e.details.run_id).to.eql(pm.collectionVariables.get('run_id')));",
+                  "} else {",
+                  "  pm.collectionVariables.set('run_id', pm.response.json().run_id);",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs"
+          }
+        },
+        {
+          "name": "GET /api/v1/runs - the runs, newest first",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('items and total', () => pm.expect(b).to.include.all.keys('items', 'total'));",
+                  "pm.test('total counts at least the items', () => pm.expect(b.total).to.be.at.least(b.items.length));",
+                  "pm.test('at most limit items', () => pm.expect(b.items.length).to.be.at.most(20));",
+                  "pm.test('the run just started is listed', () => pm.expect(b.items.map(r => r.run_id)).to.include(pm.collectionVariables.get('run_id')));",
+                  "pm.test('every item has the run shape', () => b.items.forEach(r => {",
+                  "  pm.expect(r).to.include.all.keys('run_id', 'trigger', 'status', 'started_at', 'ended_at', 'duration_ms', 'rows', 'failed_sources');",
+                  "  pm.expect(r.trigger).to.be.oneOf(['schedule', 'manual']);",
+                  "  pm.expect(r.status).to.be.oneOf(['running', 'succeeded', 'partial', 'failed', 'aborted']);",
+                  "  pm.expect(r.rows).to.be.an('object');",
+                  "  pm.expect(r.failed_sources).to.be.an('array');",
+                  "  r.failed_sources.forEach(f => pm.expect(f).to.include.all.keys('source', 'error'));",
+                  "}));",
+                  "pm.test('newest first', () => {",
+                  "  const t = b.items.map(r => Date.parse(r.started_at));",
+                  "  for (let i = 1; i < t.length; i++) pm.expect(t[i - 1]).to.be.at.least(t[i]);",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs?limit=20&offset=0"
+          }
+        },
+        {
+          "name": "GET /api/v1/runs?limit=1&offset=1 - paging",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "const b = pm.response.json();",
+                  "pm.test('at most one item', () => pm.expect(b.items.length).to.be.at.most(1));",
+                  "pm.test('total is the same whatever the page', () => pm.expect(b.total).to.be.a('number'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs?limit=1&offset=1"
+          }
+        },
+        {
+          "name": "GET /api/v1/runs?limit=0 - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('the shared error envelope', () => pm.expect(e).to.have.all.keys('code', 'message', 'details'));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(e.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs?limit=0"
+          }
+        },
+        {
+          "name": "GET /api/v1/runs?limit=101 - 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400', () => pm.response.to.have.status(400));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('the shared error envelope', () => pm.expect(e).to.have.all.keys('code', 'message', 'details'));",
+                  "pm.test('VALIDATION_ERROR', () => pm.expect(e.code).to.eql('VALIDATION_ERROR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs?limit=101"
+          }
+        },
+        {
+          "name": "GET /api/v1/runs without the token - 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('the shared error envelope', () => pm.expect(e).to.have.all.keys('code', 'message', 'details'));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{etl_url}}/api/v1/runs"
+          }
+        },
+        {
+          "name": "GET /api/v1/runs with a wrong token - 401",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('401', () => pm.response.to.have.status(401));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('the shared error envelope', () => pm.expect(e).to.have.all.keys('code', 'message', 'details'));",
+                  "pm.test('INVALID_SERVICE_TOKEN', () => pm.expect(e.code).to.eql('INVALID_SERVICE_TOKEN'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "wrong-token"
+              }
+            ],
+            "url": "{{etl_url}}/api/v1/runs"
+          }
+        }
+      ]
+    },
+    {
+      "name": "logs",
+      "item": [
+        {
+          "name": "GET /logs - this instance's lines",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200', () => pm.response.to.have.status(200));",
+                  "pm.test('ndjson', () => pm.expect(pm.response.headers.get('Content-Type')).to.include('application/x-ndjson'));",
+                  "const lines = pm.response.text().split('\\n').filter(Boolean).map(l => JSON.parse(l));",
+                  "pm.test('the ETL\\'s own lines', () => lines.forEach(l => pm.expect(l.service).to.eql('etl')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "X-Service-Token",
+                "value": "{{service_token}}"
+              }
+            ],
+            "url": "{{etl_url}}/logs?level=info"
+          }
+        },
+        {
+          "name": "GET /logs without the token - 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('403', () => pm.response.to.have.status(403));",
+                  "const e = pm.response.json().error;",
+                  "pm.test('the shared error envelope', () => pm.expect(e).to.have.all.keys('code', 'message', 'details'));",
+                  "pm.test('SERVICE_TOKEN_REQUIRED', () => pm.expect(e.code).to.eql('SERVICE_TOKEN_REQUIRED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": "{{etl_url}}/logs"
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "etl_url",
+      "value": "http://localhost:8075"
+    },
+    {
+      "key": "service_token",
+      "value": "change_me_too"
+    },
+    {
+      "key": "run_id",
+      "value": ""
+    }
+  ]
+}

@@ -2590,10 +2590,10 @@ publishes host port `8086` and forwards each WebSocket connection to one of the 
 Discord DMs itself publishes no host port. `WS_PUBLIC_URL` stays `ws://localhost:8086`, so nothing
 changes for clients.
 
-**Message Broker (Lab 4).** `d1vinexd/message-broker-service:4.0.0` runs one copy: HTTP on `8070`
-(`/health`, `/status`, `GET /api/v1/topics`, `GET /api/v1/dead-letters`, `/logs`, `/metrics`) and gRPC
+**Message Broker (Lab 4, Lab 5).** `d1vinexd/message-broker-service:5.0.1` runs one copy: HTTP on `8070`
+(`/health`, `/status`, `GET /api/v1/topics`, `GET /api/v1/dead-letters`, `GET /api/v1/sagas`, `/logs`, `/metrics`) and gRPC
 on `8071`, the `message-broker-service:8071` that a service's `MESSAGE_BROKER_URL` names. `SERVICE_TOKEN`
-is its only required variable. Its subscriptions, queues and dead letters live in SQLite at
+is its only required variable. Its subscriptions, queues, dead letters and saga log live in SQLite at
 `MESSAGE_STORE_PATH` (`/data/broker.db`), so a named volume on `/data` keeps them across a restart or a
 new container: `docker-compose.yml` mounts the named volume `broker_data` there (#113). The Gateway and Server
 Rules start after its healthcheck (`GET /health` on `8070`); a service started before it retries its subscription

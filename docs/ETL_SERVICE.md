@@ -88,9 +88,9 @@ A PostgreSQL DSN gets `target_session_attrs=prefer-standby` and a MongoDB URI `r
 when it names none. The DSN of a replicated database lists the three nodes of its cluster
 (`postgresql://etl_reader:<pw>@rules-postgres-1:5432,rules-postgres-2:5432,rules-postgres-3:5432/rules_db`) and the
 URI of a replica set adds `replicaSet=rs0`; a database that runs as one container is named alone and read as it is.
-In the team compose Server Rules and Moderation are three-node PostgreSQL clusters, and Player, Session, Applicant,
-University Record (PostgreSQL), Credential and Discord DMs (MongoDB) run one container each
-([§14](#known-gap-sources-without-a-login-capable-etl_reader)). DSNs and URIs hold passwords: they are never logged, and the passwords
+In the team compose the six PostgreSQL databases (Player, Session, Applicant, Server Rules, University Record,
+Moderation) are three-node clusters and Credential and Discord DMs (MongoDB) three-member replica sets, so every DSN
+and URI lists the three. DSNs and URIs hold passwords: they are never logged, and the passwords
 must be URL-safe (letters, digits, `-`, `_`, `.`, `~`).
 
 ## 5. The warehouse
@@ -345,22 +345,6 @@ Beyond README "Data warehouse and ETL", none of which changes what a caller of t
   `aborted` by the next run.
 - **`500 DEPENDENCY_UNAVAILABLE`** (`details.dependency: "postgres"`) on the run routes when the warehouse does not answer, the shared
   code of README "Errors".
-
-### Known gap: sources without a login-capable `etl_reader`
-
-In the team `docker-compose.yml`, a source whose database has no `etl_reader` that may log in fails every run and is
-named in the run's `failed_sources`; the other sources still load. A database gets a login-capable `etl_reader` from
-the replication pattern's init script (`deployments/postgres-ha/initdb.sh`, `deployments/mongo-rs/init.sh`), and its
-service's migrations grant it what the ETL reads. In this compose that holds for Server Rules `5.0.1`,
-University Record `5.0.1`, Moderation `5.0.0`, Applicant `5.0.0` and Player `5.0.0` (three-node PostgreSQL clusters) and for Credential
-`5.0.0` and Discord DMs `5.0.0` (three-member MongoDB replica sets). The sources that fail are:
-
-| Source | Image in the compose | Database | Why |
-| --- | --- | --- | --- |
-| `session` | Session `5.0.1` | `session-postgres`, one container | no login-capable `etl_reader` on a container without the replication pattern |
-
-The ETL loads each of them in the first run after its database runs the replication pattern and its DSN or URI in the
-compose lists the three nodes.
 
 ## 15. Postman
 
